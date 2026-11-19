@@ -56,7 +56,7 @@ export function resolveActiveProvider(hasServerGeminiKey: boolean): ResolvedProv
         provider: 'groq',
         apiKey: localKey,
         source: 'local',
-        label: 'Groq (Llama 3.1 8B Instant)',
+        label: 'Groq (Auto Active Model)',
       };
     }
     if (localKey.startsWith('AIza')) {
@@ -175,11 +175,91 @@ function extractReadableApiError(rawBody: string, status: number): string {
   return 'I apologize, our AI service had a momentary connection issue. Please try again.';
 }
 
-const GROQ_CHAT_MODELS = [
+const GROQ_PREFERRED_MODELS = [
   'llama-3.1-8b-instant',
-  'llama3-8b-8192',
-  'gemma2-9b-it',
+  'llama-3.3-70b-versatile',
+  'openai/gpt-oss-120b',
 ] as const;
+
+const GROQ_MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
+const groqModelCache = new Map<string, { models: string[]; fetchedAt: number }>();
+
+const NON_CHAT_GROQ_MODEL_PATTERN =
+  /whisper|audio|guard|tts|playai|orpheus|embed|rerank|speech|moderation|safeguard/i;
+
+function rankGroqChatModels(ids: string[]): string[] {
+  const uniqueActive = Array.from(
+    new Set(ids.map((id) => id.trim()).filter((id) => id.length > 0 && !NON_CHAT_GROQ_MODEL_PATTERN.test(id)))
+  );
+
+  if (uniqueActive.length === 0) {
+    return [...GROQ_PREFERRED_MODELS];
+  }
+
+  const preferredSet = new Set<string>(GROQ_PREFERRED_MODELS);
+  const prioritized = GROQ_PREFERRED_MODELS.filter((m) => uniqueActive.includes(m));
+  const others = uniqueActive.filter((id) => !preferredSet.has(id));
+
+  return [...prioritized, ...others];
+}
+
+async function getActiveGroqChatModels(
+  apiKey: string,
+  options?: { forceRefresh?: boolean; signal?: AbortSignal }
+): Promise<{ models: string[]; fromCache: boolean }> {
+  const now = Date.now();
+  const cached = groqModelCache.get(apiKey);
+  if (!options?.forceRefresh && cached && now - cached.fetchedAt < GROQ_MODEL_CACHE_TTL_MS) {
+    return { models: cached.models, fromCache: true };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 5000);
+    const onParentAbort = () => controller.abort();
+    options?.signal?.addEventListener('abort', onParentAbort, { once: true });
+
+    try {
+      const resp = await fetch('https://api.groq.com/openai/v1/models', {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+        },
+        signal: controller.signal,
+      });
+
+      if (resp.status === 401 || resp.status === 403) {
+        const errText = await resp.text().catch(() => '');
+        throw new Error(extractReadableApiError(errText, resp.status));
+      }
+
+      if (resp.ok) {
+        const json = (await resp.json()) as {
+          data?: Array<{ id?: string; active?: boolean }>;
+        };
+        const activeIds = (json.data || [])
+          .filter((item) => item && typeof item.id === 'string' && item.active !== false)
+          .map((item) => item.id as string);
+
+        const ranked = rankGroqChatModels(activeIds);
+        groqModelCache.set(apiKey, { models: ranked, fetchedAt: Date.now() });
+        return { models: ranked, fromCache: false };
+      }
+    } finally {
+      window.clearTimeout(timeoutId);
+      options?.signal?.removeEventListener('abort', onParentAbort);
+    }
+  } catch (err) {
+    if (options?.signal?.aborted) {
+      throw err;
+    }
+    if (err instanceof Error && err.message.includes('Unable to authenticate')) {
+      throw err;
+    }
+  }
+
+  return { models: [...GROQ_PREFERRED_MODELS], fromCache: false };
+}
 
 async function streamFromGroq(params: {
   apiKey: string;
@@ -205,9 +285,13 @@ async function streamFromGroq(params: {
   ];
 
   let lastErrorMsg = 'I apologize, our AI service had a momentary connection issue. Please try again.';
+  let { models: candidateModels, fromCache } = await getActiveGroqChatModels(params.apiKey, {
+    signal: params.signal,
+  });
+  let refreshedAfterFailure = !fromCache;
 
-  for (let i = 0; i < GROQ_CHAT_MODELS.length; i++) {
-    const modelName = GROQ_CHAT_MODELS[i];
+  for (let i = 0; i < candidateModels.length; i++) {
+    const modelName = candidateModels[i];
     let emittedAnyChunk = false;
 
     try {
@@ -231,7 +315,22 @@ async function streamFromGroq(params: {
         const errText = await resp.text().catch(() => '');
         lastErrorMsg = extractReadableApiError(errText, resp.status);
         // Stop retrying if authentication itself is rejected (401/403)
-        if (resp.status === 401 || resp.status === 403 || i === GROQ_CHAT_MODELS.length - 1) {
+        if (resp.status === 401 || resp.status === 403) {
+          throw new Error(lastErrorMsg);
+        }
+        // If cached list hit a decommissioned/missing model, force-refresh active models once
+        if (!refreshedAfterFailure) {
+          refreshedAfterFailure = true;
+          groqModelCache.delete(params.apiKey);
+          const fresh = await getActiveGroqChatModels(params.apiKey, {
+            forceRefresh: true,
+            signal: params.signal,
+          });
+          candidateModels = fresh.models;
+          i = -1;
+          continue;
+        }
+        if (i === candidateModels.length - 1) {
           throw new Error(lastErrorMsg);
         }
         continue;
@@ -282,7 +381,7 @@ async function streamFromGroq(params: {
         throw err;
       }
       lastErrorMsg = err instanceof Error ? err.message : lastErrorMsg;
-      if (!emittedAnyChunk && i < GROQ_CHAT_MODELS.length - 1) {
+      if (!emittedAnyChunk && i < candidateModels.length - 1) {
         continue;
       }
       throw new Error(lastErrorMsg);
@@ -693,8 +792,10 @@ export async function generateArtworkUnified(params: {
 
   if (resolved.provider === 'groq') {
     let lastArtErr = 'Unable to synthesize artwork SVG right now.';
-    for (let i = 0; i < GROQ_CHAT_MODELS.length; i++) {
-      const modelName = GROQ_CHAT_MODELS[i];
+    const { models: candidateModels } = await getActiveGroqChatModels(resolved.apiKey);
+
+    for (let i = 0; i < candidateModels.length; i++) {
+      const modelName = candidateModels[i];
       try {
         const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
@@ -713,7 +814,7 @@ export async function generateArtworkUnified(params: {
         if (!resp.ok) {
           const errText = await resp.text().catch(() => '');
           lastArtErr = extractReadableApiError(errText, resp.status);
-          if (resp.status === 401 || resp.status === 403 || i === GROQ_CHAT_MODELS.length - 1) {
+          if (resp.status === 401 || resp.status === 403 || i === candidateModels.length - 1) {
             throw new Error(lastArtErr);
           }
           continue;
@@ -736,7 +837,7 @@ export async function generateArtworkUnified(params: {
         };
         if (!parsed.svgCode || !parsed.svgCode.includes('<svg')) {
           lastArtErr = 'Unable to synthesize artwork SVG. Please try a different prompt.';
-          if (i < GROQ_CHAT_MODELS.length - 1) continue;
+          if (i < candidateModels.length - 1) continue;
           throw new Error(lastArtErr);
         }
         const cleanSvg = parsed.svgCode
@@ -754,7 +855,7 @@ export async function generateArtworkUnified(params: {
         };
       } catch (err) {
         lastArtErr = err instanceof Error ? err.message : lastArtErr;
-        if (i < GROQ_CHAT_MODELS.length - 1) {
+        if (i < candidateModels.length - 1) {
           continue;
         }
         throw new Error(lastArtErr);
