@@ -56,7 +56,7 @@ export function resolveActiveProvider(hasServerGeminiKey: boolean): ResolvedProv
         provider: 'groq',
         apiKey: localKey,
         source: 'local',
-        label: 'Groq (Llama 3.3 70B)',
+        label: 'Groq (Llama 3.1 8B Instant)',
       };
     }
     if (localKey.startsWith('AIza')) {
@@ -175,6 +175,12 @@ function extractReadableApiError(rawBody: string, status: number): string {
   return 'I apologize, our AI service had a momentary connection issue. Please try again.';
 }
 
+const GROQ_CHAT_MODELS = [
+  'llama-3.1-8b-instant',
+  'llama3-8b-8192',
+  'gemma2-9b-it',
+] as const;
+
 async function streamFromGroq(params: {
   apiKey: string;
   messages: OutgoingMessage[];
@@ -198,66 +204,92 @@ async function streamFromGroq(params: {
     })),
   ];
 
-  const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${params.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: 'llama-3.3-70b-versatile',
-      messages: groqMessages,
-      stream: true,
-      temperature: 0.65,
-      max_tokens: params.isLiveVoice ? 450 : 4096,
-    }),
-    signal: params.signal,
-  });
+  let lastErrorMsg = 'I apologize, our AI service had a momentary connection issue. Please try again.';
 
-  if (!resp.ok || !resp.body) {
-    const errText = await resp.text().catch(() => '');
-    throw new Error(extractReadableApiError(errText, resp.status));
-  }
+  for (let i = 0; i < GROQ_CHAT_MODELS.length; i++) {
+    const modelName = GROQ_CHAT_MODELS[i];
+    let emittedAnyChunk = false;
 
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let accumulated = '';
+    try {
+      const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${params.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: modelName,
+          messages: groqMessages,
+          stream: true,
+          temperature: 0.65,
+          max_tokens: params.isLiveVoice ? 450 : 4096,
+        }),
+        signal: params.signal,
+      });
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
-      if (!line.startsWith('data:')) continue;
-      const payload = line.slice(5).trim();
-      if (!payload || payload === '[DONE]') continue;
-      try {
-        const parsed = JSON.parse(payload) as {
-          choices?: Array<{ delta?: { content?: string } }>;
-          error?: { message?: string };
-        };
-        if (parsed.error?.message) {
-          throw new Error(parsed.error.message);
+      if (!resp.ok || !resp.body) {
+        const errText = await resp.text().catch(() => '');
+        lastErrorMsg = extractReadableApiError(errText, resp.status);
+        // Stop retrying if authentication itself is rejected (401/403)
+        if (resp.status === 401 || resp.status === 403 || i === GROQ_CHAT_MODELS.length - 1) {
+          throw new Error(lastErrorMsg);
         }
-        const delta = parsed.choices?.[0]?.delta?.content;
-        if (delta) {
-          accumulated += delta;
-          params.onChunk(delta);
-        }
-      } catch (e) {
-        if (e instanceof Error && e.message && !e.message.includes('JSON')) {
-          throw e;
+        continue;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let accumulated = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === '[DONE]') continue;
+          try {
+            const parsed = JSON.parse(payload) as {
+              choices?: Array<{ delta?: { content?: string } }>;
+              error?: { message?: string };
+            };
+            if (parsed.error?.message) {
+              throw new Error(parsed.error.message);
+            }
+            const delta = parsed.choices?.[0]?.delta?.content;
+            if (delta) {
+              emittedAnyChunk = true;
+              accumulated += delta;
+              params.onChunk(delta);
+            }
+          } catch (e) {
+            if (e instanceof Error && e.message && !e.message.includes('JSON')) {
+              throw e;
+            }
+          }
         }
       }
+
+      return accumulated;
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        throw err;
+      }
+      lastErrorMsg = err instanceof Error ? err.message : lastErrorMsg;
+      if (!emittedAnyChunk && i < GROQ_CHAT_MODELS.length - 1) {
+        continue;
+      }
+      throw new Error(lastErrorMsg);
     }
   }
 
-  return accumulated;
+  throw new Error(lastErrorMsg);
 }
 
 async function streamFromGeminiDirect(params: {
@@ -660,50 +692,75 @@ export async function generateArtworkUnified(params: {
   ].join('\n');
 
   if (resolved.provider === 'groq') {
-    const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${resolved.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
-        messages: [{ role: 'user', content: artPrompt }],
-        response_format: { type: 'json_object' },
-        temperature: 0.7,
-      }),
-    });
+    let lastArtErr = 'Unable to synthesize artwork SVG right now.';
+    for (let i = 0; i < GROQ_CHAT_MODELS.length; i++) {
+      const modelName = GROQ_CHAT_MODELS[i];
+      try {
+        const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${resolved.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: modelName,
+            messages: [{ role: 'user', content: artPrompt }],
+            response_format: { type: 'json_object' },
+            temperature: 0.7,
+          }),
+        });
 
-    if (!resp.ok) {
-      const errText = await resp.text().catch(() => '');
-      throw new Error(extractReadableApiError(errText, resp.status));
+        if (!resp.ok) {
+          const errText = await resp.text().catch(() => '');
+          lastArtErr = extractReadableApiError(errText, resp.status);
+          if (resp.status === 401 || resp.status === 403 || i === GROQ_CHAT_MODELS.length - 1) {
+            throw new Error(lastArtErr);
+          }
+          continue;
+        }
+
+        const data = (await resp.json()) as {
+          choices?: Array<{ message?: { content?: string } }>;
+        };
+        const rawJson = data.choices?.[0]?.message?.content ?? '{}';
+        const firstBrace = rawJson.indexOf('{');
+        const lastBrace = rawJson.lastIndexOf('}');
+        const jsonCandidate =
+          firstBrace >= 0 && lastBrace > firstBrace
+            ? rawJson.slice(firstBrace, lastBrace + 1)
+            : rawJson;
+        const parsed = JSON.parse(jsonCandidate) as {
+          title?: string;
+          description?: string;
+          svgCode?: string;
+        };
+        if (!parsed.svgCode || !parsed.svgCode.includes('<svg')) {
+          lastArtErr = 'Unable to synthesize artwork SVG. Please try a different prompt.';
+          if (i < GROQ_CHAT_MODELS.length - 1) continue;
+          throw new Error(lastArtErr);
+        }
+        const cleanSvg = parsed.svgCode
+          .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')
+          .replace(/\son\w+="[^"]*"/gi, '');
+
+        return {
+          title: parsed.title || 'Generated Artwork',
+          description: parsed.description || cleanPrompt,
+          svgCode: cleanSvg,
+          provider: 'svg',
+          aspectRatio: params.aspectRatio,
+          width: dims.w,
+          height: dims.h,
+        };
+      } catch (err) {
+        lastArtErr = err instanceof Error ? err.message : lastArtErr;
+        if (i < GROQ_CHAT_MODELS.length - 1) {
+          continue;
+        }
+        throw new Error(lastArtErr);
+      }
     }
-
-    const data = (await resp.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const rawJson = data.choices?.[0]?.message?.content ?? '{}';
-    const parsed = JSON.parse(rawJson) as {
-      title?: string;
-      description?: string;
-      svgCode?: string;
-    };
-    if (!parsed.svgCode || !parsed.svgCode.includes('<svg')) {
-      throw new Error('Unable to synthesize artwork SVG. Please try a different prompt.');
-    }
-    const cleanSvg = parsed.svgCode
-      .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')
-      .replace(/\son\w+="[^"]*"/gi, '');
-
-    return {
-      title: parsed.title || 'Generated Artwork',
-      description: parsed.description || cleanPrompt,
-      svgCode: cleanSvg,
-      provider: 'svg',
-      aspectRatio: params.aspectRatio,
-      width: dims.w,
-      height: dims.h,
-    };
+    throw new Error(lastArtErr);
   }
 
   // Try backend first if available

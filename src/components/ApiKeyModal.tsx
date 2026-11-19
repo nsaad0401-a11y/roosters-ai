@@ -59,7 +59,7 @@ export function ApiKeyModal({
     setErrorMsg('');
     setSavedNotice(
       provider === 'groq'
-        ? 'Groq API key saved! Chats & coding will stream via Llama 3.3 70B.'
+        ? 'Groq API key saved! Chats & coding will stream via Llama 3.1 8B Instant.'
         : 'Google Gemini API key saved! Ready for fast streaming & vision.'
     );
     onSaved();
@@ -165,7 +165,7 @@ export function ApiKeyModal({
             <div className="text-[11.5px] mt-1" style={{ color: theme.textMuted }}>
               Starts with <code className="font-mono font-semibold">gsk_...</code>
               <br />
-              Ultra-fast streaming via Llama 3.3 70B Versatile.
+              Ultra-fast streaming via Llama 3.1 8B Instant.
             </div>
             <a
               href="https://console.groq.com/keys"
@@ -235,7 +235,7 @@ export function ApiKeyModal({
 
             {detected === 'groq' && (
               <span className="font-semibold" style={{ color: theme.accentPrimary }}>
-                Detected: Groq (Llama 3.3 70B)
+                Detected: Groq (Llama 3.1 8B Instant)
               </span>
             )}
             {detected === 'gemini' && (
