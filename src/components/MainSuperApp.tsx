@@ -8,7 +8,6 @@ import {
   FileCode,
   FileText,
   Globe,
-  KeyRound,
   Loader2,
   LogOut,
   Mic,
@@ -33,7 +32,7 @@ import { ActiveUser, ChatMessage, ChatSession, MessageAttachment } from '../type
 import {
   generateArtworkUnified,
   getEnvGeminiKey,
-  MissingApiKeyError,
+  getEnvGroqKey,
   resolveActiveProvider,
   streamChatCompletion,
 } from '../utils/aiClient';
@@ -210,7 +209,6 @@ interface ChatMessageRowProps {
   isTtsPlaying: boolean;
   onCopy: (msg: ChatMessage) => void;
   onListen: (msg: ChatMessage) => void;
-  onOpenApiKeyModal: () => void;
 }
 
 const ChatMessageRow = memo(function ChatMessageRow({
@@ -221,7 +219,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
   isTtsPlaying,
   onCopy,
   onListen,
-  onOpenApiKeyModal,
 }: ChatMessageRowProps) {
   if (msg.role === 'user') {
     return (
@@ -294,25 +291,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
         </div>
 
         {msg.isError ? (
-          <div className="space-y-3">
-            <p className="text-[14px]" style={{ color: msg.isMissingKeyPrompt ? theme.textPrimary : '#ff4d4d' }}>
-              {msg.content}
-            </p>
-            {msg.isMissingKeyPrompt && (
-              <button
-                type="button"
-                onClick={onOpenApiKeyModal}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-[13px] cursor-pointer transition-all hover:brightness-110"
-                style={{
-                  backgroundImage: theme.sendButtonGradient,
-                  color: theme.sendButtonText,
-                }}
-              >
-                <KeyRound className="w-4 h-4" />
-                <span>Enter Free Gemini or Groq API Key</span>
-              </button>
-            )}
-          </div>
+          <p className="text-[14px] text-[#ff4d4d]">{msg.content}</p>
         ) : msg.content ? (
           <MarkdownRenderer content={msg.content} isLight={theme.isLight} />
         ) : (
@@ -419,10 +398,9 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
   const [legalPage, setLegalPage] = useState<LegalPageId | null>(null);
 
-  // Host capability & provider state (works on both Express backend & static Vercel builds)
+  // Host capability state (works on both Express backend & static Vercel builds)
   const [hasBackendApi, setHasBackendApi] = useState(false);
   const [hasServerGeminiKey, setHasServerGeminiKey] = useState(false);
-  const [apiKeyRevision, setApiKeyRevision] = useState(0);
 
   // Copy & TTS states
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
@@ -448,12 +426,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const visitorClientIdRef = useRef<string>(createId('visitor'));
 
   const theme = APP_THEMES[themeSettings.themeId] ?? APP_THEMES['gold-cyan'];
-  const activeProvider = useMemo(
-    () => resolveActiveProvider(hasServerGeminiKey),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [hasServerGeminiKey, apiKeyRevision]
-  );
-  const hasEnvGeminiKey = Boolean(getEnvGeminiKey());
+  const hasEnvKey = Boolean(getEnvGeminiKey() || getEnvGroqKey());
 
   const handleUpdateThemeSettings = (next: ThemeSettings) => {
     setThemeSettings(next);
@@ -675,31 +648,6 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     };
 
     const nextMessages = [...messages, userMessage];
-
-    // If no key is available anywhere, politely prompt the user to enter one via the API Key button
-    const currentProvider = resolveActiveProvider(hasServerGeminiKey);
-    if (currentProvider.provider === 'none') {
-      const missingKeyErr = new MissingApiKeyError();
-      const promptMessages: ChatMessage[] = [
-        ...nextMessages,
-        {
-          id: assistantId,
-          role: 'assistant',
-          content: missingKeyErr.message,
-          createdAt: Date.now(),
-          isError: true,
-          isMissingKeyPrompt: true,
-        },
-      ];
-      setMessages(promptMessages);
-      syncMessagesToSession(promptMessages);
-      if (!overrideText) {
-        setInputValue('');
-        setPendingAttachment(null);
-      }
-      return;
-    }
-
     const currentSessionId = syncMessagesToSession(nextMessages);
     setMessages([...nextMessages, placeholderAssistant]);
 
@@ -773,7 +721,6 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       if ((err as Error).name === 'AbortError') {
         return;
       }
-      const isMissingKey = err instanceof MissingApiKeyError;
       const errMessage = err instanceof Error ? err.message : 'Unable to reach Roosters AI right now.';
       const failedMessages: ChatMessage[] = [
         ...nextMessages,
@@ -783,7 +730,6 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
           content: errMessage,
           createdAt: Date.now(),
           isError: true,
-          isMissingKeyPrompt: isMissingKey,
         },
       ];
       setMessages(failedMessages);
@@ -1086,14 +1032,12 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       syncMessagesToSession(finalMessages, currentSessionId);
       setIsImageModalOpen(false);
     } catch (err) {
-      const isMissingKey = err instanceof MissingApiKeyError;
       const errMsg: ChatMessage = {
         id: createId('msg'),
         role: 'assistant',
         content: err instanceof Error ? err.message : 'Unable to generate artwork.',
         createdAt: Date.now(),
         isError: true,
-        isMissingKeyPrompt: isMissingKey,
       };
       const finalMessages = [...nextMessages, errMsg];
       setMessages(finalMessages);
@@ -1373,33 +1317,6 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                 ))}
               </select>
             </div>
-
-            {/* API Key Settings Button */}
-            <button
-              type="button"
-              onClick={() => setIsApiKeyModalOpen(true)}
-              title="Configure Gemini (AIza...) or free Groq (gsk_...) API Key"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[12.5px] font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              style={{
-                backgroundColor: activeProvider.provider === 'none' ? `${theme.accentPrimary}18` : theme.cardBg,
-                borderColor:
-                  activeProvider.provider === 'none'
-                    ? theme.accentPrimary
-                    : activeProvider.source === 'local'
-                      ? theme.accentSecondary
-                      : theme.borderColor,
-                color: activeProvider.provider === 'none' ? theme.accentPrimary : theme.textPrimary,
-              }}
-            >
-              <span>
-                🔑 API Key
-                {activeProvider.provider === 'groq'
-                  ? ' (Groq)'
-                  : activeProvider.source === 'local'
-                    ? ' (Saved)'
-                    : ''}
-              </span>
-            </button>
 
             {/* Theme & Wallpaper Button */}
             <button
@@ -1705,34 +1622,6 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     Your polite, encouraging Study Tutor and AI workspace. Ask questions step-by-step, start a hands-free Live Talk call, paste notes into Text Reader, or customize your theme.
                   </p>
 
-                  {activeProvider.provider === 'none' && (
-                    <div
-                      className="mt-5 max-w-lg w-full rounded-xl border px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-left"
-                      style={{
-                        backgroundColor: theme.cardBg,
-                        borderColor: theme.accentPrimary,
-                      }}
-                    >
-                      <div className="text-[12.5px]" style={{ color: theme.textPrimary }}>
-                        <span className="font-bold" style={{ color: theme.accentPrimary }}>
-                          Quick Setup:
-                        </span>{' '}
-                        Click <strong>🔑 API Key</strong> at the top to enter a free Gemini or Groq key.
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setIsApiKeyModalOpen(true)}
-                        className="px-3.5 py-1.5 rounded-lg font-bold text-[12px] cursor-pointer shrink-0"
-                        style={{
-                          backgroundImage: theme.sendButtonGradient,
-                          color: theme.sendButtonText,
-                        }}
-                      >
-                        Enter Key Now
-                      </button>
-                    </div>
-                  )}
-
                   <div className="mt-8 grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-2xl text-left">
                     {QUICK_PROMPTS.map((item) => (
                       <button
@@ -1769,7 +1658,6 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     isTtsPlaying={ttsPlayingId === msg.id}
                     onCopy={handleCopyCallback}
                     onListen={handleListenCallback}
-                    onOpenApiKeyModal={() => setIsApiKeyModalOpen(true)}
                   />
                 ))
               )}
@@ -2026,7 +1914,12 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
               </div>
 
               <div className="mt-1.5 border-t pt-1.5" style={{ borderColor: theme.borderColor }}>
-                <LegalFooter compact theme={theme} onOpenPage={setLegalPage} />
+                <LegalFooter
+                  compact
+                  theme={theme}
+                  onOpenPage={setLegalPage}
+                  onOpenOwnerSettings={() => setIsApiKeyModalOpen(true)}
+                />
               </div>
             </div>
           </div>
@@ -2054,7 +1947,6 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         userName={user.fullName}
         hasBackendApi={hasBackendApi}
         hasServerGeminiKey={hasServerGeminiKey}
-        onOpenApiKeyModal={() => setIsApiKeyModalOpen(true)}
         onClose={handleCloseLiveTalk}
       />
 
@@ -2069,9 +1961,8 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         isOpen={isApiKeyModalOpen}
         theme={theme}
         hasServerGeminiKey={hasServerGeminiKey}
-        hasEnvGeminiKey={hasEnvGeminiKey}
+        hasEnvGeminiKey={hasEnvKey}
         onSaved={() => {
-          setApiKeyRevision((r) => r + 1);
           setNotice('');
         }}
         onClose={() => setIsApiKeyModalOpen(false)}

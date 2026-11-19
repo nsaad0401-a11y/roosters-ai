@@ -302,7 +302,7 @@ export function LiveTalkModal({
         streamFinishedRef.current = true;
         const fallbackMsg =
           err instanceof MissingApiKeyError
-            ? 'Please click the API Key button in the top header to enter a free Gemini or Groq key first.'
+            ? 'Voice service is momentarily unavailable. Please try again shortly.'
             : err instanceof Error
               ? err.message
               : 'I had a brief connection hiccup. Please feel free to ask me again.';

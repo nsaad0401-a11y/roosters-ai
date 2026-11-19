@@ -105,10 +105,10 @@ export function ApiKeyModal({
             </div>
             <div>
               <h2 id="apikey-modal-title" className="font-display text-[18px] font-bold">
-                API Key Settings
+                Owner Settings (API Provider)
               </h2>
               <p className="text-[12.5px]" style={{ color: theme.textMuted }}>
-                Works instantly on Vercel, mobile browsers &amp; desktop
+                Optional browser override when environment variables are not set
               </p>
             </div>
           </div>

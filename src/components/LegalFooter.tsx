@@ -5,12 +5,14 @@ interface LegalFooterProps {
   theme?: AppTheme;
   compact?: boolean;
   onOpenPage: (page: LegalPageId) => void;
+  onOpenOwnerSettings?: () => void;
 }
 
 export function LegalFooter({
   theme = APP_THEMES['gold-cyan'],
   compact = false,
   onOpenPage,
+  onOpenOwnerSettings,
 }: LegalFooterProps) {
   return (
     <footer
@@ -54,6 +56,16 @@ export function LegalFooter({
         >
           Contact Us
         </button>
+        {onOpenOwnerSettings && (
+          <button
+            type="button"
+            onClick={onOpenOwnerSettings}
+            className="hover:underline cursor-pointer transition-colors opacity-75 hover:opacity-100"
+            style={{ color: theme.textMuted }}
+          >
+            Owner Settings
+          </button>
+        )}
       </nav>
     </footer>
   );

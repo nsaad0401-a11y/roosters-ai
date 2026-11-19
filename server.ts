@@ -23,8 +23,12 @@ const FAST_CHAT_MODELS: ModelCandidate[] = [
   { model: 'gemini-4-hydrogen', thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
 ];
 
+function getServerDefaultGeminiKey(): string {
+  return (process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '').trim();
+}
+
 function getAiClient(customApiKey?: string) {
-  const apiKey = (customApiKey || process.env.GEMINI_API_KEY || '').trim();
+  const apiKey = (customApiKey || getServerDefaultGeminiKey()).trim();
   if (!apiKey) {
     throw new Error('MISSING_API_KEY');
   }
@@ -85,10 +89,10 @@ function formatGeminiError(err: unknown): { status: number; message: string; cod
 
   if (lower.includes('missing_api_key') || lower.includes('gemini_api_key is not configured')) {
     return {
-      status: 400,
+      status: 503,
       code: 'MISSING_API_KEY',
       message:
-        'Welcome! Please click the "🔑 API Key" button in the top header to enter a free Google Gemini key (AIza...) or free Groq key (gsk_...).',
+        'Roosters AI is momentarily connecting to its AI engine. Please try again in a few moments.',
     };
   }
   if (
@@ -99,7 +103,7 @@ function formatGeminiError(err: unknown): { status: number; message: string; cod
   ) {
     return {
       status: 401,
-      message: 'We could not verify that API key. Please check your key in the "🔑 API Key" button at the top.',
+      message: 'Unable to authenticate with the AI service right now. Please try again shortly.',
     };
   }
   if (lower.includes('503') || lower.includes('unavailable') || lower.includes('high demand') || lower.includes('overloaded')) {
@@ -268,7 +272,7 @@ async function startServer() {
       ok: true,
       service: 'Roosters AI by SandSoft',
       version: '2.0',
-      hasServerGeminiKey: Boolean(process.env.GEMINI_API_KEY),
+      hasServerGeminiKey: Boolean(getServerDefaultGeminiKey()),
     });
   });
 
@@ -301,7 +305,7 @@ async function startServer() {
         return;
       }
 
-      if (!apiKey?.trim() && !process.env.GEMINI_API_KEY) {
+      if (!apiKey?.trim() && !getServerDefaultGeminiKey()) {
         const missing = formatGeminiError(new Error('MISSING_API_KEY'));
         res.status(missing.status).json({ error: missing.message, code: missing.code });
         return;
@@ -346,7 +350,7 @@ async function startServer() {
         return;
       }
 
-      if (!apiKey?.trim() && !process.env.GEMINI_API_KEY) {
+      if (!apiKey?.trim() && !getServerDefaultGeminiKey()) {
         const missing = formatGeminiError(new Error('MISSING_API_KEY'));
         res.status(missing.status).json({ error: missing.message, code: missing.code });
         return;

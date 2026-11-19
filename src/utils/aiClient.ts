@@ -17,7 +17,7 @@ export interface OutgoingMessage {
 export class MissingApiKeyError extends Error {
   constructor() {
     super(
-      'Welcome! To start chatting, please click the "🔑 API Key" button in the top header to enter a free Google Gemini key (AIza...) or free Groq key (gsk_...).'
+      'Roosters AI is momentarily connecting to its AI engine. Please try again in a few moments.'
     );
     this.name = 'MissingApiKeyError';
   }
@@ -28,6 +28,15 @@ export interface ResolvedProvider {
   apiKey: string;
   source: 'local' | 'env' | 'server' | 'none';
   label: string;
+}
+
+export function getEnvGroqKey(): string {
+  try {
+    const metaEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
+    return (metaEnv?.VITE_GROQ_API_KEY || '').trim();
+  } catch {
+    return '';
+  }
 }
 
 export function getEnvGeminiKey(): string {
@@ -55,18 +64,28 @@ export function resolveActiveProvider(hasServerGeminiKey: boolean): ResolvedProv
         provider: 'gemini',
         apiKey: localKey,
         source: 'local',
-        label: 'Gemini (Custom Key)',
+        label: 'Gemini (Owner Override)',
       };
     }
   }
 
-  const envKey = getEnvGeminiKey();
-  if (envKey) {
+  const envGroqKey = getEnvGroqKey();
+  if (envGroqKey && envGroqKey.startsWith('gsk_')) {
+    return {
+      provider: 'groq',
+      apiKey: envGroqKey,
+      source: 'env',
+      label: 'Groq (Built-In)',
+    };
+  }
+
+  const envGeminiKey = getEnvGeminiKey();
+  if (envGeminiKey) {
     return {
       provider: 'gemini',
-      apiKey: envKey,
+      apiKey: envGeminiKey,
       source: 'env',
-      label: 'Gemini (Env Key)',
+      label: 'Gemini (Built-In)',
     };
   }
 
@@ -83,7 +102,7 @@ export function resolveActiveProvider(hasServerGeminiKey: boolean): ResolvedProv
     provider: 'none',
     apiKey: '',
     source: 'none',
-    label: 'Key Required',
+    label: 'Unavailable',
   };
 }
 
@@ -145,15 +164,15 @@ function extractReadableApiError(rawBody: string, status: number): string {
     }
   }
   if (status === 401 || status === 403) {
-    return 'Your API key could not be verified. Please click "🔑 API Key" at the top to check or update your key.';
+    return 'Unable to authenticate with the AI service right now. Please try again shortly.';
   }
   if (status === 429) {
-    return 'Rate limit or quota reached temporarily. Please wait a few seconds or switch keys via "🔑 API Key".';
+    return 'AI traffic is busy right now. Please wait a few seconds and try again.';
   }
   if (status === 503) {
     return 'The AI service is momentarily busy. Please try sending your message again.';
   }
-  return 'I apologize, our AI service had a momentary connection issue. Please check your API key or try again.';
+  return 'I apologize, our AI service had a momentary connection issue. Please try again.';
 }
 
 async function streamFromGroq(params: {
