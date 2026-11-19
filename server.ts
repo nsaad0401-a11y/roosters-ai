@@ -143,10 +143,10 @@ function buildStudyTutorInstruction(options: {
   }
 
   return [
-    `You are Roosters AI by SandSoft${userName ? `, warmly assisting ${userName}` : ''}.`,
+    `You are Roosters AI v2.0 by SandSoft${userName ? `, warmly assisting ${userName}` : ''}.`,
     'Always be deeply polite, warm, respectful, and encouraging like a patient master teacher.',
     'For study topics: explain in clear numbered steps with simple examples, crisp study notes, and 1–2 helpful practice questions.',
-    'Format code in fenced markdown blocks with language tags. Analyze attached images/screens politely and thoroughly.',
+    'Format code in fenced markdown blocks with language tags. Analyze attached images, screens, study notes, or code files politely and thoroughly.',
     langRule,
   ].join(' ');
 }
@@ -155,15 +155,18 @@ interface IncomingHistoryItem {
   role: 'user' | 'assistant';
   content: string;
   attachment?: {
-    base64: string;
-    mimeType: string;
+    kind?: 'image' | 'file';
+    name?: string;
+    base64?: string;
+    mimeType?: string;
+    textContent?: string;
   };
 }
 
 function buildContents(messages: IncomingHistoryItem[]) {
   return messages.slice(-16).map((msg) => {
     const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
-    if (msg.attachment?.base64 && msg.attachment?.mimeType) {
+    if (msg.attachment?.base64 && msg.attachment?.mimeType && msg.attachment.kind !== 'file') {
       parts.push({
         inlineData: {
           mimeType: msg.attachment.mimeType,
@@ -171,9 +174,17 @@ function buildContents(messages: IncomingHistoryItem[]) {
         },
       });
     }
-    parts.push({
-      text: msg.content?.trim() || (msg.attachment ? 'Please analyze this image kindly.' : ''),
-    });
+    let textPayload = msg.content?.trim() || '';
+    if (msg.attachment?.kind === 'file' && msg.attachment.textContent) {
+      const fileLabel = msg.attachment.name || 'study-file.txt';
+      const fileSection = `[Uploaded File: ${fileLabel}]\n\`\`\`\n${msg.attachment.textContent.slice(0, 60000)}\n\`\`\``;
+      textPayload = textPayload
+        ? `${textPayload}\n\n${fileSection}`
+        : `Please kindly review, summarize, or debug this uploaded file:\n\n${fileSection}`;
+    } else if (!textPayload && msg.attachment) {
+      textPayload = 'Please analyze this attachment kindly.';
+    }
+    parts.push({ text: textPayload });
     return {
       role: msg.role === 'assistant' ? 'model' : 'user',
       parts,
@@ -245,8 +256,24 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '25mb' }));
 
+  const activeVisitors = new Map<string, number>();
+
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, service: 'Roosters AI by SandSoft' });
+    res.json({ ok: true, service: 'Roosters AI by SandSoft', version: '2.0' });
+  });
+
+  app.post('/api/visitors/heartbeat', (req, res) => {
+    const clientId = typeof req.body?.clientId === 'string' && req.body.clientId
+      ? req.body.clientId.slice(0, 64)
+      : 'anon';
+    const now = Date.now();
+    activeVisitors.set(clientId, now);
+    for (const [id, lastSeen] of activeVisitors.entries()) {
+      if (now - lastSeen > 45_000) {
+        activeVisitors.delete(id);
+      }
+    }
+    res.json({ activeClients: activeVisitors.size });
   });
 
   // Real-Time Streaming Multimodal Chat Endpoint (SSE)

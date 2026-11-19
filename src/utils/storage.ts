@@ -118,6 +118,10 @@ export function saveUserChats(userId: string, sessions: ChatSession[]): void {
             ...msg.attachment,
             base64: '',
             dataUrl: msg.attachment.dataUrl.length < 180000 ? msg.attachment.dataUrl : '',
+            textContent:
+              typeof msg.attachment.textContent === 'string' && msg.attachment.textContent.length > 25000
+                ? msg.attachment.textContent.slice(0, 25000)
+                : msg.attachment.textContent,
           }
         : undefined,
     })),

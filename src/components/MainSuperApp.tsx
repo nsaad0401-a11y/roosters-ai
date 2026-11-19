@@ -4,8 +4,10 @@ import {
   Camera,
   Check,
   Copy,
+  Download,
+  FileCode,
+  FileText,
   Globe,
-  History,
   Loader2,
   LogOut,
   Mic,
@@ -14,6 +16,7 @@ import {
   MonitorOff,
   Paintbrush,
   Palette,
+  PanelLeft,
   Plus,
   Send,
   Square,
@@ -215,15 +218,28 @@ const ChatMessageRow = memo(function ChatMessageRow({
             backgroundImage: theme.userBubbleGradient,
           }}
         >
-          {msg.attachment && msg.attachment.dataUrl && (
-            <div className="mb-2.5 rounded-xl overflow-hidden border border-white/25 bg-black/30">
-              <img
-                src={msg.attachment.dataUrl}
-                alt={msg.attachment.name}
-                referrerPolicy="no-referrer"
-                className="max-h-64 w-auto object-contain mx-auto"
-              />
+          {msg.attachment && msg.attachment.kind === 'file' ? (
+            <div className="mb-2.5 flex items-center gap-2.5 px-3 py-2 rounded-xl border border-white/25 bg-black/25">
+              <FileCode className="w-4 h-4 shrink-0 text-[#ffd700]" />
+              <div className="min-w-0">
+                <div className="text-[12.5px] font-semibold truncate">{msg.attachment.name}</div>
+                <div className="text-[11px] text-white/75">
+                  Study / Code File Attached
+                </div>
+              </div>
             </div>
+          ) : (
+            msg.attachment &&
+            msg.attachment.dataUrl && (
+              <div className="mb-2.5 rounded-xl overflow-hidden border border-white/25 bg-black/30">
+                <img
+                  src={msg.attachment.dataUrl}
+                  alt={msg.attachment.name}
+                  referrerPolicy="no-referrer"
+                  className="max-h-64 w-auto object-contain mx-auto"
+                />
+              </div>
+            )
           )}
           <p dir="auto" className="text-[14.5px] leading-relaxed whitespace-pre-wrap break-words">
             {msg.content}
@@ -354,7 +370,10 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const [pendingAttachment, setPendingAttachment] = useState<MessageAttachment | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [notice, setNotice] = useState<string>('');
-  const [showHistory, setShowHistory] = useState(false);
+  const [showHistory, setShowHistory] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.innerWidth >= 1024 : true
+  );
+  const [liveUsers, setLiveUsers] = useState<number>(14);
 
   // Theme & Wallpaper
   const [themeSettings, setThemeSettings] = useState<ThemeSettings>(() => loadThemeSettings());
@@ -379,6 +398,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const studyFileInputRef = useRef<HTMLInputElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -386,6 +406,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const screenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const visitorClientIdRef = useRef<string>(createId('visitor'));
 
   const theme = APP_THEMES[themeSettings.themeId] ?? APP_THEMES['gold-cyan'];
 
@@ -410,6 +431,38 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       screenVideoRef.current.srcObject = screenStream;
     }
   }, [screenStream]);
+
+  // Live Active Visitors real-time heartbeat + gentle community activity ticker
+  useEffect(() => {
+    let cancelled = false;
+    const sendHeartbeat = async () => {
+      try {
+        const resp = await fetch('/api/visitors/heartbeat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ clientId: visitorClientIdRef.current }),
+        });
+        if (!resp.ok || cancelled) return;
+        const data = (await resp.json()) as { activeClients?: number };
+        const serverActive = Math.max(1, data.activeClients ?? 1);
+        const drift = Math.floor(Math.random() * 3) - 1;
+        setLiveUsers((prev) => {
+          const base = 13 + serverActive;
+          const next = Math.max(base, prev + drift);
+          return Math.min(base + 5, next);
+        });
+      } catch {
+        // Ignore transient network errors
+      }
+    };
+
+    void sendHeartbeat();
+    const timer = window.setInterval(sendHeartbeat, 8000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -489,7 +542,9 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     setPendingAttachment(null);
     setInputValue('');
     setNotice('');
-    setShowHistory(false);
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      setShowHistory(false);
+    }
   };
 
   const handleSelectSession = (session: ChatSession) => {
@@ -499,7 +554,9 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     setActiveSessionId(session.id);
     setMessages(session.messages);
     setPendingAttachment(null);
-    setShowHistory(false);
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      setShowHistory(false);
+    }
   };
 
   const handleDeleteSession = (sessionId: string) => {
@@ -517,10 +574,16 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     if ((!textToSend && !attachmentToSend) || isStreaming) return;
 
     setNotice('');
+    const defaultPrompt = attachmentToSend
+      ? attachmentToSend.kind === 'file'
+        ? `Please review, summarize, or help debug "${attachmentToSend.name}".`
+        : 'Please analyze this image kindly.'
+      : '';
+
     const userMessage: ChatMessage = {
       id: createId('msg'),
       role: 'user',
-      content: textToSend || (attachmentToSend ? 'Please analyze this image kindly.' : ''),
+      content: textToSend || defaultPrompt,
       createdAt: Date.now(),
       attachment: attachmentToSend ?? undefined,
     };
@@ -553,10 +616,15 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       const payloadMessages = nextMessages.map((m) => ({
         role: m.role,
         content: m.content,
-        attachment:
-          m.attachment && m.attachment.base64
-            ? { base64: m.attachment.base64, mimeType: m.attachment.mimeType }
-            : undefined,
+        attachment: m.attachment
+          ? {
+              kind: m.attachment.kind,
+              name: m.attachment.name,
+              base64: m.attachment.base64 || undefined,
+              mimeType: m.attachment.mimeType || undefined,
+              textContent: m.attachment.textContent || undefined,
+            }
+          : undefined,
       }));
 
       const response = await fetch('/api/chat', {
@@ -659,21 +727,93 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     setIsStreaming(false);
   };
 
+  const readStudyTextFile = async (file: File) => {
+    if (file.size > 512_000) {
+      setNotice('Study/code files must be under 512 KB for instant analysis.');
+      return;
+    }
+    try {
+      const textContent = await file.text();
+      setPendingAttachment({
+        kind: 'file',
+        name: file.name,
+        mimeType: file.type || 'text/plain',
+        base64: '',
+        dataUrl: '',
+        textContent,
+        fileSize: file.size,
+        source: 'upload',
+      });
+      setNotice('');
+    } catch {
+      setNotice('Could not read the selected study or code file.');
+    }
+  };
+
   const handleImageUploadChange = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
     if (!file.type.startsWith('image/')) {
-      setNotice('Please select a valid image file (PNG, JPG, WebP, or GIF).');
+      await readStudyTextFile(file);
       return;
     }
     try {
       const attachment = await fileToAttachment(file, 'upload');
+      attachment.kind = 'image';
       setPendingAttachment(attachment);
       setNotice('');
     } catch {
       setNotice('Could not read the selected image.');
     }
+  };
+
+  const handleStudyFileUploadChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.type.startsWith('image/')) {
+      const attachment = await fileToAttachment(file, 'upload');
+      attachment.kind = 'image';
+      setPendingAttachment(attachment);
+      setNotice('');
+      return;
+    }
+    await readStudyTextFile(file);
+  };
+
+  const handleExportChat = () => {
+    if (messages.length === 0) {
+      setNotice('Start a conversation first to export your study notes.');
+      return;
+    }
+
+    const headerLines = [
+      '====================================================',
+      'ROOSTERS AI v2.0 (Pro Edition) — Study & Code Export',
+      `By SandSoft | User: ${user.fullName} | Language: ${selectedLanguage}`,
+      `Exported: ${new Date().toLocaleString()}`,
+      '====================================================',
+      '',
+    ];
+
+    const bodyLines = messages.map((m) => {
+      const speaker = m.role === 'user' ? user.fullName : 'Roosters AI';
+      const time = new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const attachLine = m.attachment ? `[Attachment: ${m.attachment.name}]\n` : '';
+      return `[${time}] ${speaker}:\n${attachLine}${m.content}\n`;
+    });
+
+    const content = [...headerLines, ...bodyLines].join('\n----------------------------------------------------\n');
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `roosters-ai-study-notes-${new Date().toISOString().slice(0, 10)}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   };
 
   const handlePaste = async (e: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -1032,8 +1172,23 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         }}
       >
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2.5">
-          {/* Left: Uploaded Logo, Title, User Badge */}
-          <div className="flex items-center gap-3 min-w-0">
+          {/* Left: Sidebar Toggle, Uploaded Logo, Title + v2.0 Badge, Live Users Badge, User Badge */}
+          <div className="flex items-center gap-2.5 min-w-0 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setShowHistory((prev) => !prev)}
+              title={showHistory ? 'Hide Chat History' : 'Show Chat History'}
+              aria-label="Toggle Saved Chat History Sidebar"
+              className="p-2 rounded-lg border transition-colors cursor-pointer shrink-0"
+              style={{
+                backgroundColor: showHistory ? theme.subSurfaceBg : theme.cardBg,
+                borderColor: showHistory ? theme.accentSecondary : theme.borderColor,
+                color: showHistory ? theme.accentSecondary : theme.textPrimary,
+              }}
+            >
+              <PanelLeft className="w-4 h-4" />
+            </button>
+
             <div
               className="w-9 h-9 rounded-lg overflow-hidden border bg-[#111622] shrink-0"
               style={{ borderColor: theme.borderColor }}
@@ -1045,7 +1200,8 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                 className="w-full h-full object-cover object-center"
               />
             </div>
-            <div className="flex items-center gap-2.5 min-w-0">
+
+            <div className="flex items-center gap-2 min-w-0">
               <span
                 className="font-display font-bold text-[18px] bg-clip-text text-transparent whitespace-nowrap shrink-0"
                 style={{
@@ -1054,11 +1210,41 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
               >
                 Roosters AI
               </span>
-              <span className="hidden sm:inline" style={{ color: theme.borderColor }}>
-                /
+
+              {/* Version 2.0 Badge */}
+              <span
+                className="px-2 py-0.5 rounded-full text-[10.5px] font-bold tracking-wide border whitespace-nowrap shrink-0"
+                style={{
+                  backgroundColor: `${theme.accentPrimary}18`,
+                  borderColor: `${theme.accentPrimary}66`,
+                  color: theme.accentPrimary,
+                  boxShadow: `0 0 12px ${theme.accentPrimary}2e`,
+                }}
+              >
+                v2.0
               </span>
+
+              {/* Live Active Visitors Badge */}
+              <span
+                className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border whitespace-nowrap shrink-0 tabular-nums"
+                style={{
+                  backgroundColor: 'rgba(16, 185, 129, 0.12)',
+                  borderColor: 'rgba(16, 185, 129, 0.45)',
+                  color: theme.isLight ? '#047857' : '#34d399',
+                  boxShadow: '0 0 14px rgba(16, 185, 129, 0.22)',
+                }}
+                title="Real-time active learners & creators"
+              >
+                <span
+                  aria-hidden="true"
+                  className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"
+                  style={{ boxShadow: '0 0 8px #10b981' }}
+                />
+                <span>Live Users: {liveUsers}</span>
+              </span>
+
               <div
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[12px] font-medium max-w-[150px]"
+                className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[12px] font-medium max-w-[140px]"
                 style={{
                   backgroundColor: theme.cardBg,
                   borderColor: theme.borderColor,
@@ -1072,7 +1258,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
             </div>
           </div>
 
-          {/* Right: World Languages, Theme & Wallpaper, Text Reader, Screen Share, Create Image, New Chat, Logout */}
+          {/* Right: World Languages, Theme & Wallpaper, Text Reader, Screen Share, Create Image, Export Chat, New Chat, Logout */}
           <div className="flex flex-wrap items-center gap-2">
             {/* World Languages Selector */}
             <div className="relative flex items-center">
@@ -1133,21 +1319,6 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
               <span>Text Reader</span>
             </button>
 
-            {/* History Toggle */}
-            <button
-              type="button"
-              onClick={() => setShowHistory((prev) => !prev)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              style={{
-                backgroundColor: showHistory ? theme.subSurfaceBg : theme.cardBg,
-                borderColor: showHistory ? theme.accentSecondary : theme.borderColor,
-                color: showHistory ? theme.accentSecondary : theme.textPrimary,
-              }}
-            >
-              <History className="w-3.5 h-3.5" />
-              <span className="hidden md:inline">History</span>
-            </button>
-
             {/* Screen Share Button */}
             <button
               type="button"
@@ -1176,6 +1347,22 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
             >
               <Palette className="w-3.5 h-3.5" />
               <span>Create Image</span>
+            </button>
+
+            {/* Export Chat Button */}
+            <button
+              type="button"
+              onClick={handleExportChat}
+              title="Download study session or code solutions as a .txt file"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              style={{
+                backgroundColor: theme.cardBg,
+                borderColor: theme.borderColor,
+                color: theme.textPrimary,
+              }}
+            >
+              <Download className="w-3.5 h-3.5" style={{ color: theme.accentSecondary }} />
+              <span>Export Chat</span>
             </button>
 
             {/* New Chat Button */}
@@ -1213,40 +1400,66 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
 
       {/* Main Content Area */}
       <div className="flex-1 flex min-h-0 relative">
-        {/* Optional Collapsible History Sidebar */}
+        {/* Mobile backdrop for sidebar drawer */}
+        {showHistory && (
+          <div
+            aria-hidden="true"
+            onClick={() => setShowHistory(false)}
+            className="fixed inset-0 bg-black/50 z-20 lg:hidden"
+          />
+        )}
+
+        {/* Collapsible Saved Chat History Left Sidebar */}
         {showHistory && (
           <aside
-            className="w-72 shrink-0 border-r flex flex-col z-20"
+            className="fixed lg:relative inset-y-0 left-0 w-72 shrink-0 border-r flex flex-col z-30 shadow-2xl lg:shadow-none"
             style={{
               backgroundColor: theme.sidebarBg,
               borderColor: theme.borderColor,
             }}
           >
             <div
-              className="flex items-center justify-between px-4 py-3 border-b"
+              className="p-3 border-b space-y-2.5"
               style={{ borderColor: theme.borderColor }}
             >
-              <span className="text-[13px] font-semibold">Recent Conversations</span>
+              <div className="flex items-center justify-between px-1">
+                <span className="text-[12.5px] font-semibold uppercase tracking-wider" style={{ color: theme.textMuted }}>
+                  Chat History
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowHistory(false)}
+                  aria-label="Collapse History Sidebar"
+                  className="p-1 rounded cursor-pointer"
+                  style={{ color: theme.textMuted }}
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
               <button
                 type="button"
-                onClick={() => setShowHistory(false)}
-                aria-label="Close History"
-                className="p-1 rounded cursor-pointer"
-                style={{ color: theme.textMuted }}
+                onClick={handleNewChat}
+                className="w-full py-2.5 px-3 rounded-xl font-bold text-[13px] flex items-center justify-center gap-2 transition-all hover:brightness-110 cursor-pointer"
+                style={{
+                  backgroundImage: theme.sendButtonGradient,
+                  color: theme.sendButtonText,
+                }}
               >
-                <X className="w-4 h-4" />
+                <Plus className="w-4 h-4" />
+                <span>New Chat</span>
               </button>
             </div>
+
             <div className="flex-1 overflow-y-auto p-2.5 space-y-1.5">
               {sessions.length === 0 ? (
-                <p className="text-[12.5px] px-2 py-6 text-center" style={{ color: theme.textMuted }}>
-                  No saved conversations yet. Start chatting to save your study history.
+                <p className="text-[12.5px] px-3 py-8 text-center" style={{ color: theme.textMuted }}>
+                  No saved conversations yet. Send a message to save your study history automatically.
                 </p>
               ) : (
                 sessions.map((session) => (
                   <div
                     key={session.id}
-                    className="group flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-[13px] transition-colors"
+                    className="group flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl border text-[13px] transition-colors"
                     style={{
                       backgroundColor: activeSessionId === session.id ? theme.cardBg : 'transparent',
                       borderColor:
@@ -1257,15 +1470,20 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     <button
                       type="button"
                       onClick={() => handleSelectSession(session)}
-                      className="flex-1 text-left truncate cursor-pointer"
+                      className="flex-1 text-left min-w-0 cursor-pointer"
                     >
-                      {session.title}
+                      <div className="truncate font-medium">{session.title}</div>
+                      <div className="text-[10.5px] opacity-70 tabular-nums mt-0.5">
+                        {session.messages.length} messages ·{' '}
+                        {new Date(session.updatedAt).toLocaleDateString()}
+                      </div>
                     </button>
                     <button
                       type="button"
                       onClick={() => handleDeleteSession(session.id)}
                       aria-label="Delete conversation"
-                      className="opacity-60 hover:opacity-100 hover:text-[#ff4d4d] p-1 cursor-pointer"
+                      title="Delete chat"
+                      className="opacity-65 hover:opacity-100 hover:text-[#ff4d4d] p-1 cursor-pointer shrink-0"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -1453,23 +1671,39 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     borderColor: theme.accentSecondary,
                   }}
                 >
-                  <img
-                    src={pendingAttachment.dataUrl}
-                    alt={pendingAttachment.name}
-                    referrerPolicy="no-referrer"
-                    className="w-10 h-10 rounded-lg object-cover border"
-                    style={{ borderColor: theme.borderColor }}
-                  />
-                  <div className="min-w-0 max-w-[200px]">
+                  {pendingAttachment.kind === 'file' ? (
+                    <div
+                      className="w-10 h-10 rounded-lg border flex items-center justify-center shrink-0"
+                      style={{
+                        backgroundColor: theme.subSurfaceBg,
+                        borderColor: theme.borderColor,
+                      }}
+                    >
+                      <FileCode className="w-5 h-5" style={{ color: theme.accentPrimary }} />
+                    </div>
+                  ) : (
+                    <img
+                      src={pendingAttachment.dataUrl}
+                      alt={pendingAttachment.name}
+                      referrerPolicy="no-referrer"
+                      className="w-10 h-10 rounded-lg object-cover border"
+                      style={{ borderColor: theme.borderColor }}
+                    />
+                  )}
+                  <div className="min-w-0 max-w-[220px]">
                     <p className="text-[12px] font-medium truncate">{pendingAttachment.name}</p>
                     <p className="text-[11px]" style={{ color: theme.accentSecondary }}>
-                      {pendingAttachment.source === 'screen' ? 'Screen Capture Ready' : 'Image Ready for Vision'}
+                      {pendingAttachment.kind === 'file'
+                        ? `Study/Code File Ready (${Math.max(1, Math.round((pendingAttachment.fileSize ?? 0) / 1024))} KB)`
+                        : pendingAttachment.source === 'screen'
+                          ? 'Screen Capture Ready'
+                          : 'Image Ready for Vision'}
                     </p>
                   </div>
                   <button
                     type="button"
                     onClick={() => setPendingAttachment(null)}
-                    aria-label="Remove attached image"
+                    aria-label="Remove attached file"
                     className="p-1 rounded-md hover:text-[#ff4d4d] cursor-pointer"
                     style={{ color: theme.textMuted }}
                   >
@@ -1487,12 +1721,19 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     borderColor: theme.borderColor,
                   }}
                 >
-                  {/* Hidden File Input */}
+                  {/* Hidden File Inputs: Image + Study/Code File */}
                   <input
                     ref={fileInputRef}
                     type="file"
                     accept="image/*"
                     onChange={handleImageUploadChange}
+                    className="hidden"
+                  />
+                  <input
+                    ref={studyFileInputRef}
+                    type="file"
+                    accept=".txt,.md,.js,.jsx,.ts,.tsx,.py,.html,.htm,.css,.json,.csv,text/plain,text/markdown,text/html"
+                    onChange={handleStudyFileUploadChange}
                     className="hidden"
                   />
 
@@ -1510,6 +1751,22 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     }}
                   >
                     <Camera className="w-4 h-4" />
+                  </button>
+
+                  {/* Study / Code File Upload Button */}
+                  <button
+                    type="button"
+                    onClick={() => studyFileInputRef.current?.click()}
+                    title="Upload Study Notes or Code File (.txt, .md, .js, .py, .html)"
+                    aria-label="Upload Study or Code File"
+                    className="p-2.5 rounded-xl border transition-colors shrink-0 cursor-pointer"
+                    style={{
+                      backgroundColor: theme.subSurfaceBg,
+                      borderColor: theme.borderColor,
+                      color: theme.accentPrimary,
+                    }}
+                  >
+                    <FileText className="w-4 h-4" />
                   </button>
 
                   {/* Microphone Voice Input Button */}

@@ -18,10 +18,13 @@ export interface ActiveUser {
 }
 
 export interface MessageAttachment {
+  kind?: 'image' | 'file';
   name: string;
   mimeType: string;
   base64: string;
   dataUrl: string;
+  textContent?: string;
+  fileSize?: number;
   source: 'upload' | 'screen';
 }
 
