@@ -190,3 +190,48 @@ export function saveCustomApiKey(rawKey: string): void {
   safeSetItem(CUSTOM_API_KEY_STORAGE, trimmed);
 }
 
+const VOICE_SETTINGS_KEY = 'roosters_ai_voice_v1';
+const DEFAULT_VOICE_SETTINGS: import('../types').VoiceStudioSettings = {
+  activeVoiceId: 'default',
+  clonedProfile: null,
+};
+let memoryVoiceSettings: import('../types').VoiceStudioSettings = DEFAULT_VOICE_SETTINGS;
+
+export function loadVoiceSettings(): import('../types').VoiceStudioSettings {
+  const raw = safeGetItem(VOICE_SETTINGS_KEY);
+  if (!raw) return memoryVoiceSettings;
+  try {
+    const parsed = JSON.parse(raw) as Partial<import('../types').VoiceStudioSettings>;
+    if (parsed && parsed.activeVoiceId) {
+      const merged: import('../types').VoiceStudioSettings = {
+        activeVoiceId: parsed.activeVoiceId,
+        clonedProfile: parsed.clonedProfile ?? null,
+      };
+      memoryVoiceSettings = merged;
+      return merged;
+    }
+  } catch {
+    // Ignore malformed JSON
+  }
+  return memoryVoiceSettings;
+}
+
+export function saveVoiceSettings(settings: import('../types').VoiceStudioSettings): void {
+  const compact: import('../types').VoiceStudioSettings = {
+    ...settings,
+    clonedProfile: settings.clonedProfile
+      ? {
+          ...settings.clonedProfile,
+          sampleDataUrl:
+            settings.clonedProfile.sampleDataUrl &&
+            settings.clonedProfile.sampleDataUrl.length < 220_000
+              ? settings.clonedProfile.sampleDataUrl
+              : undefined,
+        }
+      : null,
+  };
+  memoryVoiceSettings = compact;
+  safeSetItem(VOICE_SETTINGS_KEY, JSON.stringify(compact));
+}
+
+

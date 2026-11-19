@@ -2,11 +2,14 @@ import { BookOpen, Pause, Play, Square, Volume2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { getBcp47ForLanguage, WORLD_LANGUAGES } from '../constants';
 import { AppTheme } from '../themes';
+import { VoiceStudioSettings } from '../types';
+import { getResolvedVoiceParameters, speakWithVoiceProfile } from '../utils/voiceEngine';
 
 interface TextReaderModalProps {
   isOpen: boolean;
   initialLanguage: string;
   theme: AppTheme;
+  voiceSettings: VoiceStudioSettings;
   onClose: () => void;
 }
 
@@ -31,6 +34,7 @@ export function TextReaderModal({
   isOpen,
   initialLanguage,
   theme,
+  voiceSettings,
   onClose,
 }: TextReaderModalProps) {
   const [text, setText] = useState('');
@@ -79,20 +83,21 @@ export function TextReaderModal({
     }
 
     setCurrentChunkIndex(index);
-    const utterance = new SpeechSynthesisUtterance(chunks[index]);
-    utterance.lang = getBcp47ForLanguage(language);
-    utterance.rate = speedRef.current;
-
-    utterance.onend = () => {
-      if (activeRunRef.current !== runId) return;
-      speakChunkAt(index + 1, runId);
-    };
-    utterance.onerror = () => {
-      if (activeRunRef.current !== runId) return;
-      setReaderState('idle');
-    };
-
-    window.speechSynthesis.speak(utterance);
+    speakWithVoiceProfile({
+      text: chunks[index],
+      language,
+      voiceSettings,
+      speedMultiplier: speedRef.current,
+      cancelPrevious: false,
+      onEnd: () => {
+        if (activeRunRef.current !== runId) return;
+        speakChunkAt(index + 1, runId);
+      },
+      onError: () => {
+        if (activeRunRef.current !== runId) return;
+        setReaderState('idle');
+      },
+    });
   };
 
   const handlePlay = () => {
@@ -182,7 +187,7 @@ export function TextReaderModal({
                 Study Text Reader
               </h2>
               <p className="text-[12.5px]" style={{ color: theme.textMuted }}>
-                Paste notes, essays, or textbook passages to listen aloud clearly
+                Voice: <span style={{ color: theme.accentSecondary }}>{getResolvedVoiceParameters(voiceSettings).label}</span> · Paste notes or chapters to listen aloud
               </p>
             </div>
           </div>

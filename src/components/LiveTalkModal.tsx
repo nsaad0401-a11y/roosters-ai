@@ -2,6 +2,8 @@ import { Mic, MicOff, PhoneOff, Send, Volume2 } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { getBcp47ForLanguage, ROOSTERS_LOGO_SRC } from '../constants';
 import { MissingApiKeyError, streamChatCompletion } from '../utils/aiClient';
+import { VoiceStudioSettings } from '../types';
+import { getResolvedVoiceParameters, speakWithVoiceProfile } from '../utils/voiceEngine';
 
 interface LiveTalkModalProps {
   isOpen: boolean;
@@ -9,6 +11,7 @@ interface LiveTalkModalProps {
   userName: string;
   hasBackendApi: boolean;
   hasServerGeminiKey: boolean;
+  voiceSettings: VoiceStudioSettings;
   onOpenApiKeyModal?: () => void;
   onClose: (transcriptTurns?: Array<{ role: 'user' | 'assistant'; content: string }>) => void;
 }
@@ -62,6 +65,7 @@ export function LiveTalkModal({
   userName,
   hasBackendApi,
   hasServerGeminiKey,
+  voiceSettings,
   onClose,
 }: LiveTalkModalProps) {
   const [status, setStatus] = useState<LiveStatus>('listening');
@@ -206,11 +210,6 @@ export function LiveTalkModal({
       setStatus('speaking');
       activeUtterancesRef.current += 1;
 
-      const utterance = new SpeechSynthesisUtterance(spoken);
-      utterance.lang = getBcp47ForLanguage(selectedLanguage);
-      utterance.rate = 1.03;
-      utterance.pitch = 1.0;
-
       const onDone = () => {
         if (!isMountedRef.current) return;
         activeUtterancesRef.current = Math.max(0, activeUtterancesRef.current - 1);
@@ -223,11 +222,17 @@ export function LiveTalkModal({
         }
       };
 
-      utterance.onend = onDone;
-      utterance.onerror = onDone;
-      window.speechSynthesis.speak(utterance);
+      speakWithVoiceProfile({
+        text: spoken,
+        language: selectedLanguage,
+        voiceSettings,
+        speedMultiplier: 1.03,
+        cancelPrevious: false,
+        onEnd: onDone,
+        onError: onDone,
+      });
     },
-    [selectedLanguage, startRecognitionLoop]
+    [selectedLanguage, startRecognitionLoop, voiceSettings]
   );
 
   // Stream response via Groq / Gemini (backend or direct) and speak sentence-by-sentence immediately!
@@ -482,7 +487,7 @@ export function LiveTalkModal({
               Roosters AI Live Talk
             </div>
             <div className="text-[12px] text-[#94a3b8]">
-              Language: {selectedLanguage} · Instant Streaming Voice
+              Language: {selectedLanguage} · Voice: {getResolvedVoiceParameters(voiceSettings).label}
             </div>
           </div>
         </div>

@@ -153,6 +153,7 @@ function buildStudyTutorInstruction(options: {
     'Always be deeply polite, warm, respectful, and encouraging like a patient master teacher.',
     'For study topics: explain in clear numbered steps with simple examples, crisp study notes, and 1–2 helpful practice questions.',
     'Format code in fenced markdown blocks with language tags. Analyze attached images, screens, study notes, or code files politely and thoroughly.',
+    'NEVER generate ASCII art or text-character drawings when asked for images, photos, portraits, or videos.',
     langRule,
   ].join(' ');
 }

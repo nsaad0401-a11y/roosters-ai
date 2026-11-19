@@ -31,12 +31,56 @@ export interface MessageAttachment {
 export interface GeneratedArtwork {
   title: string;
   description: string;
+  detailedPrompt?: string;
   svgCode?: string;
   imageUrl?: string;
   provider?: 'pollinations' | 'svg';
   aspectRatio: '1:1' | '16:9' | '4:3';
   width: number;
   height: number;
+}
+
+export interface VideoScene {
+  caption: string;
+  visualPrompt: string;
+  imageUrl: string;
+}
+
+export interface GeneratedVideo {
+  title: string;
+  prompt: string;
+  narration: string;
+  mood: 'cinematic' | 'calm' | 'epic' | 'study';
+  style: string;
+  scenes: VideoScene[];
+  aspectRatio: '16:9';
+  createdAt: number;
+}
+
+export type VoicePresetId =
+  | 'default'
+  | 'deep-male'
+  | 'warm-female'
+  | 'energetic-youth'
+  | 'news-anchor'
+  | 'cloned';
+
+export interface ClonedVoiceProfile {
+  name: string;
+  createdAt: number;
+  durationSec: number;
+  fundamentalHz: number;
+  pitch: number;
+  rate: number;
+  spectralBrightness: number;
+  genderHint: 'male' | 'female' | 'neutral';
+  timbreLabel: string;
+  sampleDataUrl?: string;
+}
+
+export interface VoiceStudioSettings {
+  activeVoiceId: VoicePresetId;
+  clonedProfile: ClonedVoiceProfile | null;
 }
 
 export interface ChatMessage {
@@ -46,6 +90,7 @@ export interface ChatMessage {
   createdAt: number;
   attachment?: MessageAttachment;
   generatedImage?: GeneratedArtwork;
+  generatedVideo?: GeneratedVideo;
   isError?: boolean;
   isMissingKeyPrompt?: boolean;
 }

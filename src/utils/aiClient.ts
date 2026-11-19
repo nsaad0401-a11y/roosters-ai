@@ -1,4 +1,5 @@
 import { loadCustomApiKey } from './storage';
+import { GeneratedVideo, VideoScene } from '../types';
 
 export interface OutgoingAttachment {
   kind?: 'image' | 'file';
@@ -131,8 +132,54 @@ export function buildClientStudyTutorInstruction(options: {
     'Always be deeply polite, warm, respectful, and encouraging like a patient master teacher.',
     'For study topics: explain in clear numbered steps with simple examples, crisp study notes, and 1–2 helpful practice questions.',
     'Format code in fenced markdown blocks with language tags. Analyze attached images, screens, study notes, or code files politely and thoroughly.',
+    'NEVER output ASCII art, text-character drawings, or box-art diagrams when asked for a picture, image, photo, or video.',
     langRule,
   ].join(' ');
+}
+
+export function detectChatMediaIntent(
+  rawText: string,
+  hasAttachment: boolean
+): 'video' | 'image' | 'chat' {
+  if (hasAttachment) return 'chat';
+  const text = rawText.trim();
+  if (!text || text.length > 500) return 'chat';
+  const lower = text.toLowerCase();
+
+  // Exclude coding/explanatory/tutorial questions unless explicitly asking to render an image/video directly
+  const isTutorialOrCodeQuestion =
+    /\b(how to|how do i|explain|what is|html|css|python|javascript|react|code for|script for|algorithm|tag|tutorial|difference between)\b/i.test(
+      lower
+    ) && !/\b(pic banao|tasveer banao|tasweer banao|video banao|generate image|create video)\b/i.test(lower);
+
+  if (isTutorialOrCodeQuestion) return 'chat';
+
+  // 1. Video intent (check first so "video banao" / "create video" always triggers Video Generator)
+  const videoPatterns: RegExp[] = [
+    /\b(create|generate|make|render|produce|animate|build|show)\s+(me\s+)?(a\s+|an\s+|the\s+|some\s+)?(short\s+|cinematic\s+|ai\s+|hd\s+|animated\s+)?(video|clip|animation|movie|reel|short\s*film)\b/i,
+    /\b(video|clip|reel|animation)\s+(of|about|for|on)\b/i,
+    /\b(video|veedio|vedio|clip|reel|animation)\s*(banao|bana\s*do|banado|bnao|taiyar\s*karo|dikhao|chahiye)\b/i,
+    /\b(banao|bana\s*do|banado)\s*(ek\s+)?(video|clip|reel|animation)\b/i,
+    /(ویڈیو\s*(بنائیں|بناؤ|بنا\s*دو|دکھائیں)|فيديو|إنشاء\s+فيديو|वीडियो\s*(बनाओ|बनाएं|बना\s*दो)|créer\s+une\s+vidéo|generar\s+(un\s+)?vídeo|crear\s+(un\s+)?video|video\s+erstellen|buat\s+video)/i,
+  ];
+  if (videoPatterns.some((rx) => rx.test(text))) {
+    return 'video';
+  }
+
+  // 2. Image / Photo / Drawing intent in ANY language
+  const imagePatterns: RegExp[] = [
+    /\b(create|generate|make|draw|paint|sketch|render|design|illustrate|show)\s+(me\s+)?(a\s+|an\s+|some\s+|the\s+)?(hd\s+|4k\s+|real\s+|realistic\s+|photorealistic\s+|cute\s+|cool\s+|beautiful\s+)?(picture|pic|pics|image|img|photo|photograph|portrait|wallpaper|illustration|artwork|drawing|poster|avatar|painting|sketch)\b/i,
+    /^(draw|paint|sketch|illustrate)\s+(a|an|the|me|some)?\s*\S+/i,
+    /\b(picture|pic|image|photo|portrait)\s+of\b/i,
+    /\b(pic|pics|picture|tasveer|tasweer|tasvir|taswir|photo|foto|image|img|drawing|sketch|chitra|portrait|wallpaper)\s*(banao|bana\s*do|banado|bnao|dikhao|nikalo|chahiye|khincho)\b/i,
+    /\b(banao|bana\s*do|banado|draw\s*karo)\s*(ek\s+)?(pyari\s+si\s+|khoobsurat\s+|sundar\s+)?(pic|picture|tasveer|tasweer|tasvir|photo|image|sketch|drawing)\b/i,
+    /(تصویر\s*(بنائیں|بناؤ|بنا\s*دو|دکھائیں)|صورة|ارسم|تصوير|चित्र\s*(बनाओ|बनाएं)|तस्वीर\s*(बनाओ|बनाएं)|फोटो\s*(बनाओ|बनाएं)|dessine|créer\s+une\s+image|generar\s+(una\s+)?imagen|dibujar|criar\s+imagem|bild\s+erstellen|buat\s+gambar|resim\s+(çiz|yap))/i,
+  ];
+  if (imagePatterns.some((rx) => rx.test(text))) {
+    return 'image';
+  }
+
+  return 'chat';
 }
 
 function formatMessageTextWithFile(msg: OutgoingMessage): string {
@@ -699,33 +746,143 @@ export async function streamChatCompletion(params: {
   throw new MissingApiKeyError();
 }
 
-function preloadExternalImage(url: string, timeoutMs = 9500): Promise<boolean> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.referrerPolicy = 'no-referrer';
-    let settled = false;
-    const timer = window.setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        resolve(false);
+async function runQuickTextCompletion(params: {
+  systemPrompt: string;
+  userPrompt: string;
+  hasBackendApi: boolean;
+  hasServerGeminiKey: boolean;
+  maxTokens?: number;
+}): Promise<string | null> {
+  const resolved = resolveActiveProvider(params.hasServerGeminiKey);
+  if (resolved.provider === 'none') return null;
+
+  try {
+    if (resolved.provider === 'groq') {
+      const { models } = await getActiveGroqChatModels(resolved.apiKey);
+      for (let i = 0; i < Math.min(2, models.length); i++) {
+        const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${resolved.apiKey}`,
+          },
+          body: JSON.stringify({
+            model: models[i],
+            messages: [
+              { role: 'system', content: params.systemPrompt },
+              { role: 'user', content: params.userPrompt },
+            ],
+            temperature: 0.5,
+            max_tokens: params.maxTokens ?? 400,
+          }),
+        });
+        if (resp.ok) {
+          const json = (await resp.json()) as {
+            choices?: Array<{ message?: { content?: string } }>;
+          };
+          const out = json.choices?.[0]?.message?.content?.trim();
+          if (out) return out;
+        }
       }
-    }, timeoutMs);
-    img.onload = () => {
-      if (!settled) {
-        settled = true;
-        window.clearTimeout(timer);
-        resolve(img.naturalWidth > 0);
+      return null;
+    }
+
+    if (resolved.apiKey) {
+      const resp = await fetch(
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': resolved.apiKey,
+          },
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: params.systemPrompt }] },
+            contents: [{ role: 'user', parts: [{ text: params.userPrompt }] }],
+            generationConfig: { thinkingConfig: { thinkingBudget: 0 } },
+          }),
+        }
+      );
+      if (resp.ok) {
+        const data = (await resp.json()) as {
+          candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+        };
+        return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
       }
-    };
-    img.onerror = () => {
-      if (!settled) {
-        settled = true;
-        window.clearTimeout(timer);
-        resolve(false);
-      }
-    };
-    img.src = url;
+    }
+
+    if (params.hasBackendApi || resolved.source === 'server') {
+      let collected = '';
+      await streamChatCompletion({
+        messages: [
+          {
+            role: 'user',
+            content: `${params.systemPrompt}\n\nRequest: ${params.userPrompt}`,
+          },
+        ],
+        hasBackendApi: params.hasBackendApi,
+        hasServerGeminiKey: params.hasServerGeminiKey,
+        onChunk: (c) => {
+          collected += c;
+        },
+      });
+      return collected.trim() || null;
+    }
+  } catch {
+    // Graceful fallback if quick helper fails
+  }
+  return null;
+}
+
+export async function translatePromptToDetailedEnglish(params: {
+  rawPrompt: string;
+  hasBackendApi: boolean;
+  hasServerGeminiKey: boolean;
+}): Promise<{ detailedPrompt: string; shortTitle: string }> {
+  const cleaned = params.rawPrompt.trim();
+  const translated = await runQuickTextCompletion({
+    systemPrompt:
+      'You are an expert visual prompt translator & enhancer. Translate the user request from ANY language (English, Urdu, Roman Urdu, Hindi, Arabic, Spanish, etc.) into a single vivid, photorealistic, high-definition 1024x1024 image generation prompt in English (under 45 words). Strip filler phrases like "pic banao", "generate image", "draw me". Return ONLY JSON: {"title":"short 3-6 word title","detailedPrompt":"vivid English photorealistic prompt"}',
+    userPrompt: cleaned,
+    hasBackendApi: params.hasBackendApi,
+    hasServerGeminiKey: params.hasServerGeminiKey,
+    maxTokens: 220,
   });
+
+  if (translated) {
+    try {
+      const start = translated.indexOf('{');
+      const end = translated.lastIndexOf('}');
+      if (start >= 0 && end > start) {
+        const parsed = JSON.parse(translated.slice(start, end + 1)) as {
+          title?: string;
+          detailedPrompt?: string;
+        };
+        if (parsed.detailedPrompt && parsed.detailedPrompt.trim().length > 4) {
+          return {
+            shortTitle: (parsed.title || cleaned).slice(0, 56),
+            detailedPrompt: parsed.detailedPrompt.trim(),
+          };
+        }
+      }
+    } catch {
+      // Fall back to sanitized text below
+    }
+  }
+
+  const stripped = cleaned
+    .replace(
+      /\b(create|generate|make|draw|paint|sketch|render|show|please|kindly|me|a|an|pic|picture|tasveer|tasweer|photo|image|banao|bana do|banado|dikhao|chahiye)\b/gi,
+      ' '
+    )
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const subject = stripped || cleaned;
+  return {
+    shortTitle: subject.slice(0, 52) || 'HD AI Image',
+    detailedPrompt: `${subject}, ultra-detailed photorealistic 8k UHD photography, natural studio lighting, sharp focus, rich realistic textures, masterpiece composition`,
+  };
 }
 
 export async function generateArtworkUnified(params: {
@@ -737,8 +894,9 @@ export async function generateArtworkUnified(params: {
 }): Promise<{
   title: string;
   description: string;
+  detailedPrompt: string;
   svgCode?: string;
-  imageUrl?: string;
+  imageUrl: string;
   provider: 'pollinations' | 'svg';
   aspectRatio: '1:1' | '16:9' | '4:3';
   width: number;
@@ -751,216 +909,143 @@ export async function generateArtworkUnified(params: {
         ? { w: 1024, h: 768 }
         : { w: 1024, h: 1024 };
 
-  // 1. Free Pollinations AI Image Generation (zero API key required)
-  const cleanPrompt = params.prompt.trim();
-  const seed = Math.floor(Math.random() * 1_000_000);
+  const { detailedPrompt, shortTitle } = await translatePromptToDetailedEnglish({
+    rawPrompt: params.prompt,
+    hasBackendApi: params.hasBackendApi,
+    hasServerGeminiKey: params.hasServerGeminiKey,
+  });
+
+  const seed = Date.now();
   const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(
-    cleanPrompt
-  )}?width=${dims.w}&height=${dims.h}&nologo=true&seed=${seed}`;
-
-  const loadedPollinations = await preloadExternalImage(pollinationsUrl);
-  if (loadedPollinations) {
-    return {
-      title: cleanPrompt.slice(0, 60) || 'Generated Artwork',
-      description: cleanPrompt,
-      imageUrl: pollinationsUrl,
-      provider: 'pollinations',
-      aspectRatio: params.aspectRatio,
-      width: dims.w,
-      height: dims.h,
-    };
-  }
-
-  // 2. Fallback to Gemini / Groq SVG synthesis if Pollinations is unreachable
-  const resolved = resolveActiveProvider(params.hasServerGeminiKey);
-  if (resolved.provider === 'none') {
-    throw new MissingApiKeyError();
-  }
-
-  const langNote =
-    params.language && params.language !== 'Auto-Detect'
-      ? `Write the title and description in ${params.language}.`
-      : 'Write the title and description in the same language as the prompt.';
-
-  const artPrompt = [
-    `Create a richly layered SVG illustration for: "${cleanPrompt}".`,
-    `The root <svg> MUST specify viewBox="0 0 ${dims.w} ${dims.h}" width="${dims.w}" height="${dims.h}".`,
-    'Use <defs> linearGradient/radialGradient, crisp vector paths, and atmospheric lighting. No external URLs, <script>, or foreignObject.',
-    langNote,
-    'Return ONLY a valid JSON object with keys: "title", "description", "svgCode".',
-  ].join('\n');
-
-  if (resolved.provider === 'groq') {
-    let lastArtErr = 'Unable to synthesize artwork SVG right now.';
-    const { models: candidateModels } = await getActiveGroqChatModels(resolved.apiKey);
-
-    for (let i = 0; i < candidateModels.length; i++) {
-      const modelName = candidateModels[i];
-      try {
-        const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${resolved.apiKey}`,
-          },
-          body: JSON.stringify({
-            model: modelName,
-            messages: [{ role: 'user', content: artPrompt }],
-            response_format: { type: 'json_object' },
-            temperature: 0.7,
-          }),
-        });
-
-        if (!resp.ok) {
-          const errText = await resp.text().catch(() => '');
-          lastArtErr = extractReadableApiError(errText, resp.status);
-          if (resp.status === 401 || resp.status === 403 || i === candidateModels.length - 1) {
-            throw new Error(lastArtErr);
-          }
-          continue;
-        }
-
-        const data = (await resp.json()) as {
-          choices?: Array<{ message?: { content?: string } }>;
-        };
-        const rawJson = data.choices?.[0]?.message?.content ?? '{}';
-        const firstBrace = rawJson.indexOf('{');
-        const lastBrace = rawJson.lastIndexOf('}');
-        const jsonCandidate =
-          firstBrace >= 0 && lastBrace > firstBrace
-            ? rawJson.slice(firstBrace, lastBrace + 1)
-            : rawJson;
-        const parsed = JSON.parse(jsonCandidate) as {
-          title?: string;
-          description?: string;
-          svgCode?: string;
-        };
-        if (!parsed.svgCode || !parsed.svgCode.includes('<svg')) {
-          lastArtErr = 'Unable to synthesize artwork SVG. Please try a different prompt.';
-          if (i < candidateModels.length - 1) continue;
-          throw new Error(lastArtErr);
-        }
-        const cleanSvg = parsed.svgCode
-          .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')
-          .replace(/\son\w+="[^"]*"/gi, '');
-
-        return {
-          title: parsed.title || 'Generated Artwork',
-          description: parsed.description || cleanPrompt,
-          svgCode: cleanSvg,
-          provider: 'svg',
-          aspectRatio: params.aspectRatio,
-          width: dims.w,
-          height: dims.h,
-        };
-      } catch (err) {
-        lastArtErr = err instanceof Error ? err.message : lastArtErr;
-        if (i < candidateModels.length - 1) {
-          continue;
-        }
-        throw new Error(lastArtErr);
-      }
-    }
-    throw new Error(lastArtErr);
-  }
-
-  // Try backend first if available
-  if (params.hasBackendApi || resolved.source === 'server') {
-    try {
-      const resp = await fetch('/api/generate-image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: params.prompt,
-          aspectRatio: params.aspectRatio,
-          language: params.language,
-          apiKey: resolved.apiKey || undefined,
-        }),
-      });
-      const contentType = resp.headers.get('content-type') || '';
-      if (resp.ok && contentType.includes('application/json')) {
-        const data = (await resp.json()) as {
-          title?: string;
-          description?: string;
-          svgCode?: string;
-          aspectRatio?: '1:1' | '16:9' | '4:3';
-          width?: number;
-          height?: number;
-        };
-        if (data.svgCode) {
-          return {
-            title: data.title || 'Generated Artwork',
-            description: data.description || params.prompt,
-            svgCode: data.svgCode,
-            provider: 'svg',
-            aspectRatio: data.aspectRatio || params.aspectRatio,
-            width: data.width || dims.w,
-            height: data.height || dims.h,
-          };
-        }
-      } else if (resp.status !== 404 && resp.status !== 405 && contentType.includes('application/json')) {
-        const errData = (await resp.json().catch(() => ({}))) as { error?: string; code?: string };
-        if (errData.code === 'MISSING_API_KEY') throw new MissingApiKeyError();
-        if (!resolved.apiKey) throw new Error(errData.error || 'Image generation failed.');
-      }
-    } catch (err) {
-      if (err instanceof MissingApiKeyError || !resolved.apiKey) {
-        throw err;
-      }
-    }
-  }
-
-  // Direct Gemini REST fallback (Vercel static builds)
-  if (!resolved.apiKey) {
-    throw new MissingApiKeyError();
-  }
-
-  const resp = await fetch(
-    'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': resolved.apiKey,
-      },
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: artPrompt }] }],
-        generationConfig: {
-          responseMimeType: 'application/json',
-          thinkingConfig: { thinkingBudget: 0 },
-        },
-      }),
-    }
-  );
-
-  if (!resp.ok) {
-    const rawErr = await resp.text().catch(() => '');
-    throw new Error(extractReadableApiError(rawErr, resp.status));
-  }
-
-  const data = (await resp.json()) as {
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-  };
-  const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
-  const parsed = JSON.parse(rawText) as {
-    title?: string;
-    description?: string;
-    svgCode?: string;
-  };
-  if (!parsed.svgCode || !parsed.svgCode.includes('<svg')) {
-    throw new Error('Unable to synthesize artwork SVG. Please try a different prompt.');
-  }
-  const cleanSvg = parsed.svgCode
-    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')
-    .replace(/\son\w+="[^"]*"/gi, '');
+    detailedPrompt
+  )}?width=${dims.w}&height=${dims.h}&model=flux&nologo=true&seed=${seed}`;
 
   return {
-    title: parsed.title || 'Generated Artwork',
-    description: parsed.description || cleanPrompt,
-    svgCode: cleanSvg,
-    provider: 'svg',
+    title: shortTitle || 'HD AI Artwork',
+    description: detailedPrompt,
+    detailedPrompt,
+    imageUrl: pollinationsUrl,
+    provider: 'pollinations',
     aspectRatio: params.aspectRatio,
     width: dims.w,
     height: dims.h,
   };
 }
+
+export async function generateVideoUnified(params: {
+  prompt: string;
+  style?: string;
+  language?: string;
+  hasBackendApi: boolean;
+  hasServerGeminiKey: boolean;
+}): Promise<GeneratedVideo> {
+  const styleLabel = params.style?.trim() || 'Cinematic Realism';
+  const cleanUserPrompt = params.prompt.trim();
+  const baseSeed = Date.now();
+
+  const langHint =
+    params.language && params.language !== 'Auto-Detect'
+      ? `Write the short narration in ${params.language}.`
+      : 'Write the short narration in English (or match the prompt language naturally).';
+
+  const storyboardRaw = await runQuickTextCompletion({
+    systemPrompt: [
+      'You are an AI Film Director.',
+      `Given any topic or video request, create a cohesive 4-scene cinematic visual storyboard in "${styleLabel}" style.`,
+      langHint,
+      'Every scene visualPrompt MUST be in vivid English (under 35 words) describing lighting, camera framing, motion, and clear visual progression from Scene 1 (establishing) -> Scene 2 (action/detail) -> Scene 3 (climax) -> Scene 4 (finale).',
+      'Return ONLY valid JSON: {"title":"...","mood":"cinematic|calm|epic|study","narration":"2-3 warm concise sentences","scenes":[{"caption":"Scene 1 title (3-6 words)","visualPrompt":"..."},{"caption":"...","visualPrompt":"..."},{"caption":"...","visualPrompt":"..."},{"caption":"...","visualPrompt":"..."}]}',
+    ].join(' '),
+    userPrompt: cleanUserPrompt,
+    hasBackendApi: params.hasBackendApi,
+    hasServerGeminiKey: params.hasServerGeminiKey,
+    maxTokens: 650,
+  });
+
+  let title = cleanUserPrompt.slice(0, 52) || 'AI Cinema Story';
+  let mood: GeneratedVideo['mood'] = 'cinematic';
+  let narration = `Here is a four-scene AI cinematic visual story crafted for ${cleanUserPrompt}.`;
+  let rawScenes: Array<{ caption: string; visualPrompt: string }> = [];
+
+  if (storyboardRaw) {
+    try {
+      const start = storyboardRaw.indexOf('{');
+      const end = storyboardRaw.lastIndexOf('}');
+      if (start >= 0 && end > start) {
+        const parsed = JSON.parse(storyboardRaw.slice(start, end + 1)) as {
+          title?: string;
+          mood?: string;
+          narration?: string;
+          scenes?: Array<{ caption?: string; visualPrompt?: string }>;
+        };
+        if (parsed.title) title = parsed.title.slice(0, 64);
+        if (parsed.narration) narration = parsed.narration.trim();
+        if (
+          parsed.mood === 'calm' ||
+          parsed.mood === 'epic' ||
+          parsed.mood === 'study' ||
+          parsed.mood === 'cinematic'
+        ) {
+          mood = parsed.mood;
+        }
+        if (Array.isArray(parsed.scenes) && parsed.scenes.length >= 2) {
+          rawScenes = parsed.scenes.slice(0, 4).map((s, idx) => ({
+            caption: (s.caption || `Scene ${idx + 1}`).trim(),
+            visualPrompt: (s.visualPrompt || `${cleanUserPrompt}, ${styleLabel}, scene ${idx + 1}`).trim(),
+          }));
+        }
+      }
+    } catch {
+      // Fallback below
+    }
+  }
+
+  const strippedTopic =
+    cleanUserPrompt
+      .replace(/\b(create|generate|make|video|clip|reel|animation|banao|bana do|of|about|for|a|an)\b/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim() || cleanUserPrompt;
+
+  const fallbackTemplates = [
+    {
+      caption: 'Opening Horizon',
+      visualPrompt: `Wide establishing cinematic shot of ${strippedTopic}, golden hour atmospheric lighting, ${styleLabel}, ultra-detailed 8k`,
+    },
+    {
+      caption: 'Closer Perspective',
+      visualPrompt: `Dynamic medium angle of ${strippedTopic} in vivid motion, rich texture and dramatic depth of field, ${styleLabel}, 8k`,
+    },
+    {
+      caption: 'Dramatic Peak',
+      visualPrompt: `Spectacular dramatic climax scene of ${strippedTopic}, glowing highlights and volumetric atmosphere, ${styleLabel}, 8k`,
+    },
+    {
+      caption: 'Serene Finale',
+      visualPrompt: `Breathtaking final panoramic sunset view of ${strippedTopic}, peaceful radiant glow, ${styleLabel}, 8k`,
+    },
+  ];
+
+  while (rawScenes.length < 4) {
+    rawScenes.push(fallbackTemplates[rawScenes.length]);
+  }
+
+  const scenes: VideoScene[] = rawScenes.slice(0, 4).map((scene, idx) => ({
+    caption: scene.caption,
+    visualPrompt: scene.visualPrompt,
+    imageUrl: `https://image.pollinations.ai/prompt/${encodeURIComponent(
+      scene.visualPrompt
+    )}?width=1024&height=576&model=flux&nologo=true&seed=${baseSeed + idx * 17}`,
+  }));
+
+  return {
+    title,
+    prompt: cleanUserPrompt,
+    narration,
+    mood,
+    style: styleLabel,
+    scenes,
+    aspectRatio: '16:9',
+    createdAt: Date.now(),
+  };
+}
+

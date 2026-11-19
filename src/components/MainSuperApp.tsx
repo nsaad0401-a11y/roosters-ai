@@ -4,9 +4,11 @@ import {
   Camera,
   Check,
   Copy,
+  Dna,
   Download,
   FileCode,
   FileText,
+  Film,
   Globe,
   Loader2,
   LogOut,
@@ -26,20 +28,31 @@ import {
   X,
 } from 'lucide-react';
 import { ChangeEvent, ClipboardEvent, CSSProperties, KeyboardEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getBcp47ForLanguage, QUICK_PROMPTS, ROOSTERS_LOGO_SRC, WORLD_LANGUAGES } from '../constants';
+import { QUICK_PROMPTS, ROOSTERS_LOGO_SRC, WORLD_LANGUAGES } from '../constants';
 import { APP_THEMES, AppTheme, ThemeSettings } from '../themes';
-import { ActiveUser, ChatMessage, ChatSession, MessageAttachment } from '../types';
+import { ActiveUser, ChatMessage, ChatSession, MessageAttachment, VoiceStudioSettings } from '../types';
 import {
+  detectChatMediaIntent,
   generateArtworkUnified,
+  generateVideoUnified,
   getEnvGeminiKey,
   getEnvGroqKey,
   resolveActiveProvider,
   streamChatCompletion,
 } from '../utils/aiClient';
-import { loadThemeSettings, loadUserChats, saveThemeSettings, saveUserChats } from '../utils/storage';
+import {
+  loadThemeSettings,
+  loadUserChats,
+  loadVoiceSettings,
+  saveThemeSettings,
+  saveUserChats,
+  saveVoiceSettings,
+} from '../utils/storage';
+import { speakWithVoiceProfile } from '../utils/voiceEngine';
 import { AdBannerSlot } from './AdBannerSlot';
 import { ApiKeyModal } from './ApiKeyModal';
 import { GeneratedArtworkCard } from './GeneratedArtworkCard';
+import { GeneratedVideoCard } from './GeneratedVideoCard';
 import { ImageCreateModal } from './ImageCreateModal';
 import { LegalFooter } from './LegalFooter';
 import { LegalPageId, LegalPagesModal } from './LegalPagesModal';
@@ -47,6 +60,8 @@ import { LiveTalkModal } from './LiveTalkModal';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { TextReaderModal } from './TextReaderModal';
 import { ThemeWallpaperModal } from './ThemeWallpaperModal';
+import { VideoCreateModal } from './VideoCreateModal';
+import { VoiceCloneModal } from './VoiceCloneModal';
 
 interface MainSuperAppProps {
   user: ActiveUser;
@@ -204,6 +219,8 @@ function cleanTextForSpeech(raw: string): string {
 interface ChatMessageRowProps {
   msg: ChatMessage;
   theme: AppTheme;
+  selectedLanguage: string;
+  voiceSettings: VoiceStudioSettings;
   isCopied: boolean;
   isTtsLoading: boolean;
   isTtsPlaying: boolean;
@@ -214,6 +231,8 @@ interface ChatMessageRowProps {
 const ChatMessageRow = memo(function ChatMessageRow({
   msg,
   theme,
+  selectedLanguage,
+  voiceSettings,
   isCopied,
   isTtsLoading,
   isTtsPlaying,
@@ -309,6 +328,14 @@ const ChatMessageRow = memo(function ChatMessageRow({
 
         {msg.generatedImage && <GeneratedArtworkCard artwork={msg.generatedImage} />}
 
+        {msg.generatedVideo && (
+          <GeneratedVideoCard
+            video={msg.generatedVideo}
+            language={selectedLanguage}
+            voiceSettings={voiceSettings}
+          />
+        )}
+
         {msg.content && !msg.isError && (
           <div
             className="mt-3 pt-2.5 border-t flex items-center gap-2"
@@ -390,9 +417,13 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const [themeSettings, setThemeSettings] = useState<ThemeSettings>(() => loadThemeSettings());
   const [isThemeModalOpen, setIsThemeModalOpen] = useState(false);
 
-  // Modals: Create Image, Live Talk, Text Reader, API Key Settings, Legal Pages
+  // Modals: Create Image, Create Video, Voice Clone, Live Talk, Text Reader, API Key Settings, Legal Pages
   const [isImageModalOpen, setIsImageModalOpen] = useState(false);
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
+  const [isVideoModalOpen, setIsVideoModalOpen] = useState(false);
+  const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
+  const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
+  const [voiceSettings, setVoiceSettings] = useState<VoiceStudioSettings>(() => loadVoiceSettings());
   const [isLiveTalkOpen, setIsLiveTalkOpen] = useState(false);
   const [isTextReaderOpen, setIsTextReaderOpen] = useState(false);
   const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
@@ -431,6 +462,11 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const handleUpdateThemeSettings = (next: ThemeSettings) => {
     setThemeSettings(next);
     saveThemeSettings(next);
+  };
+
+  const handleUpdateVoiceSettings = (next: VoiceStudioSettings) => {
+    setVoiceSettings(next);
+    saveVoiceSettings(next);
   };
 
   // Persist sessions whenever they change
@@ -622,7 +658,28 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     const textToSend = (overrideText ?? inputValue).trim();
     const attachmentToSend = overrideText ? null : pendingAttachment;
 
-    if ((!textToSend && !attachmentToSend) || isStreaming) return;
+    if ((!textToSend && !attachmentToSend) || isStreaming || isGeneratingImage || isGeneratingVideo) {
+      return;
+    }
+
+    // Auto-detect real HD Image or Multi-Scene Video requests in ANY language (never ASCII art!)
+    const mediaIntent = detectChatMediaIntent(textToSend, Boolean(attachmentToSend));
+    if (mediaIntent === 'image') {
+      if (!overrideText) {
+        setInputValue('');
+        if (textareaRef.current) textareaRef.current.style.height = 'auto';
+      }
+      await handleGenerateArtwork(textToSend, '1:1', textToSend);
+      return;
+    }
+    if (mediaIntent === 'video') {
+      if (!overrideText) {
+        setInputValue('');
+        if (textareaRef.current) textareaRef.current.style.height = 'auto';
+      }
+      await handleGenerateVideo(textToSend, 'Cinematic Realism', textToSend);
+      return;
+    }
 
     setNotice('');
     const defaultPrompt = attachmentToSend
@@ -987,19 +1044,30 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     }
   };
 
-  const handleGenerateArtwork = async (prompt: string, aspectRatio: '1:1' | '16:9' | '4:3') => {
+  const handleGenerateArtwork = async (
+    prompt: string,
+    aspectRatio: '1:1' | '16:9' | '4:3',
+    displayUserText?: string
+  ) => {
     setIsGeneratingImage(true);
     setNotice('');
 
     const userMsg: ChatMessage = {
       id: createId('msg'),
       role: 'user',
-      content: `Create Image (${aspectRatio}): ${prompt}`,
+      content: displayUserText || `Create Image (${aspectRatio}): ${prompt}`,
+      createdAt: Date.now(),
+    };
+    const assistantPlaceholderId = createId('msg');
+    const loadingMsg: ChatMessage = {
+      id: assistantPlaceholderId,
+      role: 'assistant',
+      content: '',
       createdAt: Date.now(),
     };
     const nextMessages = [...messages, userMsg];
     const currentSessionId = syncMessagesToSession(nextMessages);
-    setMessages(nextMessages);
+    setMessages([...nextMessages, loadingMsg]);
 
     try {
       const data = await generateArtworkUnified({
@@ -1011,13 +1079,14 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       });
 
       const aiMsg: ChatMessage = {
-        id: createId('msg'),
+        id: assistantPlaceholderId,
         role: 'assistant',
-        content: `Here is your generated artwork with my compliments: **${data.title}**`,
+        content: `Here is your 1024×1024 HD AI image with my compliments: **${data.title}**`,
         createdAt: Date.now(),
         generatedImage: {
           title: data.title,
           description: data.description,
+          detailedPrompt: data.detailedPrompt,
           svgCode: data.svgCode,
           imageUrl: data.imageUrl,
           provider: data.provider,
@@ -1033,9 +1102,9 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       setIsImageModalOpen(false);
     } catch (err) {
       const errMsg: ChatMessage = {
-        id: createId('msg'),
+        id: assistantPlaceholderId,
         role: 'assistant',
-        content: err instanceof Error ? err.message : 'Unable to generate artwork.',
+        content: err instanceof Error ? err.message : 'Unable to generate HD image.',
         createdAt: Date.now(),
         isError: true,
       };
@@ -1045,6 +1114,69 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       setIsImageModalOpen(false);
     } finally {
       setIsGeneratingImage(false);
+    }
+  };
+
+  const handleGenerateVideo = async (
+    prompt: string,
+    style: string,
+    displayUserText?: string
+  ) => {
+    setIsGeneratingVideo(true);
+    setNotice('');
+
+    const userMsg: ChatMessage = {
+      id: createId('msg'),
+      role: 'user',
+      content: displayUserText || `Create AI Video (${style}): ${prompt}`,
+      createdAt: Date.now(),
+    };
+    const assistantPlaceholderId = createId('msg');
+    const loadingMsg: ChatMessage = {
+      id: assistantPlaceholderId,
+      role: 'assistant',
+      content: '',
+      createdAt: Date.now(),
+    };
+    const nextMessages = [...messages, userMsg];
+    const currentSessionId = syncMessagesToSession(nextMessages);
+    setMessages([...nextMessages, loadingMsg]);
+
+    try {
+      const videoData = await generateVideoUnified({
+        prompt,
+        style,
+        language: selectedLanguage,
+        hasBackendApi,
+        hasServerGeminiKey,
+      });
+
+      const aiMsg: ChatMessage = {
+        id: assistantPlaceholderId,
+        role: 'assistant',
+        content: `Here is your playable multi-scene AI video story: **${videoData.title}**`,
+        createdAt: Date.now(),
+        generatedVideo: videoData,
+      };
+
+      const finalMessages = [...nextMessages, aiMsg];
+      setMessages(finalMessages);
+      syncMessagesToSession(finalMessages, currentSessionId);
+      setIsVideoModalOpen(false);
+    } catch (err) {
+      const errMsg: ChatMessage = {
+        id: assistantPlaceholderId,
+        role: 'assistant',
+        content: err instanceof Error ? err.message : 'Unable to generate AI video.',
+        createdAt: Date.now(),
+        isError: true,
+      };
+      const finalMessages = [...nextMessages, errMsg];
+      setMessages(finalMessages);
+      syncMessagesToSession(finalMessages, currentSessionId);
+      setIsVideoModalOpen(false);
+    } finally {
+      setIsGeneratingVideo(false);
     }
   };
 
@@ -1060,17 +1192,18 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     }
   };
 
-  const speakViaBrowserFallback = (msg: ChatMessage): boolean => {
+  const speakViaVoiceStudio = (msg: ChatMessage): boolean => {
     if (!window.speechSynthesis) return false;
     const spoken = cleanTextForSpeech(msg.content);
     if (!spoken) return false;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(spoken);
-    utterance.lang = getBcp47ForLanguage(selectedLanguage);
     setTtsPlayingId(msg.id);
-    utterance.onend = () => setTtsPlayingId((curr) => (curr === msg.id ? null : curr));
-    utterance.onerror = () => setTtsPlayingId(null);
-    window.speechSynthesis.speak(utterance);
+    speakWithVoiceProfile({
+      text: spoken,
+      language: selectedLanguage,
+      voiceSettings,
+      onEnd: () => setTtsPlayingId((curr) => (curr === msg.id ? null : curr)),
+      onError: () => setTtsPlayingId(null),
+    });
     return true;
   };
 
@@ -1085,9 +1218,14 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     setNotice('');
 
     try {
+      // If user picked a custom preset or cloned voice, speak directly with Voice Cloning Studio profile
+      if (voiceSettings.activeVoiceId !== 'default') {
+        if (speakViaVoiceStudio(msg)) return;
+      }
+
       const resolved = resolveActiveProvider(hasServerGeminiKey);
       if (!hasBackendApi || resolved.provider !== 'gemini') {
-        if (speakViaBrowserFallback(msg)) {
+        if (speakViaVoiceStudio(msg)) {
           return;
         }
         throw new Error('Text-to-Speech unavailable in this browser.');
@@ -1104,12 +1242,12 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       });
       const contentType = resp.headers.get('content-type') || '';
       if (!contentType.includes('application/json')) {
-        if (speakViaBrowserFallback(msg)) return;
+        if (speakViaVoiceStudio(msg)) return;
         throw new Error('Text-to-Speech unavailable.');
       }
       const data = (await resp.json()) as { audioBase64?: string; mimeType?: string; error?: string };
       if (!resp.ok || !data.audioBase64) {
-        if (speakViaBrowserFallback(msg)) {
+        if (speakViaVoiceStudio(msg)) {
           return;
         }
         throw new Error(data.error || 'Text-to-Speech unavailable.');
@@ -1126,12 +1264,12 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       audio.onerror = () => {
         setTtsPlayingId(null);
         audioRef.current = null;
-        speakViaBrowserFallback(msg);
+        speakViaVoiceStudio(msg);
       };
 
       await audio.play();
     } catch (err) {
-      if (!speakViaBrowserFallback(msg)) {
+      if (!speakViaVoiceStudio(msg)) {
         setNotice(err instanceof Error ? err.message : 'Unable to play speech audio.');
         setTtsPlayingId(null);
       }
@@ -1177,7 +1315,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const handleListenCallback = useCallback((msg: ChatMessage) => {
     void handleListenTTS(msg);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ttsPlayingId, selectedLanguage]);
+  }, [ttsPlayingId, selectedLanguage, voiceSettings]);
 
   const wallpaperStyle = useMemo(
     () => getWallpaperStyle(themeSettings, theme),
@@ -1376,6 +1514,50 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
             >
               <Palette className="w-3.5 h-3.5" />
               <span>Create Image</span>
+            </button>
+
+            {/* Create Video Button */}
+            <button
+              type="button"
+              onClick={() => setIsVideoModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              style={{
+                backgroundColor: theme.cardBg,
+                borderColor: theme.borderColor,
+                color: theme.accentSecondary,
+              }}
+            >
+              <Film className="w-3.5 h-3.5" />
+              <span>Create Video</span>
+            </button>
+
+            {/* Voice Clone Studio Button */}
+            <button
+              type="button"
+              onClick={() => setIsVoiceModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              style={{
+                backgroundColor: theme.cardBg,
+                borderColor:
+                  voiceSettings.activeVoiceId !== 'default'
+                    ? theme.accentPrimary
+                    : theme.borderColor,
+                color:
+                  voiceSettings.activeVoiceId !== 'default'
+                    ? theme.accentPrimary
+                    : theme.textPrimary,
+              }}
+            >
+              <Dna
+                className="w-3.5 h-3.5"
+                style={{
+                  color:
+                    voiceSettings.activeVoiceId !== 'default'
+                      ? theme.accentPrimary
+                      : theme.accentSecondary,
+                }}
+              />
+              <span>Voice Clone</span>
             </button>
 
             {/* Export Chat Button */}
@@ -1653,6 +1835,8 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     key={msg.id}
                     msg={msg}
                     theme={theme}
+                    selectedLanguage={selectedLanguage}
+                    voiceSettings={voiceSettings}
                     isCopied={copiedMessageId === msg.id}
                     isTtsLoading={ttsLoadingId === msg.id}
                     isTtsPlaying={ttsPlayingId === msg.id}
@@ -1934,6 +2118,23 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         onGenerate={handleGenerateArtwork}
       />
 
+      <VideoCreateModal
+        isOpen={isVideoModalOpen}
+        isGenerating={isGeneratingVideo}
+        theme={theme}
+        onClose={() => setIsVideoModalOpen(false)}
+        onGenerate={handleGenerateVideo}
+      />
+
+      <VoiceCloneModal
+        isOpen={isVoiceModalOpen}
+        theme={theme}
+        language={selectedLanguage}
+        settings={voiceSettings}
+        onUpdate={handleUpdateVoiceSettings}
+        onClose={() => setIsVoiceModalOpen(false)}
+      />
+
       <ThemeWallpaperModal
         isOpen={isThemeModalOpen}
         settings={themeSettings}
@@ -1947,6 +2148,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         userName={user.fullName}
         hasBackendApi={hasBackendApi}
         hasServerGeminiKey={hasServerGeminiKey}
+        voiceSettings={voiceSettings}
         onClose={handleCloseLiveTalk}
       />
 
@@ -1954,6 +2156,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         isOpen={isTextReaderOpen}
         initialLanguage={selectedLanguage}
         theme={theme}
+        voiceSettings={voiceSettings}
         onClose={() => setIsTextReaderOpen(false)}
       />
 
