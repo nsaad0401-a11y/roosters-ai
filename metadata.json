@@ -1,0 +1,6 @@
+{
+  "name": "Roosters AI",
+  "description": "Roosters AI by SandSoft — Multilingual AI Super App with voice input, vision analysis, screen sharing, code studio, and visual creation.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
