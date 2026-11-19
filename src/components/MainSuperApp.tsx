@@ -8,6 +8,7 @@ import {
   FileCode,
   FileText,
   Globe,
+  KeyRound,
   Loader2,
   LogOut,
   Mic,
@@ -29,9 +30,20 @@ import { ChangeEvent, ClipboardEvent, CSSProperties, KeyboardEvent, memo, useCal
 import { getBcp47ForLanguage, QUICK_PROMPTS, ROOSTERS_LOGO_SRC, WORLD_LANGUAGES } from '../constants';
 import { APP_THEMES, AppTheme, ThemeSettings } from '../themes';
 import { ActiveUser, ChatMessage, ChatSession, MessageAttachment } from '../types';
+import {
+  generateArtworkUnified,
+  getEnvGeminiKey,
+  MissingApiKeyError,
+  resolveActiveProvider,
+  streamChatCompletion,
+} from '../utils/aiClient';
 import { loadThemeSettings, loadUserChats, saveThemeSettings, saveUserChats } from '../utils/storage';
+import { AdBannerSlot } from './AdBannerSlot';
+import { ApiKeyModal } from './ApiKeyModal';
 import { GeneratedArtworkCard } from './GeneratedArtworkCard';
 import { ImageCreateModal } from './ImageCreateModal';
+import { LegalFooter } from './LegalFooter';
+import { LegalPageId, LegalPagesModal } from './LegalPagesModal';
 import { LiveTalkModal } from './LiveTalkModal';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { TextReaderModal } from './TextReaderModal';
@@ -198,6 +210,7 @@ interface ChatMessageRowProps {
   isTtsPlaying: boolean;
   onCopy: (msg: ChatMessage) => void;
   onListen: (msg: ChatMessage) => void;
+  onOpenApiKeyModal: () => void;
 }
 
 const ChatMessageRow = memo(function ChatMessageRow({
@@ -208,6 +221,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   isTtsPlaying,
   onCopy,
   onListen,
+  onOpenApiKeyModal,
 }: ChatMessageRowProps) {
   if (msg.role === 'user') {
     return (
@@ -280,7 +294,25 @@ const ChatMessageRow = memo(function ChatMessageRow({
         </div>
 
         {msg.isError ? (
-          <p className="text-[14px] text-[#ff4d4d]">{msg.content}</p>
+          <div className="space-y-3">
+            <p className="text-[14px]" style={{ color: msg.isMissingKeyPrompt ? theme.textPrimary : '#ff4d4d' }}>
+              {msg.content}
+            </p>
+            {msg.isMissingKeyPrompt && (
+              <button
+                type="button"
+                onClick={onOpenApiKeyModal}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-[13px] cursor-pointer transition-all hover:brightness-110"
+                style={{
+                  backgroundImage: theme.sendButtonGradient,
+                  color: theme.sendButtonText,
+                }}
+              >
+                <KeyRound className="w-4 h-4" />
+                <span>Enter Free Gemini or Groq API Key</span>
+              </button>
+            )}
+          </div>
         ) : msg.content ? (
           <MarkdownRenderer content={msg.content} isLight={theme.isLight} />
         ) : (
@@ -379,11 +411,18 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const [themeSettings, setThemeSettings] = useState<ThemeSettings>(() => loadThemeSettings());
   const [isThemeModalOpen, setIsThemeModalOpen] = useState(false);
 
-  // Modals: Create Image, Live Talk, Text Reader
+  // Modals: Create Image, Live Talk, Text Reader, API Key Settings, Legal Pages
   const [isImageModalOpen, setIsImageModalOpen] = useState(false);
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [isLiveTalkOpen, setIsLiveTalkOpen] = useState(false);
   const [isTextReaderOpen, setIsTextReaderOpen] = useState(false);
+  const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
+  const [legalPage, setLegalPage] = useState<LegalPageId | null>(null);
+
+  // Host capability & provider state (works on both Express backend & static Vercel builds)
+  const [hasBackendApi, setHasBackendApi] = useState(false);
+  const [hasServerGeminiKey, setHasServerGeminiKey] = useState(false);
+  const [apiKeyRevision, setApiKeyRevision] = useState(0);
 
   // Copy & TTS states
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
@@ -409,6 +448,12 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const visitorClientIdRef = useRef<string>(createId('visitor'));
 
   const theme = APP_THEMES[themeSettings.themeId] ?? APP_THEMES['gold-cyan'];
+  const activeProvider = useMemo(
+    () => resolveActiveProvider(hasServerGeminiKey),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [hasServerGeminiKey, apiKeyRevision]
+  );
+  const hasEnvGeminiKey = Boolean(getEnvGeminiKey());
 
   const handleUpdateThemeSettings = (next: ThemeSettings) => {
     setThemeSettings(next);
@@ -432,17 +477,50 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     }
   }, [screenStream]);
 
-  // Live Active Visitors real-time heartbeat + gentle community activity ticker
+  // Detect backend availability + server Gemini key & run live active visitors heartbeat
   useEffect(() => {
     let cancelled = false;
+    let backendActive = false;
+
+    const checkHealth = async () => {
+      try {
+        const resp = await fetch('/api/health');
+        const contentType = resp.headers.get('content-type') || '';
+        if (!resp.ok || !contentType.includes('application/json') || cancelled) {
+          setHasBackendApi(false);
+          setHasServerGeminiKey(false);
+          return;
+        }
+        const data = (await resp.json()) as { ok?: boolean; hasServerGeminiKey?: boolean };
+        if (!cancelled && data.ok) {
+          backendActive = true;
+          setHasBackendApi(true);
+          setHasServerGeminiKey(Boolean(data.hasServerGeminiKey));
+        }
+      } catch {
+        if (!cancelled) {
+          setHasBackendApi(false);
+          setHasServerGeminiKey(false);
+        }
+      }
+    };
+
     const sendHeartbeat = async () => {
+      if (!backendActive) {
+        if (!cancelled) {
+          const drift = Math.floor(Math.random() * 3) - 1;
+          setLiveUsers((prev) => Math.max(12, Math.min(19, prev + drift)));
+        }
+        return;
+      }
       try {
         const resp = await fetch('/api/visitors/heartbeat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ clientId: visitorClientIdRef.current }),
         });
-        if (!resp.ok || cancelled) return;
+        const contentType = resp.headers.get('content-type') || '';
+        if (!resp.ok || !contentType.includes('application/json') || cancelled) return;
         const data = (await resp.json()) as { activeClients?: number };
         const serverActive = Math.max(1, data.activeClients ?? 1);
         const drift = Math.floor(Math.random() * 3) - 1;
@@ -456,7 +534,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       }
     };
 
-    void sendHeartbeat();
+    void checkHealth().then(sendHeartbeat);
     const timer = window.setInterval(sendHeartbeat, 8000);
     return () => {
       cancelled = true;
@@ -597,6 +675,31 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     };
 
     const nextMessages = [...messages, userMessage];
+
+    // If no key is available anywhere, politely prompt the user to enter one via the API Key button
+    const currentProvider = resolveActiveProvider(hasServerGeminiKey);
+    if (currentProvider.provider === 'none') {
+      const missingKeyErr = new MissingApiKeyError();
+      const promptMessages: ChatMessage[] = [
+        ...nextMessages,
+        {
+          id: assistantId,
+          role: 'assistant',
+          content: missingKeyErr.message,
+          createdAt: Date.now(),
+          isError: true,
+          isMissingKeyPrompt: true,
+        },
+      ];
+      setMessages(promptMessages);
+      syncMessagesToSession(promptMessages);
+      if (!overrideText) {
+        setInputValue('');
+        setPendingAttachment(null);
+      }
+      return;
+    }
+
     const currentSessionId = syncMessagesToSession(nextMessages);
     setMessages([...nextMessages, placeholderAssistant]);
 
@@ -611,6 +714,17 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     setIsStreaming(true);
     const controller = new AbortController();
     abortControllerRef.current = controller;
+
+    let accumulated = '';
+    let rafPending = false;
+
+    const flushToState = () => {
+      rafPending = false;
+      const snapshot = accumulated;
+      setMessages((prev) =>
+        prev.map((m) => (m.id === assistantId ? { ...m, content: snapshot } : m))
+      );
+    };
 
     try {
       const payloadMessages = nextMessages.map((m) => ({
@@ -627,66 +741,22 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
           : undefined,
       }));
 
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: payloadMessages,
-          language: selectedLanguage,
-          userName: user.fullName,
-        }),
+      await streamChatCompletion({
+        messages: payloadMessages,
+        language: selectedLanguage,
+        userName: user.fullName,
+        isLiveVoice: false,
+        hasBackendApi,
+        hasServerGeminiKey,
         signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        const errData = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(errData.error || 'I apologize, our service had a momentary issue. Please try again.');
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('Unable to read response stream.');
-      }
-
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let accumulated = '';
-      let rafPending = false;
-
-      const flushToState = () => {
-        rafPending = false;
-        const snapshot = accumulated;
-        setMessages((prev) =>
-          prev.map((m) => (m.id === assistantId ? { ...m, content: snapshot } : m))
-        );
-      };
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split('\n\n');
-        buffer = events.pop() ?? '';
-
-        for (const rawEvent of events) {
-          const line = rawEvent.trim();
-          if (!line.startsWith('data:')) continue;
-          const jsonStr = line.slice(5).trim();
-          if (!jsonStr) continue;
-
-          const parsed = JSON.parse(jsonStr) as { type: string; text?: string; error?: string };
-          if (parsed.type === 'chunk' && parsed.text) {
-            accumulated += parsed.text;
-            if (!rafPending) {
-              rafPending = true;
-              requestAnimationFrame(flushToState);
-            }
-          } else if (parsed.type === 'error') {
-            throw new Error(parsed.error || 'I apologize, please try sending your question again.');
+        onChunk: (chunkText) => {
+          accumulated += chunkText;
+          if (!rafPending) {
+            rafPending = true;
+            requestAnimationFrame(flushToState);
           }
-        }
-      }
+        },
+      });
 
       const finalMessages: ChatMessage[] = [
         ...nextMessages,
@@ -703,6 +773,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       if ((err as Error).name === 'AbortError') {
         return;
       }
+      const isMissingKey = err instanceof MissingApiKeyError;
       const errMessage = err instanceof Error ? err.message : 'Unable to reach Roosters AI right now.';
       const failedMessages: ChatMessage[] = [
         ...nextMessages,
@@ -712,6 +783,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
           content: errMessage,
           createdAt: Date.now(),
           isError: true,
+          isMissingKeyPrompt: isMissingKey,
         },
       ];
       setMessages(failedMessages);
@@ -928,6 +1000,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         setNotice('');
         try {
           const audioBase64 = await blobToBase64(audioBlob);
+          const resolved = resolveActiveProvider(hasServerGeminiKey);
           const resp = await fetch('/api/transcribe', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -935,8 +1008,13 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
               audioBase64,
               mimeType: mimeType.split(';')[0],
               language: selectedLanguage,
+              apiKey: resolved.provider === 'gemini' ? resolved.apiKey || undefined : undefined,
             }),
           });
+          const contentType = resp.headers.get('content-type') || '';
+          if (!contentType.includes('application/json')) {
+            throw new Error('Voice file transcription requires the server endpoint; use Live Talk for browser speech input!');
+          }
           const data = (await resp.json()) as { text?: string; error?: string };
           if (!resp.ok) {
             throw new Error(data.error || 'Voice transcription failed.');
@@ -978,24 +1056,13 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     setMessages(nextMessages);
 
     try {
-      const resp = await fetch('/api/generate-image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, aspectRatio, language: selectedLanguage }),
+      const data = await generateArtworkUnified({
+        prompt,
+        aspectRatio,
+        language: selectedLanguage,
+        hasBackendApi,
+        hasServerGeminiKey,
       });
-      const data = (await resp.json()) as {
-        title?: string;
-        description?: string;
-        svgCode?: string;
-        aspectRatio?: '1:1' | '16:9' | '4:3';
-        width?: number;
-        height?: number;
-        error?: string;
-      };
-
-      if (!resp.ok || !data.svgCode) {
-        throw new Error(data.error || 'Image generation failed.');
-      }
 
       const aiMsg: ChatMessage = {
         id: createId('msg'),
@@ -1003,12 +1070,14 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         content: `Here is your generated artwork with my compliments: **${data.title}**`,
         createdAt: Date.now(),
         generatedImage: {
-          title: data.title || 'Generated Artwork',
-          description: data.description || prompt,
+          title: data.title,
+          description: data.description,
           svgCode: data.svgCode,
-          aspectRatio: data.aspectRatio || aspectRatio,
-          width: data.width || 1024,
-          height: data.height || 1024,
+          imageUrl: data.imageUrl,
+          provider: data.provider,
+          aspectRatio: data.aspectRatio,
+          width: data.width,
+          height: data.height,
         },
       };
 
@@ -1017,12 +1086,14 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       syncMessagesToSession(finalMessages, currentSessionId);
       setIsImageModalOpen(false);
     } catch (err) {
+      const isMissingKey = err instanceof MissingApiKeyError;
       const errMsg: ChatMessage = {
         id: createId('msg'),
         role: 'assistant',
         content: err instanceof Error ? err.message : 'Unable to generate artwork.',
         createdAt: Date.now(),
         isError: true,
+        isMissingKeyPrompt: isMissingKey,
       };
       const finalMessages = [...nextMessages, errMsg];
       setMessages(finalMessages);
@@ -1070,14 +1141,28 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     setNotice('');
 
     try {
+      const resolved = resolveActiveProvider(hasServerGeminiKey);
+      if (!hasBackendApi || resolved.provider !== 'gemini') {
+        if (speakViaBrowserFallback(msg)) {
+          return;
+        }
+        throw new Error('Text-to-Speech unavailable in this browser.');
+      }
+
       const resp = await fetch('/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text: msg.content,
           language: selectedLanguage,
+          apiKey: resolved.apiKey || undefined,
         }),
       });
+      const contentType = resp.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        if (speakViaBrowserFallback(msg)) return;
+        throw new Error('Text-to-Speech unavailable.');
+      }
       const data = (await resp.json()) as { audioBase64?: string; mimeType?: string; error?: string };
       if (!resp.ok || !data.audioBase64) {
         if (speakViaBrowserFallback(msg)) {
@@ -1289,6 +1374,33 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
               </select>
             </div>
 
+            {/* API Key Settings Button */}
+            <button
+              type="button"
+              onClick={() => setIsApiKeyModalOpen(true)}
+              title="Configure Gemini (AIza...) or free Groq (gsk_...) API Key"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[12.5px] font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              style={{
+                backgroundColor: activeProvider.provider === 'none' ? `${theme.accentPrimary}18` : theme.cardBg,
+                borderColor:
+                  activeProvider.provider === 'none'
+                    ? theme.accentPrimary
+                    : activeProvider.source === 'local'
+                      ? theme.accentSecondary
+                      : theme.borderColor,
+                color: activeProvider.provider === 'none' ? theme.accentPrimary : theme.textPrimary,
+              }}
+            >
+              <span>
+                🔑 API Key
+                {activeProvider.provider === 'groq'
+                  ? ' (Groq)'
+                  : activeProvider.source === 'local'
+                    ? ' (Saved)'
+                    : ''}
+              </span>
+            </button>
+
             {/* Theme & Wallpaper Button */}
             <button
               type="button"
@@ -1398,6 +1510,9 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         </div>
       </header>
 
+      {/* Non-Intrusive Responsive Sponsored Header Banner (728x90 / 320x50) */}
+      <AdBannerSlot variant="header-banner" theme={theme} />
+
       {/* Main Content Area */}
       <div className="flex-1 flex min-h-0 relative">
         {/* Mobile backdrop for sidebar drawer */}
@@ -1491,6 +1606,9 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                 ))
               )}
             </div>
+
+            {/* Sidebar Sponsored Ad Slot */}
+            <AdBannerSlot variant="sidebar-footer" theme={theme} />
           </aside>
         )}
 
@@ -1587,6 +1705,34 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     Your polite, encouraging Study Tutor and AI workspace. Ask questions step-by-step, start a hands-free Live Talk call, paste notes into Text Reader, or customize your theme.
                   </p>
 
+                  {activeProvider.provider === 'none' && (
+                    <div
+                      className="mt-5 max-w-lg w-full rounded-xl border px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-left"
+                      style={{
+                        backgroundColor: theme.cardBg,
+                        borderColor: theme.accentPrimary,
+                      }}
+                    >
+                      <div className="text-[12.5px]" style={{ color: theme.textPrimary }}>
+                        <span className="font-bold" style={{ color: theme.accentPrimary }}>
+                          Quick Setup:
+                        </span>{' '}
+                        Click <strong>🔑 API Key</strong> at the top to enter a free Gemini or Groq key.
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsApiKeyModalOpen(true)}
+                        className="px-3.5 py-1.5 rounded-lg font-bold text-[12px] cursor-pointer shrink-0"
+                        style={{
+                          backgroundImage: theme.sendButtonGradient,
+                          color: theme.sendButtonText,
+                        }}
+                      >
+                        Enter Key Now
+                      </button>
+                    </div>
+                  )}
+
                   <div className="mt-8 grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-2xl text-left">
                     {QUICK_PROMPTS.map((item) => (
                       <button
@@ -1623,6 +1769,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     isTtsPlaying={ttsPlayingId === msg.id}
                     onCopy={handleCopyCallback}
                     onListen={handleListenCallback}
+                    onOpenApiKeyModal={() => setIsApiKeyModalOpen(true)}
                   />
                 ))
               )}
@@ -1878,11 +2025,8 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                 </button>
               </div>
 
-              <div className="mt-2 flex items-center justify-between text-[11px] px-1" style={{ color: theme.textMuted }}>
-                <span>Roosters AI by SandSoft · Ultra-Polite Study Tutor</span>
-                <span className="hidden sm:inline">
-                  18+ World Languages · Live Talk · Text Reader · Vision · Themes
-                </span>
+              <div className="mt-1.5 border-t pt-1.5" style={{ borderColor: theme.borderColor }}>
+                <LegalFooter compact theme={theme} onOpenPage={setLegalPage} />
               </div>
             </div>
           </div>
@@ -1908,6 +2052,9 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         isOpen={isLiveTalkOpen}
         selectedLanguage={selectedLanguage}
         userName={user.fullName}
+        hasBackendApi={hasBackendApi}
+        hasServerGeminiKey={hasServerGeminiKey}
+        onOpenApiKeyModal={() => setIsApiKeyModalOpen(true)}
         onClose={handleCloseLiveTalk}
       />
 
@@ -1916,6 +2063,25 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         initialLanguage={selectedLanguage}
         theme={theme}
         onClose={() => setIsTextReaderOpen(false)}
+      />
+
+      <ApiKeyModal
+        isOpen={isApiKeyModalOpen}
+        theme={theme}
+        hasServerGeminiKey={hasServerGeminiKey}
+        hasEnvGeminiKey={hasEnvGeminiKey}
+        onSaved={() => {
+          setApiKeyRevision((r) => r + 1);
+          setNotice('');
+        }}
+        onClose={() => setIsApiKeyModalOpen(false)}
+      />
+
+      <LegalPagesModal
+        activePage={legalPage}
+        theme={theme}
+        onSelectPage={setLegalPage}
+        onClose={() => setLegalPage(null)}
       />
     </div>
   );

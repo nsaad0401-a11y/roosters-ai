@@ -23,10 +23,10 @@ const FAST_CHAT_MODELS: ModelCandidate[] = [
   { model: 'gemini-4-hydrogen', thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
 ];
 
-function getAiClient() {
-  const apiKey = process.env.GEMINI_API_KEY;
+function getAiClient(customApiKey?: string) {
+  const apiKey = (customApiKey || process.env.GEMINI_API_KEY || '').trim();
   if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is not configured in environment secrets.');
+    throw new Error('MISSING_API_KEY');
   }
   return new GoogleGenAI({
     apiKey,
@@ -79,10 +79,18 @@ function extractReadableErrorMessage(raw: string): string {
   return trimmed.replace(/\{[\s\S]*\}/g, '').trim() || raw;
 }
 
-function formatGeminiError(err: unknown): { status: number; message: string } {
+function formatGeminiError(err: unknown): { status: number; message: string; code?: string } {
   const rawMessage = err instanceof Error ? err.message : String(err);
   const lower = rawMessage.toLowerCase();
 
+  if (lower.includes('missing_api_key') || lower.includes('gemini_api_key is not configured')) {
+    return {
+      status: 400,
+      code: 'MISSING_API_KEY',
+      message:
+        'Welcome! Please click the "🔑 API Key" button in the top header to enter a free Google Gemini key (AIza...) or free Groq key (gsk_...).',
+    };
+  }
   if (
     lower.includes('permission_denied') ||
     lower.includes('api_key_invalid') ||
@@ -91,13 +99,7 @@ function formatGeminiError(err: unknown): { status: number; message: string } {
   ) {
     return {
       status: 401,
-      message: 'We could not validate the API key. Please check GEMINI_API_KEY in Settings > Secrets.',
-    };
-  }
-  if (lower.includes('gemini_api_key is not configured')) {
-    return {
-      status: 500,
-      message: 'GEMINI_API_KEY is not configured yet. Please add it in Settings > Secrets.',
+      message: 'We could not verify that API key. Please check your key in the "🔑 API Key" button at the top.',
     };
   }
   if (lower.includes('503') || lower.includes('unavailable') || lower.includes('high demand') || lower.includes('overloaded')) {
@@ -197,9 +199,10 @@ async function streamWithFallback(
   params: {
     contents: ReturnType<typeof buildContents>;
     systemInstruction: string;
+    apiKey?: string;
   }
 ) {
-  const ai = getAiClient();
+  const ai = getAiClient(params.apiKey);
   let lastErr: unknown = null;
   let succeeded = false;
 
@@ -243,7 +246,9 @@ async function streamWithFallback(
 
   if (!succeeded) {
     const formatted = formatGeminiError(lastErr);
-    res.write(`data: ${JSON.stringify({ type: 'error', error: formatted.message })}\n\n`);
+    res.write(
+      `data: ${JSON.stringify({ type: 'error', error: formatted.message, code: formatted.code })}\n\n`
+    );
     res.end();
     return;
   }
@@ -259,7 +264,12 @@ async function startServer() {
   const activeVisitors = new Map<string, number>();
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, service: 'Roosters AI by SandSoft', version: '2.0' });
+    res.json({
+      ok: true,
+      service: 'Roosters AI by SandSoft',
+      version: '2.0',
+      hasServerGeminiKey: Boolean(process.env.GEMINI_API_KEY),
+    });
   });
 
   app.post('/api/visitors/heartbeat', (req, res) => {
@@ -279,14 +289,21 @@ async function startServer() {
   // Real-Time Streaming Multimodal Chat Endpoint (SSE)
   app.post('/api/chat', async (req, res) => {
     try {
-      const { messages, language, userName } = req.body as {
+      const { messages, language, userName, apiKey } = req.body as {
         messages: IncomingHistoryItem[];
         language?: string;
         userName?: string;
+        apiKey?: string;
       };
 
       if (!Array.isArray(messages) || messages.length === 0) {
         res.status(400).json({ error: 'Messages array is required.' });
+        return;
+      }
+
+      if (!apiKey?.trim() && !process.env.GEMINI_API_KEY) {
+        const missing = formatGeminiError(new Error('MISSING_API_KEY'));
+        res.status(missing.status).json({ error: missing.message, code: missing.code });
         return;
       }
 
@@ -299,14 +316,17 @@ async function startServer() {
       await streamWithFallback(res, {
         contents: buildContents(messages),
         systemInstruction: buildStudyTutorInstruction({ language, userName, isLiveVoice: false }),
+        apiKey,
       });
     } catch (err) {
       const formatted = formatGeminiError(err);
       if (res.headersSent) {
-        res.write(`data: ${JSON.stringify({ type: 'error', error: formatted.message })}\n\n`);
+        res.write(
+          `data: ${JSON.stringify({ type: 'error', error: formatted.message, code: formatted.code })}\n\n`
+        );
         res.end();
       } else {
-        res.status(formatted.status).json({ error: formatted.message });
+        res.status(formatted.status).json({ error: formatted.message, code: formatted.code });
       }
     }
   });
@@ -314,14 +334,21 @@ async function startServer() {
   // Streaming SSE Live Talk Endpoint so first sentence speaks immediately
   app.post('/api/chat-live-stream', async (req, res) => {
     try {
-      const { messages, language, userName } = req.body as {
+      const { messages, language, userName, apiKey } = req.body as {
         messages: IncomingHistoryItem[];
         language?: string;
         userName?: string;
+        apiKey?: string;
       };
 
       if (!Array.isArray(messages) || messages.length === 0) {
         res.status(400).json({ error: 'Messages array is required.' });
+        return;
+      }
+
+      if (!apiKey?.trim() && !process.env.GEMINI_API_KEY) {
+        const missing = formatGeminiError(new Error('MISSING_API_KEY'));
+        res.status(missing.status).json({ error: missing.message, code: missing.code });
         return;
       }
 
@@ -334,14 +361,17 @@ async function startServer() {
       await streamWithFallback(res, {
         contents: buildContents(messages),
         systemInstruction: buildStudyTutorInstruction({ language, userName, isLiveVoice: true }),
+        apiKey,
       });
     } catch (err) {
       const formatted = formatGeminiError(err);
       if (res.headersSent) {
-        res.write(`data: ${JSON.stringify({ type: 'error', error: formatted.message })}\n\n`);
+        res.write(
+          `data: ${JSON.stringify({ type: 'error', error: formatted.message, code: formatted.code })}\n\n`
+        );
         res.end();
       } else {
-        res.status(formatted.status).json({ error: formatted.message });
+        res.status(formatted.status).json({ error: formatted.message, code: formatted.code });
       }
     }
   });
@@ -349,10 +379,11 @@ async function startServer() {
   // Non-streaming Live Talk endpoint kept for compatibility
   app.post('/api/chat-live', async (req, res) => {
     try {
-      const { messages, language, userName } = req.body as {
+      const { messages, language, userName, apiKey } = req.body as {
         messages: IncomingHistoryItem[];
         language?: string;
         userName?: string;
+        apiKey?: string;
       };
 
       if (!Array.isArray(messages) || messages.length === 0) {
@@ -360,7 +391,7 @@ async function startServer() {
         return;
       }
 
-      const ai = getAiClient();
+      const ai = getAiClient(apiKey);
       const systemInstruction = buildStudyTutorInstruction({ language, userName, isLiveVoice: true });
       const contents = buildContents(messages);
 
@@ -390,20 +421,21 @@ async function startServer() {
       }
 
       const formatted = formatGeminiError(lastErr);
-      res.status(formatted.status).json({ error: formatted.message });
+      res.status(formatted.status).json({ error: formatted.message, code: formatted.code });
     } catch (err) {
       const formatted = formatGeminiError(err);
-      res.status(formatted.status).json({ error: formatted.message });
+      res.status(formatted.status).json({ error: formatted.message, code: formatted.code });
     }
   });
 
   // Bespoke Vector Artwork Generator Endpoint (with fast fallback)
   app.post('/api/generate-image', async (req, res) => {
     try {
-      const { prompt, aspectRatio = '1:1', language } = req.body as {
+      const { prompt, aspectRatio = '1:1', language, apiKey } = req.body as {
         prompt: string;
         aspectRatio?: '1:1' | '16:9' | '4:3';
         language?: string;
+        apiKey?: string;
       };
 
       if (!prompt || !prompt.trim()) {
@@ -411,7 +443,7 @@ async function startServer() {
         return;
       }
 
-      const ai = getAiClient();
+      const ai = getAiClient(apiKey);
       const dims =
         aspectRatio === '16:9'
           ? { w: 1280, h: 720 }
@@ -496,10 +528,11 @@ async function startServer() {
   // Multilingual Voice Transcription Endpoint
   app.post('/api/transcribe', async (req, res) => {
     try {
-      const { audioBase64, mimeType, language } = req.body as {
+      const { audioBase64, mimeType, language, apiKey } = req.body as {
         audioBase64: string;
         mimeType?: string;
         language?: string;
+        apiKey?: string;
       };
 
       if (!audioBase64) {
@@ -507,7 +540,7 @@ async function startServer() {
         return;
       }
 
-      const ai = getAiClient();
+      const ai = getAiClient(apiKey);
       const langHint =
         !language || language === 'Auto-Detect'
           ? 'Transcribe the spoken audio accurately in its original language. Output ONLY the transcribed text.'
@@ -558,9 +591,10 @@ async function startServer() {
   // Text-to-Speech Endpoint
   app.post('/api/tts', async (req, res) => {
     try {
-      const { text, language } = req.body as {
+      const { text, language, apiKey } = req.body as {
         text: string;
         language?: string;
+        apiKey?: string;
       };
 
       if (!text || !text.trim()) {
@@ -581,7 +615,7 @@ async function startServer() {
         return;
       }
 
-      const ai = getAiClient();
+      const ai = getAiClient(apiKey);
       const styleHint =
         language && language !== 'Auto-Detect'
           ? `Warm, polite, articulate teacher fluent in ${language}`

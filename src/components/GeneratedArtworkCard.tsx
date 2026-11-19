@@ -1,4 +1,5 @@
 import { Download, Image as ImageIcon } from 'lucide-react';
+import { useState } from 'react';
 import { GeneratedArtwork } from '../types';
 
 interface GeneratedArtworkCardProps {
@@ -6,21 +7,60 @@ interface GeneratedArtworkCardProps {
 }
 
 export function GeneratedArtworkCard({ artwork }: GeneratedArtworkCardProps) {
-  const svgDataUrl = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(artwork.svgCode)}`;
+  const [imgFailed, setImgFailed] = useState(false);
+
+  const hasRaster = Boolean(artwork.imageUrl) && !imgFailed;
+  const hasSvg = Boolean(artwork.svgCode);
+  const svgDataUrl = artwork.svgCode
+    ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(artwork.svgCode)}`
+    : '';
+  const safeFileSlug =
+    artwork.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 48) || 'roosters-artwork';
 
   const handleDownloadSvg = () => {
+    if (!artwork.svgCode) return;
     const blob = new Blob([artwork.svgCode], { type: 'image/svg+xml;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${artwork.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'roosters-artwork'}.svg`;
+    link.download = `${safeFileSlug}.svg`;
     document.body.appendChild(link);
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
   };
 
-  const handleDownloadPng = () => {
+  const handleDownloadPng = async () => {
+    if (hasRaster && artwork.imageUrl) {
+      try {
+        const resp = await fetch(artwork.imageUrl);
+        if (resp.ok) {
+          const blob = await resp.blob();
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `${safeFileSlug}.png`;
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          URL.revokeObjectURL(url);
+          return;
+        }
+      } catch {
+        // Fallback to direct download anchor
+      }
+      const link = document.createElement('a');
+      link.href = artwork.imageUrl;
+      link.download = `${safeFileSlug}.png`;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      return;
+    }
+
+    if (!artwork.svgCode) return;
     const img = new Image();
     const blob = new Blob([artwork.svgCode], { type: 'image/svg+xml;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -36,7 +76,7 @@ export function GeneratedArtworkCard({ artwork }: GeneratedArtworkCardProps) {
           const pngUrl = URL.createObjectURL(pngBlob);
           const link = document.createElement('a');
           link.href = pngUrl;
-          link.download = `${artwork.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'roosters-artwork'}.png`;
+          link.download = `${safeFileSlug}.png`;
           document.body.appendChild(link);
           link.click();
           link.remove();
@@ -57,32 +97,51 @@ export function GeneratedArtworkCard({ artwork }: GeneratedArtworkCardProps) {
           <span className="text-[11px] text-[#64748b] tabular-nums shrink-0">{artwork.aspectRatio}</span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={handleDownloadPng}
-            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-[#182032] border border-[#334155] text-[11px] font-medium text-slate-200 hover:border-[#00d4ff] hover:text-[#00d4ff] transition-colors cursor-pointer"
-          >
-            <Download className="w-3 h-3" />
-            <span>PNG</span>
-          </button>
-          <button
-            type="button"
-            onClick={handleDownloadSvg}
-            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-[#182032] border border-[#334155] text-[11px] font-medium text-slate-200 hover:border-[#ffd700] hover:text-[#ffd700] transition-colors cursor-pointer"
-          >
-            <Download className="w-3 h-3" />
-            <span>SVG</span>
-          </button>
+          {(hasRaster || hasSvg) && (
+            <button
+              type="button"
+              onClick={handleDownloadPng}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-[#182032] border border-[#334155] text-[11px] font-medium text-slate-200 hover:border-[#00d4ff] hover:text-[#00d4ff] transition-colors cursor-pointer"
+            >
+              <Download className="w-3 h-3" />
+              <span>PNG</span>
+            </button>
+          )}
+          {hasSvg && !hasRaster && (
+            <button
+              type="button"
+              onClick={handleDownloadSvg}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-[#182032] border border-[#334155] text-[11px] font-medium text-slate-200 hover:border-[#ffd700] hover:text-[#ffd700] transition-colors cursor-pointer"
+            >
+              <Download className="w-3 h-3" />
+              <span>SVG</span>
+            </button>
+          )}
         </div>
       </div>
 
       <div className="p-3 flex items-center justify-center bg-[#07090e]">
-        <img
-          src={svgDataUrl}
-          alt={artwork.title}
-          referrerPolicy="no-referrer"
-          className="max-h-[400px] w-auto rounded-lg object-contain border border-[#1f293d]"
-        />
+        {hasRaster && artwork.imageUrl ? (
+          <img
+            src={artwork.imageUrl}
+            alt={artwork.title}
+            referrerPolicy="no-referrer"
+            onError={() => setImgFailed(true)}
+            className="max-h-[420px] w-auto rounded-lg object-contain border border-[#1f293d]"
+          />
+        ) : hasSvg ? (
+          <img
+            src={svgDataUrl}
+            alt={artwork.title}
+            referrerPolicy="no-referrer"
+            className="max-h-[400px] w-auto rounded-lg object-contain border border-[#1f293d]"
+          />
+        ) : (
+          <div className="w-full py-12 rounded-lg border border-[#1f293d] bg-gradient-to-br from-[#111622] to-[#090b10] flex flex-col items-center justify-center gap-2 text-center px-4">
+            <ImageIcon className="w-8 h-8 text-[#00d4ff]" />
+            <span className="text-[13px] font-semibold text-white">{artwork.title}</span>
+          </div>
+        )}
       </div>
 
       {artwork.description && (

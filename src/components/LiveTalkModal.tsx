@@ -1,11 +1,15 @@
 import { Mic, MicOff, PhoneOff, Send, Volume2 } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { getBcp47ForLanguage, ROOSTERS_LOGO_SRC } from '../constants';
+import { MissingApiKeyError, streamChatCompletion } from '../utils/aiClient';
 
 interface LiveTalkModalProps {
   isOpen: boolean;
   selectedLanguage: string;
   userName: string;
+  hasBackendApi: boolean;
+  hasServerGeminiKey: boolean;
+  onOpenApiKeyModal?: () => void;
   onClose: (transcriptTurns?: Array<{ role: 'user' | 'assistant'; content: string }>) => void;
 }
 
@@ -56,6 +60,8 @@ export function LiveTalkModal({
   isOpen,
   selectedLanguage,
   userName,
+  hasBackendApi,
+  hasServerGeminiKey,
   onClose,
 }: LiveTalkModalProps) {
   const [status, setStatus] = useState<LiveStatus>('listening');
@@ -224,7 +230,7 @@ export function LiveTalkModal({
     [selectedLanguage, startRecognitionLoop]
   );
 
-  // Stream response from /api/chat-live-stream and speak sentence-by-sentence immediately!
+  // Stream response via Groq / Gemini (backend or direct) and speak sentence-by-sentence immediately!
   const handleUserQuery = useCallback(
     async (queryText: string) => {
       if (!queryText.trim() || !isMountedRef.current) return;
@@ -243,63 +249,36 @@ export function LiveTalkModal({
       const controller = new AbortController();
       streamAbortRef.current = controller;
 
+      let sentenceBuffer = '';
+      let fullReply = '';
+
       try {
-        const resp = await fetch('/api/chat-live-stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            messages: nextHistory,
-            language: selectedLanguage,
-            userName,
-          }),
+        await streamChatCompletion({
+          messages: nextHistory,
+          language: selectedLanguage,
+          userName,
+          isLiveVoice: true,
+          hasBackendApi,
+          hasServerGeminiKey,
           signal: controller.signal,
+          onChunk: (chunkText) => {
+            if (!isMountedRef.current) return;
+            fullReply += chunkText;
+            sentenceBuffer += chunkText;
+            setAiCaption(fullReply);
+
+            let boundaryMatch: RegExpExecArray | null;
+            while ((boundaryMatch = /^([\s\S]*?[.!?۔؟\n]+)(\s+|$)/.exec(sentenceBuffer)) !== null) {
+              const sentence = boundaryMatch[1].trim();
+              sentenceBuffer = sentenceBuffer.slice(boundaryMatch[0].length);
+              if (sentence) {
+                enqueueSentenceSpeech(sentence);
+              }
+            }
+          },
         });
 
-        if (!resp.ok || !resp.body) {
-          throw new Error('Connection hiccup');
-        }
-
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder();
-        let sseBuffer = '';
-        let sentenceBuffer = '';
-        let fullReply = '';
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (!isMountedRef.current) return;
-
-          sseBuffer += decoder.decode(value, { stream: true });
-          const events = sseBuffer.split('\n\n');
-          sseBuffer = events.pop() ?? '';
-
-          for (const rawEvent of events) {
-            const line = rawEvent.trim();
-            if (!line.startsWith('data:')) continue;
-            const jsonStr = line.slice(5).trim();
-            if (!jsonStr) continue;
-
-            const parsed = JSON.parse(jsonStr) as { type: string; text?: string; error?: string };
-            if (parsed.type === 'chunk' && parsed.text) {
-              fullReply += parsed.text;
-              sentenceBuffer += parsed.text;
-              setAiCaption(fullReply);
-
-              // Speak as soon as the first sentence boundary arrives!
-              let boundaryMatch: RegExpExecArray | null;
-              while ((boundaryMatch = /^([\s\S]*?[.!?۔؟\n]+)(\s+|$)/.exec(sentenceBuffer)) !== null) {
-                const sentence = boundaryMatch[1].trim();
-                sentenceBuffer = sentenceBuffer.slice(boundaryMatch[0].length);
-                if (sentence) {
-                  enqueueSentenceSpeech(sentence);
-                }
-              }
-            } else if (parsed.type === 'error') {
-              throw new Error(parsed.error || 'Live reply error');
-            }
-          }
-        }
+        if (!isMountedRef.current) return;
 
         streamFinishedRef.current = true;
         const remaining = sentenceBuffer.trim();
@@ -311,7 +290,6 @@ export function LiveTalkModal({
         setAiCaption(finalReply);
         setTurns([...nextHistory, { role: 'assistant', content: finalReply }]);
 
-        // If no speech utterances were queued (e.g. SpeechSynthesis missing), resume listening right away
         if (activeUtterancesRef.current === 0) {
           if (isMutedRef.current) {
             setStatus('muted');
@@ -322,12 +300,26 @@ export function LiveTalkModal({
       } catch (err) {
         if ((err as Error).name === 'AbortError' || !isMountedRef.current) return;
         streamFinishedRef.current = true;
-        const fallbackMsg = 'I had a brief connection hiccup. Please feel free to ask me again.';
+        const fallbackMsg =
+          err instanceof MissingApiKeyError
+            ? 'Please click the API Key button in the top header to enter a free Gemini or Groq key first.'
+            : err instanceof Error
+              ? err.message
+              : 'I had a brief connection hiccup. Please feel free to ask me again.';
         setAiCaption(fallbackMsg);
         enqueueSentenceSpeech(fallbackMsg);
       }
     },
-    [enqueueSentenceSpeech, selectedLanguage, startRecognitionLoop, stopAllSpeech, stopRecognition, userName]
+    [
+      enqueueSentenceSpeech,
+      hasBackendApi,
+      hasServerGeminiKey,
+      selectedLanguage,
+      startRecognitionLoop,
+      stopAllSpeech,
+      stopRecognition,
+      userName,
+    ]
   );
 
   // Setup mic visualizer & start listening on open

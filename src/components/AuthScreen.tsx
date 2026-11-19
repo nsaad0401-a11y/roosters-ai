@@ -3,6 +3,8 @@ import { Eye, EyeOff, User } from 'lucide-react';
 import { ROOSTERS_LOGO_SRC } from '../constants';
 import { ActiveUser, AuthTab } from '../types';
 import { authenticateAccount, registerAccount } from '../utils/storage';
+import { LegalFooter } from './LegalFooter';
+import { LegalPageId, LegalPagesModal } from './LegalPagesModal';
 
 interface AuthScreenProps {
   onLoginSuccess: (user: ActiveUser) => void;
@@ -17,6 +19,7 @@ export function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
+  const [legalPage, setLegalPage] = useState<LegalPageId | null>(null);
 
   const handleTabChange = (tab: AuthTab) => {
     setActiveTab(tab);
@@ -105,7 +108,7 @@ export function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
   };
 
   return (
-    <div className="min-h-screen w-full bg-[#07090e] flex items-center justify-center px-4 py-8">
+    <div className="min-h-screen w-full bg-[#07090e] flex flex-col items-center justify-center px-4 py-8">
       {/* Center Card */}
       <div
         className="w-full max-w-[380px] bg-[#121622] rounded-[16px] border border-[#1f293d] p-7"
@@ -303,6 +306,17 @@ export function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
           </button>
         </div>
       </div>
+
+      {/* Legal & Company Footer Links */}
+      <div className="mt-4 w-full max-w-md">
+        <LegalFooter onOpenPage={setLegalPage} />
+      </div>
+
+      <LegalPagesModal
+        activePage={legalPage}
+        onSelectPage={setLegalPage}
+        onClose={() => setLegalPage(null)}
+      />
     </div>
   );
 }

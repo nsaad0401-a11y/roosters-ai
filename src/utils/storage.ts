@@ -153,3 +153,40 @@ export function saveThemeSettings(settings: ThemeSettings): void {
   memoryTheme = settings;
   safeSetItem(THEME_KEY, JSON.stringify(settings));
 }
+
+const CUSTOM_API_KEY_STORAGE = 'roosters_ai_custom_api_key_v1';
+let memoryApiKey = '';
+
+export type ApiKeyProvider = 'gemini' | 'groq' | 'unknown' | 'none';
+
+export function detectApiKeyProvider(rawKey: string): ApiKeyProvider {
+  const key = rawKey.trim();
+  if (!key) return 'none';
+  if (key.startsWith('gsk_')) return 'groq';
+  if (key.startsWith('AIza')) return 'gemini';
+  return 'unknown';
+}
+
+export function loadCustomApiKey(): string {
+  const raw = safeGetItem(CUSTOM_API_KEY_STORAGE);
+  if (raw !== null) {
+    memoryApiKey = raw.trim();
+    return memoryApiKey;
+  }
+  return memoryApiKey;
+}
+
+export function saveCustomApiKey(rawKey: string): void {
+  const trimmed = rawKey.trim();
+  memoryApiKey = trimmed;
+  if (!trimmed) {
+    try {
+      window.localStorage.removeItem(CUSTOM_API_KEY_STORAGE);
+    } catch {
+      // Ignore storage errors
+    }
+    return;
+  }
+  safeSetItem(CUSTOM_API_KEY_STORAGE, trimmed);
+}
+

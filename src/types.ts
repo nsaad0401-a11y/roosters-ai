@@ -31,7 +31,9 @@ export interface MessageAttachment {
 export interface GeneratedArtwork {
   title: string;
   description: string;
-  svgCode: string;
+  svgCode?: string;
+  imageUrl?: string;
+  provider?: 'pollinations' | 'svg';
   aspectRatio: '1:1' | '16:9' | '4:3';
   width: number;
   height: number;
@@ -45,6 +47,7 @@ export interface ChatMessage {
   attachment?: MessageAttachment;
   generatedImage?: GeneratedArtwork;
   isError?: boolean;
+  isMissingKeyPrompt?: boolean;
 }
 
 export interface ChatSession {
