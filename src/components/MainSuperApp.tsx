@@ -100,54 +100,45 @@ function fileToAttachment(file: File, source: 'upload' | 'screen'): Promise<Mess
         return;
       }
 
-      const stripBase64Prefix = (url: string) =>
-        url.replace(/^data:[^;]+;base64,/, '').trim();
+      const extractBase64 = (url: string) =>
+        (url.includes(',') ? url.split(',')[1] : url).trim();
 
       const img = new Image();
       img.onload = () => {
-        const maxDim = 1280;
-        let { width, height } = img;
-        const needsResize = width > maxDim || height > maxDim || file.size > 350_000;
+        const maxWidth = 1024;
+        let width = img.naturalWidth || img.width;
+        let height = img.naturalHeight || img.height;
 
-        if (!needsResize) {
-          resolve({
-            kind: 'image',
-            name: file.name || 'image.png',
-            mimeType: file.type || 'image/png',
-            base64: stripBase64Prefix(rawUrl),
-            dataUrl: rawUrl,
-            source,
-          });
-          return;
+        if (width > maxWidth) {
+          height = Math.max(1, Math.round((height * maxWidth) / width));
+          width = maxWidth;
         }
 
-        const scale = Math.min(1, maxDim / Math.max(width, height));
-        width = Math.max(1, Math.round(width * scale));
-        height = Math.max(1, Math.round(height * scale));
-
         const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
+        canvas.width = Math.max(1, width);
+        canvas.height = Math.max(1, height);
         const ctx = canvas.getContext('2d');
         if (!ctx) {
           resolve({
             kind: 'image',
-            name: file.name || 'image.png',
-            mimeType: file.type || 'image/png',
-            base64: stripBase64Prefix(rawUrl),
+            name: file.name || 'image.jpg',
+            mimeType: file.type || 'image/jpeg',
+            base64: extractBase64(rawUrl),
             dataUrl: rawUrl,
             source,
           });
           return;
         }
 
-        ctx.drawImage(img, 0, 0, width, height);
-        const compressedUrl = canvas.toDataURL('image/jpeg', 0.84);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const compressedUrl = canvas.toDataURL('image/jpeg', 0.8);
         resolve({
           kind: 'image',
           name: file.name || 'image.jpg',
           mimeType: 'image/jpeg',
-          base64: stripBase64Prefix(compressedUrl),
+          base64: extractBase64(compressedUrl),
           dataUrl: compressedUrl,
           source,
         });
@@ -155,9 +146,9 @@ function fileToAttachment(file: File, source: 'upload' | 'screen'): Promise<Mess
       img.onerror = () => {
         resolve({
           kind: 'image',
-          name: file.name || 'image.png',
-          mimeType: file.type || 'image/png',
-          base64: stripBase64Prefix(rawUrl),
+          name: file.name || 'image.jpg',
+          mimeType: file.type || 'image/jpeg',
+          base64: extractBase64(rawUrl),
           dataUrl: rawUrl,
           source,
         });
@@ -798,11 +789,37 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     options?: { forceVoiceMessage?: boolean; profileOverride?: ClonedVoiceProfile }
   ) => {
     const textToSend = (overrideText ?? inputValue).trim();
-    const attachmentToSend = overrideText ? null : pendingAttachment;
+    const capturedAttachment = overrideText ? null : pendingAttachment;
 
-    if ((!textToSend && !attachmentToSend) || isStreaming || isGeneratingImage || isGeneratingVideo) {
+    if ((!textToSend && !capturedAttachment) || isStreaming || isGeneratingImage || isGeneratingVideo) {
       return;
     }
+
+    // Capture Base64 image data (stripping data:image/...;base64,) & mimeType BEFORE clearing state
+    const capturedDataUrl = capturedAttachment?.dataUrl || '';
+    const capturedImageBase64 =
+      capturedAttachment && capturedAttachment.kind !== 'file'
+        ? (
+            capturedAttachment.base64 ||
+            (capturedDataUrl.includes(',') ? capturedDataUrl.split(',')[1] : '')
+          ).trim()
+        : '';
+    const capturedImageMimeType =
+      capturedAttachment && capturedAttachment.kind !== 'file'
+        ? capturedAttachment.mimeType ||
+          (capturedDataUrl.startsWith('data:')
+            ? capturedDataUrl.slice(5).split(';')[0]
+            : 'image/jpeg') ||
+          'image/jpeg'
+        : capturedAttachment?.mimeType || 'text/plain';
+
+    const attachmentToSend: MessageAttachment | undefined = capturedAttachment
+      ? {
+          ...capturedAttachment,
+          base64: capturedAttachment.kind === 'file' ? '' : capturedImageBase64,
+          mimeType: capturedImageMimeType,
+        }
+      : undefined;
 
     const isSampleActive =
       Boolean(options?.profileOverride) ||
@@ -836,7 +853,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     const defaultPrompt = attachmentToSend
       ? attachmentToSend.kind === 'file'
         ? `Please review, summarize, or help debug "${attachmentToSend.name}".`
-        : 'Please analyze this image kindly.'
+        : 'Describe and analyze this image in detail.'
       : '';
 
     const finalUserText = textToSend || defaultPrompt;
@@ -850,7 +867,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       role: 'user',
       content: finalUserText,
       createdAt: Date.now(),
-      attachment: attachmentToSend ?? undefined,
+      attachment: attachmentToSend,
       voiceNote: userVoiceNote,
     };
 
@@ -946,19 +963,41 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     };
 
     try {
-      const payloadMessages = nextMessages.map((m) => ({
-        role: m.role,
-        content: m.content,
-        attachment: m.attachment
-          ? {
-              kind: m.attachment.kind,
-              name: m.attachment.name,
-              base64: m.attachment.base64 || undefined,
-              mimeType: m.attachment.mimeType || undefined,
-              textContent: m.attachment.textContent || undefined,
-            }
-          : undefined,
-      }));
+      const payloadMessages = nextMessages.slice(-10).map((m) => {
+        const isCurrentUserImgTurn = m.id === userMsgId && Boolean(capturedImageBase64);
+        if (isCurrentUserImgTurn && attachmentToSend) {
+          return {
+            role: m.role,
+            content: finalUserText,
+            attachment: {
+              kind: 'image' as const,
+              name: attachmentToSend.name,
+              base64: capturedImageBase64,
+              mimeType: capturedImageMimeType,
+            },
+          };
+        }
+
+        const msgUrl = m.attachment?.dataUrl || '';
+        const msgBase64 =
+          m.attachment && m.attachment.kind !== 'file'
+            ? (m.attachment.base64 || (msgUrl.includes(',') ? msgUrl.split(',')[1] : '')).trim()
+            : '';
+
+        return {
+          role: m.role,
+          content: m.content,
+          attachment: m.attachment
+            ? {
+                kind: m.attachment.kind,
+                name: m.attachment.name,
+                base64: msgBase64 || undefined,
+                mimeType: m.attachment.mimeType || undefined,
+                textContent: m.attachment.textContent || undefined,
+              }
+            : undefined,
+        };
+      });
 
       await streamChatCompletion({
         messages: payloadMessages,
@@ -970,7 +1009,9 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         signal: controller.signal,
         onChunk: (chunkText) => {
           accumulated += chunkText;
-          if (!rafPending) {
+          if (accumulated.length === chunkText.length) {
+            flushToState();
+          } else if (!rafPending) {
             rafPending = true;
             requestAnimationFrame(flushToState);
           }
@@ -1186,8 +1227,12 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const handleCaptureScreenFrame = () => {
     const video = screenVideoRef.current;
     if (!video || !screenStream) return;
-    const width = video.videoWidth || 1280;
-    const height = video.videoHeight || 720;
+    let width = video.videoWidth || 1024;
+    let height = video.videoHeight || 576;
+    if (width > 1024) {
+      height = Math.max(1, Math.round((height * 1024) / width));
+      width = 1024;
+    }
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
@@ -1195,8 +1240,8 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     if (!ctx) return;
 
     ctx.drawImage(video, 0, 0, width, height);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
-    const base64 = dataUrl.replace(/^data:[^;]+;base64,/, '').trim();
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+    const base64 = (dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl).trim();
 
     setPendingAttachment({
       kind: 'image',

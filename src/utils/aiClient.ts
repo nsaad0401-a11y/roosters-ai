@@ -328,7 +328,7 @@ async function streamFromGroq(params: {
 
   const groqMessages = [
     { role: 'system' as const, content: systemPrompt },
-    ...params.messages.slice(-16).map((m) => ({
+    ...params.messages.slice(-10).map((m) => ({
       role: m.role,
       content: formatMessageTextWithFile(m),
     })),
@@ -463,10 +463,11 @@ async function streamFromGeminiDirect(params: {
     isLiveVoice: params.isLiveVoice,
   });
 
-  const contents = params.messages.slice(-16).map((msg) => {
+  const contents = params.messages.slice(-10).map((msg) => {
     const parts: Array<{ text: string } | { inline_data: { mime_type: string; data: string } }> = [];
     if (msg.attachment?.base64 && msg.attachment.kind !== 'file') {
-      const cleanBase64 = msg.attachment.base64.replace(/^data:[^;]+;base64,/, '').trim();
+      const raw = msg.attachment.base64;
+      const cleanBase64 = (raw.includes(',') ? raw.split(',')[1] : raw).trim();
       if (cleanBase64) {
         parts.push({
           inline_data: {
@@ -484,7 +485,7 @@ async function streamFromGeminiDirect(params: {
         ? `${text}\n\n${section}`
         : `Please kindly review, summarize, or debug this uploaded file:\n\n${section}`;
     } else if (!text && msg.attachment) {
-      text = 'Please analyze this image carefully and kindly.';
+      text = 'Describe and analyze this image in detail.';
     }
     parts.push({ text: text || 'Hello!' });
     return {
@@ -694,8 +695,9 @@ export async function streamChatCompletion(params: {
   signal?: AbortSignal;
   onChunk: (text: string) => void;
 }): Promise<string> {
+  const recentMessages = params.messages.slice(-10);
   const resolved = resolveActiveProvider(params.hasServerGeminiKey);
-  const hasImageAttachment = params.messages.some(
+  const hasImageAttachment = recentMessages.some(
     (m) => Boolean(m.attachment?.base64) && m.attachment?.kind !== 'file'
   );
 
@@ -705,11 +707,11 @@ export async function streamChatCompletion(params: {
     const localKey = loadCustomApiKey().trim();
     const geminiDirectKey = localKey.startsWith('AIza') ? localKey : getEnvGeminiKey();
 
-    if (params.hasBackendApi || params.hasServerGeminiKey) {
+    if (params.hasBackendApi || params.hasServerGeminiKey || !geminiDirectKey) {
       const backendRes = await streamFromBackendEndpoint({
         endpoint: params.isLiveVoice ? '/api/chat-live-stream' : '/api/chat',
         apiKey: geminiDirectKey || undefined,
-        messages: params.messages,
+        messages: recentMessages,
         language: params.language,
         userName: params.userName,
         signal: params.signal,
@@ -722,7 +724,7 @@ export async function streamChatCompletion(params: {
       if (backendRes.shouldFallbackDirect && geminiDirectKey) {
         return streamFromGeminiDirect({
           apiKey: geminiDirectKey,
-          messages: params.messages,
+          messages: recentMessages,
           language: params.language,
           userName: params.userName,
           isLiveVoice: params.isLiveVoice,
@@ -733,21 +735,15 @@ export async function streamChatCompletion(params: {
       throw backendRes.error;
     }
 
-    if (geminiDirectKey) {
-      return streamFromGeminiDirect({
-        apiKey: geminiDirectKey,
-        messages: params.messages,
-        language: params.language,
-        userName: params.userName,
-        isLiveVoice: params.isLiveVoice,
-        signal: params.signal,
-        onChunk: params.onChunk,
-      });
-    }
-
-    throw new Error(
-      'Photo analysis requires a Gemini multimodal connection. Please configure a Gemini key or connect via the server.'
-    );
+    return streamFromGeminiDirect({
+      apiKey: geminiDirectKey,
+      messages: recentMessages,
+      language: params.language,
+      userName: params.userName,
+      isLiveVoice: params.isLiveVoice,
+      signal: params.signal,
+      onChunk: params.onChunk,
+    });
   }
 
   if (resolved.provider === 'none') {

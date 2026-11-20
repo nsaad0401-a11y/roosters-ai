@@ -192,11 +192,35 @@ interface IncomingHistoryItem {
   };
 }
 
+type GeminiPart = { text: string } | { inlineData: { mimeType: string; data: string } };
+
 function buildContents(messages: IncomingHistoryItem[]) {
-  return messages.slice(-16).map((msg) => {
-    const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
+  const recent = messages.slice(-10);
+
+  // Single-turn photo/multimodal request: pass direct parts array [{ inlineData }, { text }]
+  if (
+    recent.length === 1 &&
+    recent[0].role === 'user' &&
+    recent[0].attachment?.base64 &&
+    recent[0].attachment.kind !== 'file'
+  ) {
+    const raw = recent[0].attachment.base64;
+    const base64Data = (raw.includes(',') ? raw.split(',')[1] : raw).trim();
+    const imageMimeType = recent[0].attachment.mimeType || 'image/jpeg';
+    const userText = recent[0].content?.trim();
+    if (base64Data) {
+      return [
+        { inlineData: { data: base64Data, mimeType: imageMimeType } },
+        { text: userText || 'Describe and analyze this image in detail.' },
+      ] as GeminiPart[];
+    }
+  }
+
+  return recent.map((msg) => {
+    const parts: GeminiPart[] = [];
     if (msg.attachment?.base64 && msg.attachment.kind !== 'file') {
-      const cleanBase64 = msg.attachment.base64.replace(/^data:[^;]+;base64,/, '').trim();
+      const raw = msg.attachment.base64;
+      const cleanBase64 = (raw.includes(',') ? raw.split(',')[1] : raw).trim();
       if (cleanBase64) {
         parts.push({
           inlineData: {
@@ -214,7 +238,7 @@ function buildContents(messages: IncomingHistoryItem[]) {
         ? `${textPayload}\n\n${section}`
         : `Please kindly review, summarize, or debug this uploaded file:\n\n${section}`;
     } else if (!textPayload && msg.attachment) {
-      textPayload = 'Please analyze this image carefully and kindly.';
+      textPayload = 'Describe and analyze this image in detail.';
     }
     parts.push({ text: textPayload || 'Hello!' });
     return {
