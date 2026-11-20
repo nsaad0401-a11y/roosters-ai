@@ -12,10 +12,16 @@ export function GeneratedArtworkCard({ artwork }: GeneratedArtworkCardProps) {
   const [retrySeed, setRetrySeed] = useState(0);
 
   const activeImageUrl = artwork.imageUrl
-    ? retrySeed > 0
-      ? `${artwork.imageUrl}&retry=${retrySeed}`
+    ? retrySeed > 0 && artwork.imageUrl.startsWith('http')
+      ? `${artwork.imageUrl}${artwork.imageUrl.includes('?') ? '&' : '?'}retry=${retrySeed}`
       : artwork.imageUrl
     : '';
+  const engineLabel =
+    artwork.provider === 'horde'
+      ? 'AI Horde Studio'
+      : artwork.provider === 'svg'
+        ? 'Vector Art'
+        : 'AI Studio HD';
   const hasRaster = Boolean(activeImageUrl) && !imgFailed;
   const hasSvg = Boolean(artwork.svgCode);
   const svgDataUrl = artwork.svgCode
@@ -141,10 +147,10 @@ export function GeneratedArtworkCard({ artwork }: GeneratedArtworkCardProps) {
             <div className="w-11 h-11 rounded-full border-2 border-[#00d4ff]/30 border-t-[#ffd700] animate-spin" />
             <div>
               <p className="text-[13.5px] font-semibold text-white">
-                Rendering 1024×1024 HD AI Image...
+                Rendering {artwork.width}×{artwork.height} HD AI Image...
               </p>
               <p className="text-[11.5px] text-[#94a3b8] mt-1">
-                Flux photorealistic synthesis in progress
+                {engineLabel} synthesis in progress
               </p>
             </div>
           </div>
@@ -200,11 +206,13 @@ export function GeneratedArtworkCard({ artwork }: GeneratedArtworkCardProps) {
           <p dir="auto" className="text-[12px] text-[#94a3b8] line-clamp-2">
             {artwork.description}
           </p>
-          {imgLoading && (
+          {imgLoading ? (
             <span className="inline-flex items-center gap-1 text-[11px] text-[#00d4ff] shrink-0">
               <Loader2 className="w-3 h-3 animate-spin" />
-              <span>Flux HD</span>
+              <span>{engineLabel}</span>
             </span>
+          ) : (
+            <span className="text-[11px] text-[#64748b] shrink-0">{engineLabel}</span>
           )}
         </div>
       )}

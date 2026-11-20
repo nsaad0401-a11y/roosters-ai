@@ -3,6 +3,7 @@ import {
   BookOpen,
   Camera,
   Check,
+  ChevronDown,
   Copy,
   Dna,
   Download,
@@ -25,6 +26,7 @@ import {
   Trash2,
   User,
   Volume2,
+  Wrench,
   X,
 } from 'lucide-react';
 import { ChangeEvent, ClipboardEvent, CSSProperties, KeyboardEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -83,6 +85,9 @@ function fileToAttachment(file: File, source: 'upload' | 'screen'): Promise<Mess
         return;
       }
 
+      const stripBase64Prefix = (url: string) =>
+        url.replace(/^data:[^;]+;base64,/, '').trim();
+
       const img = new Image();
       img.onload = () => {
         const maxDim = 1280;
@@ -90,11 +95,11 @@ function fileToAttachment(file: File, source: 'upload' | 'screen'): Promise<Mess
         const needsResize = width > maxDim || height > maxDim || file.size > 350_000;
 
         if (!needsResize) {
-          const commaIdx = rawUrl.indexOf(',');
           resolve({
+            kind: 'image',
             name: file.name || 'image.png',
             mimeType: file.type || 'image/png',
-            base64: commaIdx >= 0 ? rawUrl.slice(commaIdx + 1) : '',
+            base64: stripBase64Prefix(rawUrl),
             dataUrl: rawUrl,
             source,
           });
@@ -110,11 +115,11 @@ function fileToAttachment(file: File, source: 'upload' | 'screen'): Promise<Mess
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         if (!ctx) {
-          const commaIdx = rawUrl.indexOf(',');
           resolve({
+            kind: 'image',
             name: file.name || 'image.png',
             mimeType: file.type || 'image/png',
-            base64: commaIdx >= 0 ? rawUrl.slice(commaIdx + 1) : '',
+            base64: stripBase64Prefix(rawUrl),
             dataUrl: rawUrl,
             source,
           });
@@ -123,21 +128,21 @@ function fileToAttachment(file: File, source: 'upload' | 'screen'): Promise<Mess
 
         ctx.drawImage(img, 0, 0, width, height);
         const compressedUrl = canvas.toDataURL('image/jpeg', 0.84);
-        const commaIndex = compressedUrl.indexOf(',');
         resolve({
+          kind: 'image',
           name: file.name || 'image.jpg',
           mimeType: 'image/jpeg',
-          base64: commaIndex >= 0 ? compressedUrl.slice(commaIndex + 1) : '',
+          base64: stripBase64Prefix(compressedUrl),
           dataUrl: compressedUrl,
           source,
         });
       };
       img.onerror = () => {
-        const commaIdx = rawUrl.indexOf(',');
         resolve({
+          kind: 'image',
           name: file.name || 'image.png',
           mimeType: file.type || 'image/png',
-          base64: commaIdx >= 0 ? rawUrl.slice(commaIdx + 1) : '',
+          base64: stripBase64Prefix(rawUrl),
           dataUrl: rawUrl,
           source,
         });
@@ -312,6 +317,17 @@ const ChatMessageRow = memo(function ChatMessageRow({
 
         {msg.isError ? (
           <p className="text-[14px] text-[#ff4d4d]">{msg.content}</p>
+        ) : msg.isPending ? (
+          <div
+            className="flex items-center gap-2 text-[13.5px] py-1"
+            style={{ color: theme.textMuted }}
+          >
+            <Loader2
+              className="w-4 h-4 animate-spin shrink-0"
+              style={{ color: theme.accentSecondary }}
+            />
+            <span>{msg.content || 'Generating...'}</span>
+          </div>
         ) : msg.content ? (
           <MarkdownRenderer content={msg.content} isLight={theme.isLight} />
         ) : (
@@ -337,7 +353,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
           />
         )}
 
-        {msg.content && !msg.isError && (
+        {msg.content && !msg.isError && !msg.isPending && (
           <div
             className="mt-3 pt-2.5 border-t flex items-center gap-2"
             style={{ borderColor: theme.borderColor }}
@@ -428,6 +444,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const [isLiveTalkOpen, setIsLiveTalkOpen] = useState(false);
   const [isTextReaderOpen, setIsTextReaderOpen] = useState(false);
   const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
+  const [isToolsMenuOpen, setIsToolsMenuOpen] = useState(false);
   const [legalPage, setLegalPage] = useState<LegalPageId | null>(null);
 
   // Host capability state (works on both Express backend & static Vercel builds)
@@ -448,6 +465,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const studyFileInputRef = useRef<HTMLInputElement | null>(null);
+  const toolsMenuRef = useRef<HTMLDivElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -471,6 +489,29 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       document.documentElement.classList.toggle('lite-mode', Boolean(themeSettings.liteMode));
     }
   }, [themeSettings.liteMode]);
+
+  // Close mobile Tools dropdown when clicking outside or pressing Escape
+  useEffect(() => {
+    if (!isToolsMenuOpen) return;
+    const handlePointerDown = (ev: MouseEvent | TouchEvent) => {
+      if (toolsMenuRef.current && !toolsMenuRef.current.contains(ev.target as Node)) {
+        setIsToolsMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (ev: globalThis.KeyboardEvent) => {
+      if (ev.key === 'Escape') {
+        setIsToolsMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isToolsMenuOpen]);
 
   const handleUpdateThemeSettings = (next: ThemeSettings) => {
     setThemeSettings(next);
@@ -968,9 +1009,10 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
 
     ctx.drawImage(video, 0, 0, width, height);
     const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
-    const base64 = dataUrl.split(',')[1] || '';
+    const base64 = dataUrl.replace(/^data:[^;]+;base64,/, '').trim();
 
     setPendingAttachment({
+      kind: 'image',
       name: `screen-capture-${new Date().toLocaleTimeString().replace(/[:\s]/g, '-')}.jpg`,
       mimeType: 'image/jpeg',
       base64,
@@ -1088,12 +1130,20 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     const loadingMsg: ChatMessage = {
       id: assistantPlaceholderId,
       role: 'assistant',
-      content: '',
+      content: 'Enhancing your prompt safely for HD image generation...',
       createdAt: Date.now(),
+      isPending: true,
     };
     const nextMessages = [...messages, userMsg];
     const currentSessionId = syncMessagesToSession(nextMessages);
     setMessages([...nextMessages, loadingMsg]);
+    setIsImageModalOpen(false);
+
+    const updateProgressText = (statusText: string) => {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === assistantPlaceholderId ? { ...m, content: statusText } : m))
+      );
+    };
 
     try {
       const data = await generateArtworkUnified({
@@ -1102,12 +1152,20 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         language: selectedLanguage,
         hasBackendApi,
         hasServerGeminiKey,
+        onStatus: updateProgressText,
       });
+
+      const providerBadge =
+        data.provider === 'horde'
+          ? ' (Free AI Horde Engine)'
+          : data.provider === 'svg'
+            ? ' (Vector Studio)'
+            : '';
 
       const aiMsg: ChatMessage = {
         id: assistantPlaceholderId,
         role: 'assistant',
-        content: `Here is your 1024×1024 HD AI image with my compliments: **${data.title}**`,
+        content: `Here is your ${data.width}×${data.height} HD AI image with my compliments${providerBadge}: **${data.title}**`,
         createdAt: Date.now(),
         generatedImage: {
           title: data.title,
@@ -1125,7 +1183,6 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       const finalMessages = [...nextMessages, aiMsg];
       setMessages(finalMessages);
       syncMessagesToSession(finalMessages, currentSessionId);
-      setIsImageModalOpen(false);
     } catch (err) {
       const errMsg: ChatMessage = {
         id: assistantPlaceholderId,
@@ -1137,7 +1194,6 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       const finalMessages = [...nextMessages, errMsg];
       setMessages(finalMessages);
       syncMessagesToSession(finalMessages, currentSessionId);
-      setIsImageModalOpen(false);
     } finally {
       setIsGeneratingImage(false);
     }
@@ -1161,12 +1217,20 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     const loadingMsg: ChatMessage = {
       id: assistantPlaceholderId,
       role: 'assistant',
-      content: '',
+      content: 'Directing your cinematic AI video story...',
       createdAt: Date.now(),
+      isPending: true,
     };
     const nextMessages = [...messages, userMsg];
     const currentSessionId = syncMessagesToSession(nextMessages);
     setMessages([...nextMessages, loadingMsg]);
+    setIsVideoModalOpen(false);
+
+    const updateProgressText = (statusText: string) => {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === assistantPlaceholderId ? { ...m, content: statusText } : m))
+      );
+    };
 
     try {
       const videoData = await generateVideoUnified({
@@ -1175,6 +1239,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         language: selectedLanguage,
         hasBackendApi,
         hasServerGeminiKey,
+        onStatus: updateProgressText,
       });
 
       const aiMsg: ChatMessage = {
@@ -1370,7 +1435,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     >
       {/* Top Header */}
       <header
-        className="shrink-0 border-b backdrop-blur-md px-2.5 sm:px-4 lg:px-6 py-2.5 sm:py-3"
+        className="shrink-0 relative z-30 border-b backdrop-blur-md px-2.5 sm:px-4 lg:px-6 py-2 sm:py-3"
         style={{
           backgroundColor: theme.headerBg,
           borderColor: theme.borderColor,
@@ -1378,13 +1443,13 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       >
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
           {/* Left: Sidebar Toggle, Uploaded Logo, Title + v2.0 Badge, Live Users Badge, User Badge */}
-          <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0 flex-wrap">
+          <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0">
             <button
               type="button"
               onClick={() => setShowHistory((prev) => !prev)}
               title={showHistory ? 'Hide Chat History' : 'Show Chat History'}
               aria-label="Toggle Saved Chat History Sidebar"
-              className="p-2 rounded-lg border transition-colors cursor-pointer shrink-0"
+              className="p-1.5 sm:p-2 rounded-lg border transition-colors cursor-pointer shrink-0"
               style={{
                 backgroundColor: showHistory ? theme.subSurfaceBg : theme.cardBg,
                 borderColor: showHistory ? theme.accentSecondary : theme.borderColor,
@@ -1395,7 +1460,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
             </button>
 
             <div
-              className="w-9 h-9 rounded-lg overflow-hidden border bg-[#111622] shrink-0"
+              className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg overflow-hidden border bg-[#111622] shrink-0"
               style={{ borderColor: theme.borderColor }}
             >
               <img
@@ -1406,9 +1471,9 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
               />
             </div>
 
-            <div className="flex items-center gap-2 min-w-0">
+            <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-wrap">
               <span
-                className="font-display font-bold text-[18px] bg-clip-text text-transparent whitespace-nowrap shrink-0"
+                className="font-display font-bold text-[15px] sm:text-[18px] bg-clip-text text-transparent whitespace-nowrap shrink-0"
                 style={{
                   backgroundImage: `linear-gradient(90deg, ${theme.accentPrimary} 0%, ${theme.accentSecondary} 100%)`,
                 }}
@@ -1418,7 +1483,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
 
               {/* Version 2.0 Badge */}
               <span
-                className="px-2 py-0.5 rounded-full text-[10.5px] font-bold tracking-wide border whitespace-nowrap shrink-0"
+                className="px-1.5 sm:px-2 py-0.5 rounded-full text-[10px] sm:text-[10.5px] font-bold tracking-wide border whitespace-nowrap shrink-0"
                 style={{
                   backgroundColor: `${theme.accentPrimary}18`,
                   borderColor: `${theme.accentPrimary}66`,
@@ -1431,7 +1496,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
 
               {/* Live Active Visitors Badge */}
               <span
-                className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border whitespace-nowrap shrink-0 tabular-nums"
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] sm:text-[11px] font-semibold border whitespace-nowrap shrink-0 tabular-nums"
                 style={{
                   backgroundColor: 'rgba(16, 185, 129, 0.12)',
                   borderColor: 'rgba(16, 185, 129, 0.45)',
@@ -1442,14 +1507,14 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
               >
                 <span
                   aria-hidden="true"
-                  className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"
+                  className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full bg-emerald-400 animate-pulse"
                   style={{ boxShadow: '0 0 8px #10b981' }}
                 />
                 <span>Live Users: {liveUsers}</span>
               </span>
 
               <div
-                className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[12px] font-medium max-w-[140px]"
+                className="hidden md:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[12px] font-medium max-w-[140px]"
                 style={{
                   backgroundColor: theme.cardBg,
                   borderColor: theme.borderColor,
@@ -1463,189 +1528,457 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
             </div>
           </div>
 
-          {/* Right: World Languages, Theme & Wallpaper, Text Reader, Screen Share, Create Image, Export Chat, New Chat, Install App, Logout */}
-          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-            {/* World Languages Selector */}
-            <div className="relative flex items-center">
-              <Globe
-                className="w-3.5 h-3.5 absolute left-2.5 pointer-events-none"
-                style={{ color: theme.accentSecondary }}
-              />
-              <select
-                aria-label="World Languages"
-                value={selectedLanguage}
-                onChange={(e) => setSelectedLanguage(e.target.value)}
-                className="pl-8 pr-6 py-1.5 rounded-lg border text-[12.5px] font-medium focus:outline-none cursor-pointer appearance-none"
-                style={{
-                  backgroundColor: theme.cardBg,
-                  borderColor: theme.borderColor,
-                  color: theme.textPrimary,
-                }}
-              >
-                {WORLD_LANGUAGES.map((lang) => (
-                  <option
-                    key={lang.code}
-                    value={lang.code}
-                    style={{ backgroundColor: theme.cardBg, color: theme.textPrimary }}
-                  >
-                    {lang.label} ({lang.native})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {/* Theme & Wallpaper Button */}
-            <button
-              type="button"
-              onClick={() => setIsThemeModalOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              style={{
-                backgroundColor: theme.cardBg,
-                borderColor: theme.borderColor,
-                color: theme.textPrimary,
-              }}
-            >
-              <Paintbrush className="w-3.5 h-3.5" style={{ color: theme.accentPrimary }} />
-              <span>Theme &amp; Wallpaper</span>
-            </button>
-
-            {/* Text Reader Button */}
-            <button
-              type="button"
-              onClick={() => setIsTextReaderOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              style={{
-                backgroundColor: theme.cardBg,
-                borderColor: theme.borderColor,
-                color: theme.textPrimary,
-              }}
-            >
-              <BookOpen className="w-3.5 h-3.5" style={{ color: theme.accentSecondary }} />
-              <span>Text Reader</span>
-            </button>
-
-            {/* Screen Share Button */}
-            <button
-              type="button"
-              onClick={handleToggleScreenShare}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              style={{
-                backgroundColor: theme.cardBg,
-                borderColor: screenStream ? theme.accentSecondary : theme.borderColor,
-                color: screenStream ? theme.accentSecondary : theme.textPrimary,
-              }}
-            >
-              {screenStream ? <MonitorOff className="w-3.5 h-3.5" /> : <Monitor className="w-3.5 h-3.5" />}
-              <span>{screenStream ? 'Stop Share' : 'Screen Share'}</span>
-            </button>
-
-            {/* Create Image Button */}
-            <button
-              type="button"
-              onClick={() => setIsImageModalOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              style={{
-                backgroundColor: theme.cardBg,
-                borderColor: theme.borderColor,
-                color: theme.accentPrimary,
-              }}
-            >
-              <Palette className="w-3.5 h-3.5" />
-              <span>Create Image</span>
-            </button>
-
-            {/* Create Video Button */}
-            <button
-              type="button"
-              onClick={() => setIsVideoModalOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              style={{
-                backgroundColor: theme.cardBg,
-                borderColor: theme.borderColor,
-                color: theme.accentSecondary,
-              }}
-            >
-              <Film className="w-3.5 h-3.5" />
-              <span>Create Video</span>
-            </button>
-
-            {/* Voice Clone Studio Button */}
-            <button
-              type="button"
-              onClick={() => setIsVoiceModalOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              style={{
-                backgroundColor: theme.cardBg,
-                borderColor:
-                  voiceSettings.activeVoiceId !== 'default'
-                    ? theme.accentPrimary
-                    : theme.borderColor,
-                color:
-                  voiceSettings.activeVoiceId !== 'default'
-                    ? theme.accentPrimary
-                    : theme.textPrimary,
-              }}
-            >
-              <Dna
-                className="w-3.5 h-3.5"
-                style={{
-                  color:
-                    voiceSettings.activeVoiceId !== 'default'
-                      ? theme.accentPrimary
-                      : theme.accentSecondary,
-                }}
-              />
-              <span>Voice Clone</span>
-            </button>
-
-            {/* Export Chat Button */}
-            <button
-              type="button"
-              onClick={handleExportChat}
-              title="Download study session or code solutions as a .txt file"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              style={{
-                backgroundColor: theme.cardBg,
-                borderColor: theme.borderColor,
-                color: theme.textPrimary,
-              }}
-            >
-              <Download className="w-3.5 h-3.5" style={{ color: theme.accentSecondary }} />
-              <span>Export Chat</span>
-            </button>
-
-            {/* New Chat Button */}
+          {/* Right: Always-visible + New Chat, Always-visible Live Talk, Mobile Tools Dropdown, & Desktop Inline Controls */}
+          <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2 ml-auto">
+            {/* + New Chat Button (Always visible on mobile & desktop) */}
             <button
               type="button"
               onClick={handleNewChat}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center gap-1 px-2.5 sm:px-3 py-1.5 rounded-lg border text-[12px] sm:text-[12.5px] font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               style={{
                 backgroundColor: theme.subSurfaceBg,
                 borderColor: theme.borderColor,
                 color: theme.textPrimary,
               }}
             >
-              <Plus className="w-3.5 h-3.5" style={{ color: theme.accentSecondary }} />
+              <Plus className="w-3.5 h-3.5 shrink-0" style={{ color: theme.accentSecondary }} />
               <span>New Chat</span>
             </button>
 
-            {/* Prominent PWA Install App Button */}
-            <PWAInstallButton theme={theme} />
-
-            {/* Logout Button */}
+            {/* Prominent Live Talk Button (Always visible & tappable on BOTH mobile and desktop) */}
             <button
               type="button"
-              onClick={handleCleanLogout}
-              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg border text-[12px] sm:text-[12.5px] font-medium hover:text-[#ff4d4d] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              onClick={() => {
+                stopAudioPlayback();
+                setIsToolsMenuOpen(false);
+                setIsLiveTalkOpen(true);
+              }}
+              title="Start Hands-Free Live Voice Conversation"
+              aria-label="Live Talk"
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg border font-bold text-[12px] sm:text-[12.5px] transition-all hover:brightness-110 active:scale-[0.98] whitespace-nowrap shrink-0 cursor-pointer"
               style={{
                 backgroundColor: theme.cardBg,
-                borderColor: theme.borderColor,
-                color: theme.textSecondary,
+                borderColor: theme.accentSecondary,
+                color: theme.accentSecondary,
+                boxShadow: theme.liteMode ? 'none' : `0 0 14px ${theme.accentSecondary}30`,
               }}
             >
-              <LogOut className="w-3.5 h-3.5" />
-              <span>Logout</span>
+              <AudioLines className="w-3.5 h-3.5 shrink-0" />
+              <span>Live Talk</span>
             </button>
+
+            {/* Mobile Collapsible "Tools ▾" Menu (< lg screens) */}
+            <div ref={toolsMenuRef} className="relative lg:hidden">
+              <button
+                type="button"
+                onClick={() => setIsToolsMenuOpen((prev) => !prev)}
+                aria-expanded={isToolsMenuOpen}
+                aria-haspopup="menu"
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[12px] font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                style={{
+                  backgroundColor: isToolsMenuOpen ? theme.subSurfaceBg : theme.cardBg,
+                  borderColor: isToolsMenuOpen ? theme.accentPrimary : theme.borderColor,
+                  color: isToolsMenuOpen ? theme.accentPrimary : theme.textPrimary,
+                }}
+              >
+                <Wrench className="w-3.5 h-3.5 shrink-0" style={{ color: theme.accentPrimary }} />
+                <span>Tools</span>
+                <ChevronDown
+                  className={`w-3.5 h-3.5 transition-transform duration-150 ${
+                    isToolsMenuOpen ? 'rotate-180' : ''
+                  }`}
+                />
+              </button>
+
+              {isToolsMenuOpen && (
+                <div
+                  role="menu"
+                  aria-label="Roosters AI Tools Menu"
+                  className="absolute right-0 top-full mt-2 w-72 max-w-[calc(100vw-1.25rem)] max-h-[75dvh] overflow-y-auto rounded-2xl border p-3 shadow-2xl z-50 space-y-2"
+                  style={{
+                    backgroundColor: theme.cardBg,
+                    borderColor: theme.borderColor,
+                    color: theme.textPrimary,
+                  }}
+                >
+                  {/* Signed-in User Row */}
+                  <div
+                    className="flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl border text-[12px]"
+                    style={{
+                      backgroundColor: theme.subSurfaceBg,
+                      borderColor: theme.borderColor,
+                      color: theme.textSecondary,
+                    }}
+                  >
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <User className="w-3.5 h-3.5 shrink-0" style={{ color: theme.accentSecondary }} />
+                      <span className="truncate font-medium">{user.fullName}</span>
+                    </div>
+                    <span className="text-[10.5px] opacity-75 shrink-0">Pro v2.0</span>
+                  </div>
+
+                  {/* World Languages Selector */}
+                  <div className="relative flex items-center">
+                    <Globe
+                      className="w-3.5 h-3.5 absolute left-3 pointer-events-none"
+                      style={{ color: theme.accentSecondary }}
+                    />
+                    <select
+                      aria-label="World Languages"
+                      value={selectedLanguage}
+                      onChange={(e) => {
+                        setSelectedLanguage(e.target.value);
+                        setIsToolsMenuOpen(false);
+                      }}
+                      className="w-full pl-8 pr-6 py-2 rounded-xl border text-[12.5px] font-medium focus:outline-none cursor-pointer appearance-none"
+                      style={{
+                        backgroundColor: theme.subSurfaceBg,
+                        borderColor: theme.borderColor,
+                        color: theme.textPrimary,
+                      }}
+                    >
+                      {WORLD_LANGUAGES.map((lang) => (
+                        <option
+                          key={lang.code}
+                          value={lang.code}
+                          style={{ backgroundColor: theme.cardBg, color: theme.textPrimary }}
+                        >
+                          {lang.label} ({lang.native})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Action Grid */}
+                  <div className="grid grid-cols-1 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsToolsMenuOpen(false);
+                        setIsImageModalOpen(true);
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl border text-[12.5px] font-medium text-left cursor-pointer"
+                      style={{
+                        backgroundColor: theme.subSurfaceBg,
+                        borderColor: theme.borderColor,
+                        color: theme.accentPrimary,
+                      }}
+                    >
+                      <Palette className="w-4 h-4 shrink-0" />
+                      <span>Create Image (Unlimited HD)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsToolsMenuOpen(false);
+                        setIsVideoModalOpen(true);
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl border text-[12.5px] font-medium text-left cursor-pointer"
+                      style={{
+                        backgroundColor: theme.subSurfaceBg,
+                        borderColor: theme.borderColor,
+                        color: theme.accentSecondary,
+                      }}
+                    >
+                      <Film className="w-4 h-4 shrink-0" />
+                      <span>Create Video</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsToolsMenuOpen(false);
+                        setIsThemeModalOpen(true);
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl border text-[12.5px] font-medium text-left cursor-pointer"
+                      style={{
+                        backgroundColor: theme.subSurfaceBg,
+                        borderColor: theme.borderColor,
+                        color: theme.textPrimary,
+                      }}
+                    >
+                      <Paintbrush className="w-4 h-4 shrink-0" style={{ color: theme.accentPrimary }} />
+                      <span>Theme &amp; Wallpaper</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsToolsMenuOpen(false);
+                        setIsTextReaderOpen(true);
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl border text-[12.5px] font-medium text-left cursor-pointer"
+                      style={{
+                        backgroundColor: theme.subSurfaceBg,
+                        borderColor: theme.borderColor,
+                        color: theme.textPrimary,
+                      }}
+                    >
+                      <BookOpen className="w-4 h-4 shrink-0" style={{ color: theme.accentSecondary }} />
+                      <span>Text Reader</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsToolsMenuOpen(false);
+                        void handleToggleScreenShare();
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl border text-[12.5px] font-medium text-left cursor-pointer"
+                      style={{
+                        backgroundColor: theme.subSurfaceBg,
+                        borderColor: screenStream ? theme.accentSecondary : theme.borderColor,
+                        color: screenStream ? theme.accentSecondary : theme.textPrimary,
+                      }}
+                    >
+                      {screenStream ? (
+                        <MonitorOff className="w-4 h-4 shrink-0" />
+                      ) : (
+                        <Monitor className="w-4 h-4 shrink-0" />
+                      )}
+                      <span>{screenStream ? 'Stop Screen Share' : 'Screen Share'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsToolsMenuOpen(false);
+                        setIsVoiceModalOpen(true);
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl border text-[12.5px] font-medium text-left cursor-pointer"
+                      style={{
+                        backgroundColor: theme.subSurfaceBg,
+                        borderColor:
+                          voiceSettings.activeVoiceId !== 'default'
+                            ? theme.accentPrimary
+                            : theme.borderColor,
+                        color:
+                          voiceSettings.activeVoiceId !== 'default'
+                            ? theme.accentPrimary
+                            : theme.textPrimary,
+                      }}
+                    >
+                      <Dna className="w-4 h-4 shrink-0" style={{ color: theme.accentSecondary }} />
+                      <span>Voice Clone Studio</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsToolsMenuOpen(false);
+                        handleExportChat();
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl border text-[12.5px] font-medium text-left cursor-pointer"
+                      style={{
+                        backgroundColor: theme.subSurfaceBg,
+                        borderColor: theme.borderColor,
+                        color: theme.textPrimary,
+                      }}
+                    >
+                      <Download className="w-4 h-4 shrink-0" style={{ color: theme.accentSecondary }} />
+                      <span>Export Chat (.txt)</span>
+                    </button>
+                  </div>
+
+                  <div
+                    className="pt-2 border-t flex items-center justify-between gap-2"
+                    style={{ borderColor: theme.borderColor }}
+                  >
+                    <PWAInstallButton
+                      theme={theme}
+                      onOpenGuide={() => setIsToolsMenuOpen(false)}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsToolsMenuOpen(false);
+                        handleCleanLogout();
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[12px] font-medium hover:text-[#ff4d4d] transition-colors cursor-pointer ml-auto"
+                      style={{
+                        backgroundColor: theme.subSurfaceBg,
+                        borderColor: theme.borderColor,
+                        color: theme.textSecondary,
+                      }}
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>Logout</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Desktop Full Expanded Tools Bar (lg+ screens) */}
+            <div className="hidden lg:flex flex-wrap items-center gap-1.5">
+              {/* World Languages Selector */}
+              <div className="relative flex items-center">
+                <Globe
+                  className="w-3.5 h-3.5 absolute left-2.5 pointer-events-none"
+                  style={{ color: theme.accentSecondary }}
+                />
+                <select
+                  aria-label="World Languages"
+                  value={selectedLanguage}
+                  onChange={(e) => setSelectedLanguage(e.target.value)}
+                  className="pl-8 pr-6 py-1.5 rounded-lg border text-[12.5px] font-medium focus:outline-none cursor-pointer appearance-none"
+                  style={{
+                    backgroundColor: theme.cardBg,
+                    borderColor: theme.borderColor,
+                    color: theme.textPrimary,
+                  }}
+                >
+                  {WORLD_LANGUAGES.map((lang) => (
+                    <option
+                      key={lang.code}
+                      value={lang.code}
+                      style={{ backgroundColor: theme.cardBg, color: theme.textPrimary }}
+                    >
+                      {lang.label} ({lang.native})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Theme & Wallpaper Button */}
+              <button
+                type="button"
+                onClick={() => setIsThemeModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                style={{
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.borderColor,
+                  color: theme.textPrimary,
+                }}
+              >
+                <Paintbrush className="w-3.5 h-3.5" style={{ color: theme.accentPrimary }} />
+                <span>Theme &amp; Wallpaper</span>
+              </button>
+
+              {/* Text Reader Button */}
+              <button
+                type="button"
+                onClick={() => setIsTextReaderOpen(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                style={{
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.borderColor,
+                  color: theme.textPrimary,
+                }}
+              >
+                <BookOpen className="w-3.5 h-3.5" style={{ color: theme.accentSecondary }} />
+                <span>Text Reader</span>
+              </button>
+
+              {/* Screen Share Button */}
+              <button
+                type="button"
+                onClick={handleToggleScreenShare}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                style={{
+                  backgroundColor: theme.cardBg,
+                  borderColor: screenStream ? theme.accentSecondary : theme.borderColor,
+                  color: screenStream ? theme.accentSecondary : theme.textPrimary,
+                }}
+              >
+                {screenStream ? <MonitorOff className="w-3.5 h-3.5" /> : <Monitor className="w-3.5 h-3.5" />}
+                <span>{screenStream ? 'Stop Share' : 'Screen Share'}</span>
+              </button>
+
+              {/* Create Image Button */}
+              <button
+                type="button"
+                onClick={() => setIsImageModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                style={{
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.borderColor,
+                  color: theme.accentPrimary,
+                }}
+              >
+                <Palette className="w-3.5 h-3.5" />
+                <span>Create Image</span>
+              </button>
+
+              {/* Create Video Button */}
+              <button
+                type="button"
+                onClick={() => setIsVideoModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                style={{
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.borderColor,
+                  color: theme.accentSecondary,
+                }}
+              >
+                <Film className="w-3.5 h-3.5" />
+                <span>Create Video</span>
+              </button>
+
+              {/* Voice Clone Studio Button */}
+              <button
+                type="button"
+                onClick={() => setIsVoiceModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                style={{
+                  backgroundColor: theme.cardBg,
+                  borderColor:
+                    voiceSettings.activeVoiceId !== 'default'
+                      ? theme.accentPrimary
+                      : theme.borderColor,
+                  color:
+                    voiceSettings.activeVoiceId !== 'default'
+                      ? theme.accentPrimary
+                      : theme.textPrimary,
+                }}
+              >
+                <Dna
+                  className="w-3.5 h-3.5"
+                  style={{
+                    color:
+                      voiceSettings.activeVoiceId !== 'default'
+                        ? theme.accentPrimary
+                        : theme.accentSecondary,
+                  }}
+                />
+                <span>Voice Clone</span>
+              </button>
+
+              {/* Export Chat Button */}
+              <button
+                type="button"
+                onClick={handleExportChat}
+                title="Download study session or code solutions as a .txt file"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                style={{
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.borderColor,
+                  color: theme.textPrimary,
+                }}
+              >
+                <Download className="w-3.5 h-3.5" style={{ color: theme.accentSecondary }} />
+                <span>Export Chat</span>
+              </button>
+
+              {/* Prominent PWA Install App Button */}
+              <PWAInstallButton theme={theme} />
+
+              {/* Logout Button */}
+              <button
+                type="button"
+                onClick={handleCleanLogout}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[12.5px] font-medium hover:text-[#ff4d4d] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                style={{
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.borderColor,
+                  color: theme.textSecondary,
+                }}
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Logout</span>
+              </button>
+            </div>
           </div>
         </div>
       </header>
@@ -1753,7 +2086,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         )}
 
         {/* Chat Workspace with Theme + Wallpaper */}
-        <main className="flex-1 flex flex-col min-w-0" style={wallpaperStyle}>
+        <main className="flex-1 flex flex-col min-w-0 min-h-0" style={wallpaperStyle}>
           {/* Active Screen Share Bar */}
           {screenStream && (
             <div
@@ -1892,7 +2225,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
 
           {/* Bottom Input Bar */}
           <div
-            className="shrink-0 border-t px-2.5 sm:px-6 py-2.5 sm:py-3.5"
+            className="shrink-0 border-t px-2.5 sm:px-6 pt-2.5 pb-[max(1rem,env(safe-area-inset-bottom))] sm:py-3.5"
             style={{
               backgroundColor: theme.headerBg,
               borderColor: theme.borderColor,
@@ -1972,10 +2305,10 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                 </div>
               )}
 
-              {/* Input Row + Prominent Live Talk Button */}
+              {/* Input Row */}
               <div className="flex items-end gap-1.5 sm:gap-2.5">
                 <div
-                  className="flex-1 min-w-0 flex items-end gap-1 sm:gap-2 rounded-2xl border p-1.5 sm:p-2 transition-colors"
+                  className="flex-1 min-w-0 min-h-[48px] flex items-end gap-1 sm:gap-2 rounded-2xl border p-1.5 sm:p-2 transition-colors"
                   style={{
                     backgroundColor: theme.inputBg,
                     borderColor: theme.borderColor,
@@ -2074,9 +2407,9 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                         ? 'Listening... Click mic to stop'
                         : isTranscribing
                           ? 'Transcribing voice...'
-                          : `Ask Roosters AI (${selectedLanguage})...`
+                          : `Ask your Study Tutor (${selectedLanguage})...`
                     }
-                    className="flex-1 min-w-0 bg-transparent px-1.5 sm:px-2 py-2 text-[14px] sm:text-[14.5px] focus:outline-none resize-none max-h-40 leading-relaxed"
+                    className="flex-1 min-w-0 bg-transparent px-1.5 sm:px-2 py-2.5 text-[14px] sm:text-[14.5px] focus:outline-none resize-none max-h-40 leading-normal"
                     style={{ color: theme.textPrimary }}
                   />
 
@@ -2116,30 +2449,9 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     </button>
                   )}
                 </div>
-
-                {/* Prominent Live Talk Button */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    stopAudioPlayback();
-                    setIsLiveTalkOpen(true);
-                  }}
-                  title="Start Hands-Free Live Voice Conversation"
-                  aria-label="Live Talk"
-                  className="px-2.5 sm:px-4 py-3 sm:py-3.5 rounded-2xl border font-bold text-[12.5px] sm:text-[13px] flex items-center gap-1.5 sm:gap-2 transition-all hover:brightness-110 active:scale-[0.98] shrink-0 cursor-pointer whitespace-nowrap"
-                  style={{
-                    backgroundColor: theme.cardBg,
-                    borderColor: theme.accentSecondary,
-                    color: theme.accentSecondary,
-                    boxShadow: theme.liteMode ? 'none' : `0 0 18px ${theme.accentSecondary}30`,
-                  }}
-                >
-                  <AudioLines className="w-4 h-4" />
-                  <span className="hidden sm:inline">Live Talk</span>
-                </button>
               </div>
 
-              <div className="mt-1.5 border-t pt-1.5" style={{ borderColor: theme.borderColor }}>
+              <div className="mt-2 border-t pt-1.5" style={{ borderColor: theme.borderColor }}>
                 <LegalFooter
                   compact
                   theme={theme}

@@ -76,24 +76,104 @@ function drawCoverImage(
   const ih = img.naturalHeight || CANVAS_H;
   const baseScale = Math.max(CANVAS_W / iw, CANVAS_H / ih);
 
-  // Ken Burns smooth motion: alternating gentle zoom-in & slow pan
-  const zoomDir = sceneIndex % 2 === 0 ? 1 : -1;
-  const zoomFactor =
-    zoomDir > 0 ? 1.0 + 0.08 * sceneProgress : 1.08 - 0.08 * sceneProgress;
+  // Distinct 4-act cinematic Ken Burns camera choreography from a single hero frame
+  let zoomFactor = 1.04;
+  let panX = 0;
+  let panY = 0;
+
+  if (sceneIndex === 0) {
+    // Act 1: Smooth wide establishing zoom-in + left-to-right drift
+    zoomFactor = 1.0 + 0.12 * sceneProgress;
+    panX = (sceneProgress - 0.5) * 44;
+    panY = -10 * sceneProgress;
+  } else if (sceneIndex === 1) {
+    // Act 2: Intimate macro zoom + subtle upward diagonal sweep
+    zoomFactor = 1.12 + 0.12 * sceneProgress;
+    panX = -32 * (sceneProgress - 0.3);
+    panY = 18 * (0.5 - sceneProgress);
+  } else if (sceneIndex === 2) {
+    // Act 3: Sweeping lateral glide
+    zoomFactor = 1.18 - 0.04 * sceneProgress;
+    panX = (0.5 - sceneProgress) * 64;
+    panY = Math.sin(sceneProgress * Math.PI) * 14;
+  } else {
+    // Act 4: Graceful pull-back finale reveal
+    zoomFactor = 1.22 - 0.18 * sceneProgress;
+    panX = (sceneProgress - 0.5) * 26;
+    panY = -14 * (1 - sceneProgress);
+  }
+
   const scale = baseScale * zoomFactor;
   const drawW = iw * scale;
   const drawH = ih * scale;
 
-  const panX = ((sceneIndex % 2 === 0 ? -1 : 1) * (sceneProgress - 0.5) * 28);
   const x = (CANVAS_W - drawW) / 2 + panX;
-  const y = (CANVAS_H - drawH) / 2;
+  const y = (CANVAS_H - drawH) / 2 + panY;
 
   ctx.drawImage(img, x, y, drawW, drawH);
   ctx.restore();
 }
 
+function drawCinematicOverlays(
+  ctx: CanvasRenderingContext2D,
+  sceneIndex: number,
+  sceneProgress: number,
+  totalElapsedMs: number,
+  mood: GeneratedVideo['mood']
+) {
+  const accentMap: Record<GeneratedVideo['mood'], { primary: string; glow: string }> = {
+    cinematic: { primary: 'rgba(255, 215, 0, ', glow: 'rgba(0, 212, 255, ' },
+    calm: { primary: 'rgba(56, 189, 248, ', glow: 'rgba(167, 243, 208, ' },
+    epic: { primary: 'rgba(251, 146, 60, ', glow: 'rgba(255, 215, 0, ' },
+    study: { primary: 'rgba(0, 212, 255, ', glow: 'rgba(255, 215, 0, ' },
+  };
+  const palette = accentMap[mood] || accentMap.cinematic;
+
+  // Sweeping radial atmospheric light flare
+  const sweepX = CANVAS_W * (0.18 + 0.64 * ((sceneProgress + sceneIndex * 0.25) % 1));
+  const sweepY = CANVAS_H * (0.28 + 0.14 * Math.sin(totalElapsedMs * 0.0012));
+  const flare = ctx.createRadialGradient(sweepX, sweepY, 8, sweepX, sweepY, 340);
+  flare.addColorStop(0, `${palette.primary}0.16)`);
+  flare.addColorStop(0.55, `${palette.glow}0.06)`);
+  flare.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = flare;
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+  // Subtle drifting bokeh dust particles for living motion
+  const t = totalElapsedMs * 0.0007;
+  for (let i = 0; i < 14; i++) {
+    const px = ((Math.sin(t * 0.9 + i * 1.7) * 0.5 + 0.5) * CANVAS_W);
+    const py = ((Math.cos(t * 0.65 + i * 2.3) * 0.5 + 0.5) * (CANVAS_H - 90));
+    const radius = 1.6 + (i % 3) * 1.1;
+    const alpha = 0.14 + 0.14 * Math.sin(t * 2 + i);
+    ctx.beginPath();
+    ctx.arc(px, py, radius, 0, Math.PI * 2);
+    ctx.fillStyle = `${i % 2 === 0 ? palette.primary : palette.glow}${alpha.toFixed(2)})`;
+    ctx.fill();
+  }
+
+  // Subtle letterbox cinema vignette at top edge
+  const topScrim = ctx.createLinearGradient(0, 0, 0, 72);
+  topScrim.addColorStop(0, 'rgba(5, 6, 8, 0.45)');
+  topScrim.addColorStop(1, 'rgba(5, 6, 8, 0)');
+  ctx.fillStyle = topScrim;
+  ctx.fillRect(0, 0, CANVAS_W, 72);
+}
+
 async function fetchImageSafe(url: string): Promise<{ img: HTMLImageElement | null; objectUrl?: string }> {
-  // Fetch into local Blob URL so Canvas remains untainted for MediaRecorder .webm export
+  if (!url) return { img: null };
+
+  // Directly load data URLs (already base64/SVG — zero extra network fetches & untainted)
+  if (url.startsWith('data:')) {
+    return new Promise((resolve) => {
+      const im = new Image();
+      im.onload = () => resolve({ img: im });
+      im.onerror = () => resolve({ img: null });
+      im.src = url;
+    });
+  }
+
+  // Fetch remote image once into local Blob URL so Canvas remains untainted for .webm export
   try {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), 14000);
@@ -218,7 +298,7 @@ export function GeneratedVideoCard({
     }
   }, [isPlaying]);
 
-  // Preload 4 sequential visual frames safely as Blob ObjectURLs
+  // Load unique scene image(s) only ONCE (single-fetch friendly!)
   useEffect(() => {
     let cancelled = false;
     const objectUrls: string[] = [];
@@ -226,23 +306,28 @@ export function GeneratedVideoCard({
     const loadAll = async () => {
       setLoadedCount(0);
       setIsReady(false);
-      let completed = 0;
 
-      const results = await Promise.all(
-        video.scenes.map(async (scene, idx) => {
-          const res = await fetchImageSafe(scene.imageUrl);
-          if (res.objectUrl) objectUrls.push(res.objectUrl);
-          if (!cancelled) {
-            completed += 1;
-            setLoadedCount(completed);
-            loadedImagesRef.current[idx] = res.img;
-          }
-          return res.img;
-        })
+      const cache = new Map<string, HTMLImageElement | null>();
+      const uniqueUrls = Array.from(
+        new Set(
+          [video.heroImageUrl, ...video.scenes.map((s) => s.imageUrl)].filter(
+            (u): u is string => Boolean(u)
+          )
+        )
       );
 
+      for (const u of uniqueUrls) {
+        const res = await fetchImageSafe(u);
+        if (res.objectUrl) objectUrls.push(res.objectUrl);
+        cache.set(u, res.img);
+      }
+
       if (!cancelled) {
-        loadedImagesRef.current = results;
+        const mapped = video.scenes.map(
+          (scene) => cache.get(scene.imageUrl || video.heroImageUrl || '') ?? null
+        );
+        loadedImagesRef.current = mapped;
+        setLoadedCount(video.scenes.length);
         setIsReady(true);
       }
     };
@@ -289,6 +374,9 @@ export function GeneratedVideoCard({
           ctx.restore();
         }
       }
+
+      // Dynamic animated light sweep, particles & cinematic atmosphere overlays
+      drawCinematicOverlays(ctx, sceneIdx, sceneProgress, elapsedMs, video.mood);
 
       // Filmic gradient scrim & scene subtitle
       const scrim = ctx.createLinearGradient(0, CANVAS_H - 150, 0, CANVAS_H);

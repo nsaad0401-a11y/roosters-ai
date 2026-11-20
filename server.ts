@@ -3,7 +3,7 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
+import { GoogleGenAI, HarmBlockThreshold, HarmCategory, ThinkingLevel, Type } from '@google/genai';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,6 +21,25 @@ const FAST_CHAT_MODELS: ModelCandidate[] = [
   { model: 'gemini-2.5-flash', thinkingConfig: { thinkingBudget: 0 } },
   { model: 'gemini-3.1-flash-lite', thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL } },
   { model: 'gemini-4-hydrogen', thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } },
+];
+
+const DEFAULT_SAFETY_SETTINGS = [
+  {
+    category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+    threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+  },
+  {
+    category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+    threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+  },
+  {
+    category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+    threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+  },
+  {
+    category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+    threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+  },
 ];
 
 function getServerDefaultGeminiKey(): string {
@@ -139,9 +158,12 @@ function buildStudyTutorInstruction(options: {
       ? 'Reply fluently in the exact language of the user’s latest message.'
       : `Reply fluently in ${language}.`;
 
+  const multimodalCore =
+    'You are Roosters AI by SandSoft. You have full permission and ability to view, read, and analyze any photo, screenshot, or document uploaded by the user, including handwritten notes and images.';
+
   if (isLiveVoice) {
     return [
-      `You are Roosters AI by SandSoft${userName ? `, warmly assisting ${userName}` : ''}.`,
+      `${multimodalCore}${userName ? ` You are warmly assisting ${userName}.` : ''}`,
       'Be ultra-polite, warm, respectful, and encouraging like a kind study tutor.',
       'Speak naturally in 2–4 concise, clear sentences without markdown symbols or code fences unless asked.',
       langRule,
@@ -149,10 +171,10 @@ function buildStudyTutorInstruction(options: {
   }
 
   return [
-    `You are Roosters AI v2.0 by SandSoft${userName ? `, warmly assisting ${userName}` : ''}.`,
+    `${multimodalCore}${userName ? ` You are warmly assisting ${userName}.` : ''}`,
     'Always be deeply polite, warm, respectful, and encouraging like a patient master teacher.',
     'For study topics: explain in clear numbered steps with simple examples, crisp study notes, and 1–2 helpful practice questions.',
-    'Format code in fenced markdown blocks with language tags. Analyze attached images, screens, study notes, or code files politely and thoroughly.',
+    'Format code in fenced markdown blocks with language tags. Examine uploaded images, photos, screenshots, study notes, or code files politely, accurately, and in helpful detail.',
     'NEVER generate ASCII art or text-character drawings when asked for images, photos, portraits, or videos.',
     langRule,
   ].join(' ');
@@ -173,25 +195,28 @@ interface IncomingHistoryItem {
 function buildContents(messages: IncomingHistoryItem[]) {
   return messages.slice(-16).map((msg) => {
     const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
-    if (msg.attachment?.base64 && msg.attachment?.mimeType && msg.attachment.kind !== 'file') {
-      parts.push({
-        inlineData: {
-          mimeType: msg.attachment.mimeType,
-          data: msg.attachment.base64,
-        },
-      });
+    if (msg.attachment?.base64 && msg.attachment.kind !== 'file') {
+      const cleanBase64 = msg.attachment.base64.replace(/^data:[^;]+;base64,/, '').trim();
+      if (cleanBase64) {
+        parts.push({
+          inlineData: {
+            data: cleanBase64,
+            mimeType: msg.attachment.mimeType || 'image/jpeg',
+          },
+        });
+      }
     }
     let textPayload = msg.content?.trim() || '';
     if (msg.attachment?.kind === 'file' && msg.attachment.textContent) {
       const fileLabel = msg.attachment.name || 'study-file.txt';
-      const fileSection = `[Uploaded File: ${fileLabel}]\n\`\`\`\n${msg.attachment.textContent.slice(0, 60000)}\n\`\`\``;
+      const section = `[Uploaded File: ${fileLabel}]\n\`\`\`\n${msg.attachment.textContent.slice(0, 60000)}\n\`\`\``;
       textPayload = textPayload
-        ? `${textPayload}\n\n${fileSection}`
-        : `Please kindly review, summarize, or debug this uploaded file:\n\n${fileSection}`;
+        ? `${textPayload}\n\n${section}`
+        : `Please kindly review, summarize, or debug this uploaded file:\n\n${section}`;
     } else if (!textPayload && msg.attachment) {
-      textPayload = 'Please analyze this attachment kindly.';
+      textPayload = 'Please analyze this image carefully and kindly.';
     }
-    parts.push({ text: textPayload });
+    parts.push({ text: textPayload || 'Hello!' });
     return {
       role: msg.role === 'assistant' ? 'model' : 'user',
       parts,
@@ -222,6 +247,7 @@ async function streamWithFallback(
         config: {
           systemInstruction: params.systemInstruction,
           thinkingConfig: candidate.thinkingConfig,
+          safetySettings: DEFAULT_SAFETY_SETTINGS,
         },
       });
 
@@ -410,6 +436,7 @@ async function startServer() {
             config: {
               systemInstruction,
               thinkingConfig: candidate.thinkingConfig,
+              safetySettings: DEFAULT_SAFETY_SETTINGS,
             },
           });
           const text = (response.text ?? '').trim();

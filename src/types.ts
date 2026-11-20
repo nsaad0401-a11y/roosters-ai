@@ -34,7 +34,7 @@ export interface GeneratedArtwork {
   detailedPrompt?: string;
   svgCode?: string;
   imageUrl?: string;
-  provider?: 'pollinations' | 'svg';
+  provider?: 'pollinations' | 'horde' | 'svg';
   aspectRatio: '1:1' | '16:9' | '4:3';
   width: number;
   height: number;
@@ -52,6 +52,8 @@ export interface GeneratedVideo {
   narration: string;
   mood: 'cinematic' | 'calm' | 'epic' | 'study';
   style: string;
+  heroImageUrl?: string;
+  provider?: 'pollinations' | 'horde' | 'svg';
   scenes: VideoScene[];
   aspectRatio: '16:9';
   createdAt: number;
@@ -92,6 +94,7 @@ export interface ChatMessage {
   generatedImage?: GeneratedArtwork;
   generatedVideo?: GeneratedVideo;
   isError?: boolean;
+  isPending?: boolean;
   isMissingKeyPrompt?: boolean;
 }
 

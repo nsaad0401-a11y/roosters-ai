@@ -1,5 +1,5 @@
 import { FormEvent, useState } from 'react';
-import { Loader2, Palette, X } from 'lucide-react';
+import { Loader2, Palette, ShieldCheck, X } from 'lucide-react';
 import { APP_THEMES, AppTheme } from '../themes';
 
 interface ImageCreateModalProps {
@@ -126,6 +126,21 @@ export function ImageCreateModal({
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* Unlimited Image Generation Notice */}
+          <div
+            className="rounded-xl border px-3 py-2 text-[11.5px] flex items-center gap-2"
+            style={{
+              backgroundColor: theme.subSurfaceBg,
+              borderColor: theme.borderColor,
+              color: theme.textSecondary,
+            }}
+          >
+            <ShieldCheck className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
+            <span>
+              Unlimited HD Image Generation · Safe Prompt Enhancer &amp; Auto-Fallback ready.
+            </span>
           </div>
 
           <div className="flex items-center justify-end gap-2.5 pt-2">

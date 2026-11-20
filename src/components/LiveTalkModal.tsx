@@ -80,6 +80,7 @@ export function LiveTalkModal({
   );
   const [micLevel, setMicLevel] = useState(0);
   const [manualInput, setManualInput] = useState('');
+  const [micHint, setMicHint] = useState('');
   const [turns, setTurns] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
 
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
@@ -169,6 +170,7 @@ export function LiveTalkModal({
     recognition.onerror = (ev) => {
       if (!isMountedRef.current || isMutedRef.current) return;
       if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
+        setMicHint('Microphone access was blocked. Allow microphone permission in your browser settings or type below.');
         setStatus('unsupported');
         return;
       }
@@ -339,6 +341,7 @@ export function LiveTalkModal({
     setIsMuted(false);
     isMutedRef.current = false;
     setUserCaption('');
+    setMicHint('');
     setTurns([]);
     turnsRef.current = [];
     setAiCaption(
@@ -360,6 +363,9 @@ export function LiveTalkModal({
           if (AudioCtx) {
             const ctx = new AudioCtx();
             audioCtxRef.current = ctx;
+            if (ctx.state === 'suspended') {
+              void ctx.resume().catch(() => {});
+            }
             const source = ctx.createMediaStreamSource(stream);
             const analyser = ctx.createAnalyser();
             analyser.fftSize = 64;
@@ -379,7 +385,7 @@ export function LiveTalkModal({
           }
         })
         .catch(() => {
-          // Visualizer falls back cleanly
+          setMicHint('Allow microphone access on your device for hands-free voice, or type below.');
         });
     }
 
@@ -418,6 +424,9 @@ export function LiveTalkModal({
   };
 
   const handleInterruptAndListen = () => {
+    if (audioCtxRef.current && audioCtxRef.current.state === 'suspended') {
+      void audioCtxRef.current.resume().catch(() => {});
+    }
     streamAbortRef.current?.abort();
     stopAllSpeech();
     setIsMuted(false);
@@ -535,8 +544,8 @@ export function LiveTalkModal({
 
           <button
             type="button"
-            onClick={status === 'speaking' ? handleInterruptAndListen : undefined}
-            title={status === 'speaking' ? 'Tap to interrupt and speak' : statusLabel}
+            onClick={handleInterruptAndListen}
+            title={status === 'speaking' ? 'Tap to interrupt and speak' : 'Tap to listen & unlock mobile audio'}
             className="relative w-32 h-32 sm:w-40 sm:h-40 rounded-full border border-white/20 shadow-2xl transition-transform duration-150 flex items-center justify-center cursor-pointer"
             style={{
               background: orbColor,
@@ -579,6 +588,10 @@ export function LiveTalkModal({
             </button>
           )}
         </div>
+
+        {micHint && (
+          <p className="mt-3 text-[12px] text-[#ffd700]/90 max-w-md">{micHint}</p>
+        )}
 
         {status === 'unsupported' && (
           <form onSubmit={handleManualSubmit} className="mt-4 w-full max-w-md flex gap-2">

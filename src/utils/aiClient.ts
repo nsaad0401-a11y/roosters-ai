@@ -118,9 +118,12 @@ export function buildClientStudyTutorInstruction(options: {
       ? 'Reply fluently in the exact language of the user’s latest message.'
       : `Reply fluently in ${language}.`;
 
+  const multimodalCore =
+    'You are Roosters AI by SandSoft. You have full permission and ability to view, read, and analyze any photo, screenshot, or document uploaded by the user, including handwritten notes and images.';
+
   if (isLiveVoice) {
     return [
-      `You are Roosters AI by SandSoft${userName ? `, warmly assisting ${userName}` : ''}.`,
+      `${multimodalCore}${userName ? ` You are warmly assisting ${userName}.` : ''}`,
       'Be ultra-polite, warm, respectful, and encouraging like a kind study tutor.',
       'Speak naturally in 2–4 concise, clear sentences without markdown symbols or code fences unless asked.',
       langRule,
@@ -128,10 +131,10 @@ export function buildClientStudyTutorInstruction(options: {
   }
 
   return [
-    `You are Roosters AI v2.0 by SandSoft${userName ? `, warmly assisting ${userName}` : ''}.`,
+    `${multimodalCore}${userName ? ` You are warmly assisting ${userName}.` : ''}`,
     'Always be deeply polite, warm, respectful, and encouraging like a patient master teacher.',
     'For study topics: explain in clear numbered steps with simple examples, crisp study notes, and 1–2 helpful practice questions.',
-    'Format code in fenced markdown blocks with language tags. Analyze attached images, screens, study notes, or code files politely and thoroughly.',
+    'Format code in fenced markdown blocks with language tags. Examine uploaded images, photos, screenshots, study notes, or code files politely, accurately, and in helpful detail.',
     'NEVER output ASCII art, text-character drawings, or box-art diagrams when asked for a picture, image, photo, or video.',
     langRule,
   ].join(' ');
@@ -438,6 +441,13 @@ async function streamFromGroq(params: {
   throw new Error(lastErrorMsg);
 }
 
+const GEMINI_SAFETY_SETTINGS = [
+  { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
+  { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
+  { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
+  { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
+];
+
 async function streamFromGeminiDirect(params: {
   apiKey: string;
   messages: OutgoingMessage[];
@@ -455,13 +465,16 @@ async function streamFromGeminiDirect(params: {
 
   const contents = params.messages.slice(-16).map((msg) => {
     const parts: Array<{ text: string } | { inline_data: { mime_type: string; data: string } }> = [];
-    if (msg.attachment?.base64 && msg.attachment?.mimeType && msg.attachment.kind !== 'file') {
-      parts.push({
-        inline_data: {
-          mime_type: msg.attachment.mimeType,
-          data: msg.attachment.base64,
-        },
-      });
+    if (msg.attachment?.base64 && msg.attachment.kind !== 'file') {
+      const cleanBase64 = msg.attachment.base64.replace(/^data:[^;]+;base64,/, '').trim();
+      if (cleanBase64) {
+        parts.push({
+          inline_data: {
+            mime_type: msg.attachment.mimeType || 'image/jpeg',
+            data: cleanBase64,
+          },
+        });
+      }
     }
     let text = msg.content?.trim() || '';
     if (msg.attachment?.kind === 'file' && msg.attachment.textContent) {
@@ -471,7 +484,7 @@ async function streamFromGeminiDirect(params: {
         ? `${text}\n\n${section}`
         : `Please kindly review, summarize, or debug this uploaded file:\n\n${section}`;
     } else if (!text && msg.attachment) {
-      text = 'Please analyze this attachment kindly.';
+      text = 'Please analyze this image carefully and kindly.';
     }
     parts.push({ text: text || 'Hello!' });
     return {
@@ -499,6 +512,7 @@ async function streamFromGeminiDirect(params: {
       body: JSON.stringify({
         system_instruction: { parts: [{ text: systemText }] },
         contents,
+        safetySettings: GEMINI_SAFETY_SETTINGS,
         generationConfig: {
           thinkingConfig: candidate.thinkingConfig,
         },
@@ -681,12 +695,66 @@ export async function streamChatCompletion(params: {
   onChunk: (text: string) => void;
 }): Promise<string> {
   const resolved = resolveActiveProvider(params.hasServerGeminiKey);
+  const hasImageAttachment = params.messages.some(
+    (m) => Boolean(m.attachment?.base64) && m.attachment?.kind !== 'file'
+  );
+
+  // Any message containing an uploaded photo/screenshot MUST go to multimodal Gemini 2.5 Flash
+  // (never to text-only Groq, which cannot view pixels!)
+  if (hasImageAttachment) {
+    const localKey = loadCustomApiKey().trim();
+    const geminiDirectKey = localKey.startsWith('AIza') ? localKey : getEnvGeminiKey();
+
+    if (params.hasBackendApi || params.hasServerGeminiKey) {
+      const backendRes = await streamFromBackendEndpoint({
+        endpoint: params.isLiveVoice ? '/api/chat-live-stream' : '/api/chat',
+        apiKey: geminiDirectKey || undefined,
+        messages: params.messages,
+        language: params.language,
+        userName: params.userName,
+        signal: params.signal,
+        onChunk: params.onChunk,
+      });
+
+      if (backendRes.ok) {
+        return backendRes.text;
+      }
+      if (backendRes.shouldFallbackDirect && geminiDirectKey) {
+        return streamFromGeminiDirect({
+          apiKey: geminiDirectKey,
+          messages: params.messages,
+          language: params.language,
+          userName: params.userName,
+          isLiveVoice: params.isLiveVoice,
+          signal: params.signal,
+          onChunk: params.onChunk,
+        });
+      }
+      throw backendRes.error;
+    }
+
+    if (geminiDirectKey) {
+      return streamFromGeminiDirect({
+        apiKey: geminiDirectKey,
+        messages: params.messages,
+        language: params.language,
+        userName: params.userName,
+        isLiveVoice: params.isLiveVoice,
+        signal: params.signal,
+        onChunk: params.onChunk,
+      });
+    }
+
+    throw new Error(
+      'Photo analysis requires a Gemini multimodal connection. Please configure a Gemini key or connect via the server.'
+    );
+  }
 
   if (resolved.provider === 'none') {
     throw new MissingApiKeyError();
   }
 
-  // Always route Groq (gsk_...) directly to Groq's fast streaming API
+  // Text-only chat: Route Groq (gsk_...) directly to Groq's fast streaming API
   if (resolved.provider === 'groq') {
     return streamFromGroq({
       apiKey: resolved.apiKey,
@@ -834,6 +902,292 @@ async function runQuickTextCompletion(params: {
   return null;
 }
 
+// Zero frontend quota/cooldown locks: image generation is always unlimited!
+export function getPollinationsCooldownRemainingSec(): number {
+  return 0;
+}
+
+const RISKY_WORD_REPLACEMENTS: Array<[RegExp, string]> = [
+  [/\b(nude|naked|nsfw|sexy|bikini|lingerie|underwear|erotic|explicit|porn)\b/gi, 'modest stylish modern attire'],
+  [/\b(blood|gore|kill|murder|dead body|corpse|violent|weapon|gun|knife|swordfight)\b/gi, 'dramatic artistic adventure'],
+  [/\b(drug|weed|cocaine|cigarette|alcohol|beer|wine)\b/gi, 'refreshing herbal tea cup'],
+];
+
+const BARE_HUMAN_SUBJECT_RX =
+  /^(a\s+|an\s+|the\s+)?(human|person|people|man|men|woman|women|boy|girl|kid|child|portrait|face|human being|insaan|aadmi|larka|larki)$/i;
+
+export function buildSafeArtisticPrompt(rawInput: string): string {
+  let text = rawInput
+    .replace(
+      /\b(create|generate|make|draw|paint|sketch|render|show|please|kindly|me|a|an|pic|pics|picture|tasveer|tasweer|tasvir|photo|foto|image|img|banao|bana do|banado|dikhao|chahiye)\b/gi,
+      ' '
+    )
+    .replace(/\bof\b/gi, ' ')
+    .replace(/[^\p{L}\p{N}\s,.-]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  for (const [rx, safeReplacement] of RISKY_WORD_REPLACEMENTS) {
+    text = text.replace(rx, safeReplacement);
+  }
+
+  if (!text || BARE_HUMAN_SUBJECT_RX.test(text)) {
+    const noun = text.toLowerCase();
+    if (noun.includes('woman') || noun.includes('girl') || noun.includes('larki')) {
+      return 'Portrait of a friendly smiling woman wearing casual modern attire in a sunlit studio, warm natural lighting, ultra detailed, digital illustration, wholesome family-friendly artwork';
+    }
+    if (noun.includes('man') || noun.includes('boy') || noun.includes('larka')) {
+      return 'Portrait of a friendly smiling young man wearing casual modern attire in a sunlit studio, warm natural lighting, ultra detailed, digital illustration, wholesome family-friendly artwork';
+    }
+    return 'Portrait of a friendly smiling person wearing casual modern attire in a sunlit contemporary studio, warm golden hour lighting, ultra detailed, digital illustration, wholesome family-friendly art';
+  }
+
+  // If the prompt mentions a human/person briefly without artistic scene context, frame it safely
+  const hasHumanNoun = /\b(human|person|people|man|woman|boy|girl|child|student|teacher|doctor|astronaut|face|portrait)\b/i.test(
+    text
+  );
+  if (hasHumanNoun && text.split(/\s+/).length <= 5) {
+    return `Artistic portrait of a friendly ${text} in wholesome modern attire, bright sunlit studio background, warm natural lighting, ultra detailed, digital illustration, family-friendly`;
+  }
+
+  const hasStyleWords = /\b(illustration|digital art|painting|photorealistic|studio|lighting|detailed|cinematic|wholesome)\b/i.test(
+    text
+  );
+  if (hasStyleWords) {
+    return `${text}, wholesome family-friendly digital artwork, crisp focus, balanced warm lighting`;
+  }
+
+  return `${text}, vivid artistic digital illustration, warm natural lighting, ultra detailed, crisp focus, wholesome family-friendly composition`;
+}
+
+function buildProceduralFallbackSvg(title: string, width: number, height: number): string {
+  const safeTitle = title.replace(/[<>&"']/g, '').slice(0, 48) || 'Roosters AI Artwork';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
+    <defs>
+      <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#0b132b"/>
+        <stop offset="50%" stop-color="#1c2541"/>
+        <stop offset="100%" stop-color="#0f2942"/>
+      </linearGradient>
+      <radialGradient id="sun" cx="50%" cy="38%" r="42%">
+        <stop offset="0%" stop-color="#ffd700" stop-opacity="0.75"/>
+        <stop offset="55%" stop-color="#00d4ff" stop-opacity="0.28"/>
+        <stop offset="100%" stop-color="#0b132b" stop-opacity="0"/>
+      </radialGradient>
+    </defs>
+    <rect width="100%" height="100%" fill="url(#bg)"/>
+    <rect width="100%" height="100%" fill="url(#sun)"/>
+    <circle cx="${Math.round(width * 0.5)}" cy="${Math.round(height * 0.38)}" r="${Math.round(Math.min(width, height) * 0.16)}" fill="#ffd700" fill-opacity="0.18" stroke="#ffd700" stroke-opacity="0.55" stroke-width="2"/>
+    <path d="M0 ${Math.round(height * 0.72)} Q ${Math.round(width * 0.25)} ${Math.round(height * 0.58)} ${Math.round(width * 0.52)} ${Math.round(height * 0.7)} T ${width} ${Math.round(height * 0.66)} L ${width} ${height} L 0 ${height} Z" fill="#07090e" fill-opacity="0.68"/>
+    <path d="M0 ${Math.round(height * 0.8)} Q ${Math.round(width * 0.35)} ${Math.round(height * 0.68)} ${Math.round(width * 0.68)} ${Math.round(height * 0.8)} T ${width} ${Math.round(height * 0.76)} L ${width} ${height} L 0 ${height} Z" fill="#050608" fill-opacity="0.88"/>
+    <text x="50%" y="${Math.round(height * 0.9)}" text-anchor="middle" fill="#ffd700" font-family="sans-serif" font-size="${Math.round(width * 0.03)}" font-weight="700">${safeTitle}</text>
+  </svg>`;
+  return svg;
+}
+
+async function blobToCompactDataUrl(blob: Blob, maxWidth = 896): Promise<string | null> {
+  try {
+    const objUrl = URL.createObjectURL(blob);
+    try {
+      const img = await new Promise<HTMLImageElement | null>((resolve) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => resolve(null);
+        el.src = objUrl;
+      });
+      if (!img || img.naturalWidth < 64 || img.naturalHeight < 64) {
+        return null;
+      }
+
+      const scale = Math.min(1, maxWidth / Math.max(img.naturalWidth, img.naturalHeight));
+      const w = Math.max(64, Math.round(img.naturalWidth * scale));
+      const h = Math.max(64, Math.round(img.naturalHeight * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      ctx.drawImage(img, 0, 0, w, h);
+      return canvas.toDataURL('image/jpeg', 0.84);
+    } finally {
+      URL.revokeObjectURL(objUrl);
+    }
+  } catch {
+    return null;
+  }
+}
+
+async function tryPollinationsImage(params: {
+  safePrompt: string;
+  width: number;
+  height: number;
+  onStatus?: (msg: string) => void;
+}): Promise<{ ok: true; imageUrl: string } | { ok: false; reason: string }> {
+  const seed = Math.floor(Math.random() * 100000);
+  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(
+    params.safePrompt
+  )}?width=${params.width}&height=${params.height}&nologo=true&seed=${seed}`;
+
+  params.onStatus?.('Generating HD image...');
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 24000);
+    try {
+      const resp = await fetch(url, { mode: 'cors', signal: controller.signal });
+      if (!resp.ok) {
+        return { ok: false, reason: `Primary returned status ${resp.status}` };
+      }
+
+      const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+      if (!contentType.startsWith('image/')) {
+        return { ok: false, reason: 'Primary returned non-image response' };
+      }
+
+      const blob = await resp.blob();
+      if (blob.size < 9000) {
+        return { ok: false, reason: 'Primary returned temporary placeholder' };
+      }
+
+      const dataUrl = await blobToCompactDataUrl(blob, Math.max(params.width, params.height));
+      if (dataUrl) {
+        return { ok: true, imageUrl: dataUrl };
+      }
+      return { ok: true, imageUrl: url };
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  } catch {
+    // Even if CORS blob verification fails, direct URL can still render cleanly in <img>
+    return { ok: true, imageUrl: url };
+  }
+}
+
+function getHordeDimensions(aspectRatio: '1:1' | '16:9' | '4:3'): { w: number; h: number } {
+  // Anonymous AI Horde fast queue dimensions (multiples of 64, max ~512-640px for zero kudos)
+  if (aspectRatio === '16:9') return { w: 640, h: 384 };
+  if (aspectRatio === '4:3') return { w: 576, h: 448 };
+  return { w: 512, h: 512 };
+}
+
+async function tryAiHordeImage(params: {
+  safePrompt: string;
+  aspectRatio: '1:1' | '16:9' | '4:3';
+  onStatus?: (msg: string) => void;
+}): Promise<{ ok: true; imageUrl: string } | { ok: false; reason: string }> {
+  const dims = getHordeDimensions(params.aspectRatio);
+  params.onStatus?.('Routing to Free AI Horde Studio (bypassing 45s limit)...');
+
+  try {
+    const submitResp = await fetch('https://stablehorde.net/api/v2/generate/async', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: '0000000000',
+        'Client-Agent': 'RoostersAI:2.0:sandsoft',
+      },
+      body: JSON.stringify({
+        prompt: `${params.safePrompt} ### nsfw, nude, violence, gore, watermark, blurry, text, deformed`,
+        params: {
+          sampler_name: 'k_euler_a',
+          cfg_scale: 7,
+          steps: 20,
+          width: dims.w,
+          height: dims.h,
+          n: 1,
+        },
+        nsfw: false,
+        censor_nsfw: true,
+        trusted_workers: false,
+        slow_workers: true,
+        r2: true,
+      }),
+    });
+
+    if (!submitResp.ok) {
+      return { ok: false, reason: `AI Horde queue busy (${submitResp.status})` };
+    }
+
+    const submitData = (await submitResp.json()) as { id?: string; message?: string };
+    const jobId = submitData.id;
+    if (!jobId) {
+      return { ok: false, reason: submitData.message || 'AI Horde did not return a job ID' };
+    }
+
+    const startedAt = Date.now();
+    const maxWaitMs = 55_000;
+
+    while (Date.now() - startedAt < maxWaitMs) {
+      await new Promise((r) => setTimeout(r, 2200));
+
+      const checkResp = await fetch(`https://stablehorde.net/api/v2/generate/check/${jobId}`, {
+        headers: { 'Client-Agent': 'RoostersAI:2.0:sandsoft' },
+      });
+      if (!checkResp.ok) continue;
+
+      const checkData = (await checkResp.json()) as {
+        done?: boolean;
+        faulted?: boolean;
+        queue_position?: number;
+        wait_time?: number;
+        processing?: number;
+      };
+
+      if (checkData.faulted) {
+        return { ok: false, reason: 'AI Horde worker faulted' };
+      }
+
+      if (checkData.done) {
+        break;
+      }
+
+      const waitHint = checkData.wait_time ? `~${checkData.wait_time}s` : 'rendering';
+      const queueHint =
+        typeof checkData.queue_position === 'number' && checkData.queue_position > 0
+          ? `Queue #${checkData.queue_position}, `
+          : '';
+      params.onStatus?.(`Free AI Horde generating (${queueHint}${waitHint})...`);
+    }
+
+    const statusResp = await fetch(`https://stablehorde.net/api/v2/generate/status/${jobId}`, {
+      headers: { 'Client-Agent': 'RoostersAI:2.0:sandsoft' },
+    });
+    if (!statusResp.ok) {
+      return { ok: false, reason: 'Could not retrieve AI Horde image result' };
+    }
+
+    const statusData = (await statusResp.json()) as {
+      done?: boolean;
+      generations?: Array<{ img?: string; censored?: boolean }>;
+    };
+    const imgRaw = statusData.generations?.[0]?.img;
+    if (!imgRaw) {
+      return { ok: false, reason: 'AI Horde finished without an image frame' };
+    }
+
+    // Convert R2 image URL to compact JPEG DataURL so saved chats & Canvas export never expire or CORS-taint
+    if (imgRaw.startsWith('http')) {
+      try {
+        const imgResp = await fetch(imgRaw, { mode: 'cors' });
+        if (imgResp.ok) {
+          const blob = await imgResp.blob();
+          const dataUrl = await blobToCompactDataUrl(blob, 768);
+          if (dataUrl) return { ok: true, imageUrl: dataUrl };
+        }
+      } catch {
+        // Fall back to direct R2 URL if CORS conversion fails
+      }
+      return { ok: true, imageUrl: imgRaw };
+    }
+
+    // Base64 fallback (rare when r2=true)
+    const dataSrc = imgRaw.startsWith('data:') ? imgRaw : `data:image/webp;base64,${imgRaw}`;
+    return { ok: true, imageUrl: dataSrc };
+  } catch {
+    return { ok: false, reason: 'AI Horde network connection failed' };
+  }
+}
+
 export async function translatePromptToDetailedEnglish(params: {
   rawPrompt: string;
   hasBackendApi: boolean;
@@ -841,8 +1195,13 @@ export async function translatePromptToDetailedEnglish(params: {
 }): Promise<{ detailedPrompt: string; shortTitle: string }> {
   const cleaned = params.rawPrompt.trim();
   const translated = await runQuickTextCompletion({
-    systemPrompt:
-      'You are an expert visual prompt translator & enhancer. Translate the user request from ANY language (English, Urdu, Roman Urdu, Hindi, Arabic, Spanish, etc.) into a single vivid, photorealistic, high-definition 1024x1024 image generation prompt in English (under 45 words). Strip filler phrases like "pic banao", "generate image", "draw me". Return ONLY JSON: {"title":"short 3-6 word title","detailedPrompt":"vivid English photorealistic prompt"}',
+    systemPrompt: [
+      'You are an expert, family-friendly visual prompt enhancer.',
+      'Convert ANY user request from ANY language (English, Urdu, Roman Urdu, Hindi, Arabic, Spanish, etc.) into a safe, wholesome, vivid, artistic English description (under 40 words).',
+      'If the input is short or ambiguous (like "make pic of human", "person", "girl", "boy"), expand it into a warm, friendly artistic portrait (e.g., "Portrait of a friendly smiling person wearing modern casual attire in a sunlit studio, ultra detailed, digital illustration").',
+      'Strip command words like "pic banao", "generate image", "draw me". Never include unsafe, explicit, or violent terms.',
+      'Return ONLY JSON: {"title":"short 3-6 word title","detailedPrompt":"safe vivid artistic English prompt"}',
+    ].join(' '),
     userPrompt: cleaned,
     hasBackendApi: params.hasBackendApi,
     hasServerGeminiKey: params.hasServerGeminiKey,
@@ -861,16 +1220,17 @@ export async function translatePromptToDetailedEnglish(params: {
         if (parsed.detailedPrompt && parsed.detailedPrompt.trim().length > 4) {
           return {
             shortTitle: (parsed.title || cleaned).slice(0, 56),
-            detailedPrompt: parsed.detailedPrompt.trim(),
+            detailedPrompt: buildSafeArtisticPrompt(parsed.detailedPrompt.trim()),
           };
         }
       }
     } catch {
-      // Fall back to sanitized text below
+      // Fall back to deterministic safe prompt enhancer below
     }
   }
 
-  const stripped = cleaned
+  const safePrompt = buildSafeArtisticPrompt(cleaned);
+  const titleCandidate = cleaned
     .replace(
       /\b(create|generate|make|draw|paint|sketch|render|show|please|kindly|me|a|an|pic|picture|tasveer|tasweer|photo|image|banao|bana do|banado|dikhao|chahiye)\b/gi,
       ' '
@@ -878,10 +1238,81 @@ export async function translatePromptToDetailedEnglish(params: {
     .replace(/\s+/g, ' ')
     .trim();
 
-  const subject = stripped || cleaned;
   return {
-    shortTitle: subject.slice(0, 52) || 'HD AI Image',
-    detailedPrompt: `${subject}, ultra-detailed photorealistic 8k UHD photography, natural studio lighting, sharp focus, rich realistic textures, masterpiece composition`,
+    shortTitle: (titleCandidate || 'HD AI Artwork').slice(0, 52),
+    detailedPrompt: safePrompt,
+  };
+}
+
+async function resolveImageWithFallback(params: {
+  safePrompt: string;
+  aspectRatio: '1:1' | '16:9' | '4:3';
+  pollinationsDims: { w: number; h: number };
+  title: string;
+  language?: string;
+  hasBackendApi: boolean;
+  hasServerGeminiKey: boolean;
+  onStatus?: (msg: string) => void;
+}): Promise<{
+  imageUrl?: string;
+  svgCode?: string;
+  provider: 'pollinations' | 'horde' | 'svg';
+}> {
+  // 1. Primary: Pollinations (only when outside 45s cooldown)
+  const pollinationsRes = await tryPollinationsImage({
+    safePrompt: params.safePrompt,
+    width: params.pollinationsDims.w,
+    height: params.pollinationsDims.h,
+    onStatus: params.onStatus,
+  });
+  if (pollinationsRes.ok) {
+    return { imageUrl: pollinationsRes.imageUrl, provider: 'pollinations' };
+  }
+
+  // 2. Fallback: Free Public AI Horde API (bypasses Pollinations 45s cooldown & refusals)
+  params.onStatus?.(`${pollinationsRes.reason} — switching to Free AI Horde...`);
+  const hordeRes = await tryAiHordeImage({
+    safePrompt: params.safePrompt,
+    aspectRatio: params.aspectRatio,
+    onStatus: params.onStatus,
+  });
+  if (hordeRes.ok) {
+    return { imageUrl: hordeRes.imageUrl, provider: 'horde' };
+  }
+
+  // 3. Optional backend Gemini SVG fallback if server is running
+  if (params.hasBackendApi) {
+    try {
+      const resolved = resolveActiveProvider(params.hasServerGeminiKey);
+      const resp = await fetch('/api/generate-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: params.safePrompt,
+          aspectRatio: params.aspectRatio,
+          language: params.language,
+          apiKey: resolved.provider === 'gemini' ? resolved.apiKey || undefined : undefined,
+        }),
+      });
+      if (resp.ok) {
+        const data = (await resp.json()) as { svgCode?: string };
+        if (data.svgCode) {
+          return { svgCode: data.svgCode, provider: 'svg' };
+        }
+      }
+    } catch {
+      // Fall through to local artistic SVG fallback
+    }
+  }
+
+  // 4. Local offline-safe SVG artwork fallback so users NEVER hit a dead end
+  return {
+    svgCode: buildProceduralFallbackSvg(
+      params.title,
+      params.pollinationsDims.w,
+      params.pollinationsDims.h
+    ),
+    provider: 'svg',
   };
 }
 
@@ -891,41 +1322,50 @@ export async function generateArtworkUnified(params: {
   language?: string;
   hasBackendApi: boolean;
   hasServerGeminiKey: boolean;
+  onStatus?: (msg: string) => void;
 }): Promise<{
   title: string;
   description: string;
   detailedPrompt: string;
   svgCode?: string;
-  imageUrl: string;
-  provider: 'pollinations' | 'svg';
+  imageUrl?: string;
+  provider: 'pollinations' | 'horde' | 'svg';
   aspectRatio: '1:1' | '16:9' | '4:3';
   width: number;
   height: number;
 }> {
   const dims =
     params.aspectRatio === '16:9'
-      ? { w: 1280, h: 720 }
+      ? { w: 896, h: 504 }
       : params.aspectRatio === '4:3'
-        ? { w: 1024, h: 768 }
-        : { w: 1024, h: 1024 };
+        ? { w: 768, h: 576 }
+        : { w: 768, h: 768 };
 
+  params.onStatus?.('Enhancing prompt into safe artistic English...');
   const { detailedPrompt, shortTitle } = await translatePromptToDetailedEnglish({
     rawPrompt: params.prompt,
     hasBackendApi: params.hasBackendApi,
     hasServerGeminiKey: params.hasServerGeminiKey,
   });
 
-  const seed = Date.now();
-  const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(
-    detailedPrompt
-  )}?width=${dims.w}&height=${dims.h}&model=flux&nologo=true&seed=${seed}`;
+  const resolved = await resolveImageWithFallback({
+    safePrompt: detailedPrompt,
+    aspectRatio: params.aspectRatio,
+    pollinationsDims: dims,
+    title: shortTitle,
+    language: params.language,
+    hasBackendApi: params.hasBackendApi,
+    hasServerGeminiKey: params.hasServerGeminiKey,
+    onStatus: params.onStatus,
+  });
 
   return {
     title: shortTitle || 'HD AI Artwork',
     description: detailedPrompt,
     detailedPrompt,
-    imageUrl: pollinationsUrl,
-    provider: 'pollinations',
+    imageUrl: resolved.imageUrl,
+    svgCode: resolved.svgCode,
+    provider: resolved.provider,
     aspectRatio: params.aspectRatio,
     width: dims.w,
     height: dims.h,
@@ -938,10 +1378,12 @@ export async function generateVideoUnified(params: {
   language?: string;
   hasBackendApi: boolean;
   hasServerGeminiKey: boolean;
+  onStatus?: (msg: string) => void;
 }): Promise<GeneratedVideo> {
   const styleLabel = params.style?.trim() || 'Cinematic Realism';
   const cleanUserPrompt = params.prompt.trim();
-  const baseSeed = Date.now();
+
+  params.onStatus?.('Directing your cinematic story...');
 
   const langHint =
     params.language && params.language !== 'Auto-Detect'
@@ -951,21 +1393,22 @@ export async function generateVideoUnified(params: {
   const storyboardRaw = await runQuickTextCompletion({
     systemPrompt: [
       'You are an AI Film Director.',
-      `Given any topic or video request, create a cohesive 4-scene cinematic visual storyboard in "${styleLabel}" style.`,
+      `Given any topic or video request, create a family-friendly 4-beat visual story in "${styleLabel}" style.`,
       langHint,
-      'Every scene visualPrompt MUST be in vivid English (under 35 words) describing lighting, camera framing, motion, and clear visual progression from Scene 1 (establishing) -> Scene 2 (action/detail) -> Scene 3 (climax) -> Scene 4 (finale).',
-      'Return ONLY valid JSON: {"title":"...","mood":"cinematic|calm|epic|study","narration":"2-3 warm concise sentences","scenes":[{"caption":"Scene 1 title (3-6 words)","visualPrompt":"..."},{"caption":"...","visualPrompt":"..."},{"caption":"...","visualPrompt":"..."},{"caption":"...","visualPrompt":"..."}]}',
+      'Provide ONE single unified, safe, vivid English artistic prompt ("heroVisualPrompt", under 38 words) representing the core visual scene, plus 4 short sequential scene captions.',
+      'Return ONLY valid JSON: {"title":"...","mood":"cinematic|calm|epic|study","narration":"2-3 warm concise sentences","heroVisualPrompt":"safe vivid English artwork description","captions":["Scene 1 title","Scene 2 title","Scene 3 title","Scene 4 title"]}',
     ].join(' '),
     userPrompt: cleanUserPrompt,
     hasBackendApi: params.hasBackendApi,
     hasServerGeminiKey: params.hasServerGeminiKey,
-    maxTokens: 650,
+    maxTokens: 450,
   });
 
   let title = cleanUserPrompt.slice(0, 52) || 'AI Cinema Story';
   let mood: GeneratedVideo['mood'] = 'cinematic';
-  let narration = `Here is a four-scene AI cinematic visual story crafted for ${cleanUserPrompt}.`;
-  let rawScenes: Array<{ caption: string; visualPrompt: string }> = [];
+  let narration = `Here is a cinematic AI visual story crafted for ${cleanUserPrompt}.`;
+  let heroVisualPrompt = '';
+  let captions: string[] = [];
 
   if (storyboardRaw) {
     try {
@@ -976,10 +1419,12 @@ export async function generateVideoUnified(params: {
           title?: string;
           mood?: string;
           narration?: string;
-          scenes?: Array<{ caption?: string; visualPrompt?: string }>;
+          heroVisualPrompt?: string;
+          captions?: string[];
         };
         if (parsed.title) title = parsed.title.slice(0, 64);
         if (parsed.narration) narration = parsed.narration.trim();
+        if (parsed.heroVisualPrompt) heroVisualPrompt = parsed.heroVisualPrompt.trim();
         if (
           parsed.mood === 'calm' ||
           parsed.mood === 'epic' ||
@@ -988,11 +1433,8 @@ export async function generateVideoUnified(params: {
         ) {
           mood = parsed.mood;
         }
-        if (Array.isArray(parsed.scenes) && parsed.scenes.length >= 2) {
-          rawScenes = parsed.scenes.slice(0, 4).map((s, idx) => ({
-            caption: (s.caption || `Scene ${idx + 1}`).trim(),
-            visualPrompt: (s.visualPrompt || `${cleanUserPrompt}, ${styleLabel}, scene ${idx + 1}`).trim(),
-          }));
+        if (Array.isArray(parsed.captions) && parsed.captions.length >= 2) {
+          captions = parsed.captions.slice(0, 4).map((c, idx) => (c || `Scene ${idx + 1}`).trim());
         }
       }
     } catch {
@@ -1000,41 +1442,40 @@ export async function generateVideoUnified(params: {
     }
   }
 
-  const strippedTopic =
-    cleanUserPrompt
-      .replace(/\b(create|generate|make|video|clip|reel|animation|banao|bana do|of|about|for|a|an)\b/gi, ' ')
-      .replace(/\s+/g, ' ')
-      .trim() || cleanUserPrompt;
-
-  const fallbackTemplates = [
-    {
-      caption: 'Opening Horizon',
-      visualPrompt: `Wide establishing cinematic shot of ${strippedTopic}, golden hour atmospheric lighting, ${styleLabel}, ultra-detailed 8k`,
-    },
-    {
-      caption: 'Closer Perspective',
-      visualPrompt: `Dynamic medium angle of ${strippedTopic} in vivid motion, rich texture and dramatic depth of field, ${styleLabel}, 8k`,
-    },
-    {
-      caption: 'Dramatic Peak',
-      visualPrompt: `Spectacular dramatic climax scene of ${strippedTopic}, glowing highlights and volumetric atmosphere, ${styleLabel}, 8k`,
-    },
-    {
-      caption: 'Serene Finale',
-      visualPrompt: `Breathtaking final panoramic sunset view of ${strippedTopic}, peaceful radiant glow, ${styleLabel}, 8k`,
-    },
+  const defaultCaptions = [
+    'Opening Horizon',
+    'Closer Perspective',
+    'Cinematic Motion',
+    'Serene Finale',
   ];
-
-  while (rawScenes.length < 4) {
-    rawScenes.push(fallbackTemplates[rawScenes.length]);
+  while (captions.length < 4) {
+    captions.push(defaultCaptions[captions.length]);
   }
 
-  const scenes: VideoScene[] = rawScenes.slice(0, 4).map((scene, idx) => ({
-    caption: scene.caption,
-    visualPrompt: scene.visualPrompt,
-    imageUrl: `https://image.pollinations.ai/prompt/${encodeURIComponent(
-      scene.visualPrompt
-    )}?width=1024&height=576&model=flux&nologo=true&seed=${baseSeed + idx * 17}`,
+  const safeHeroPrompt = buildSafeArtisticPrompt(
+    heroVisualPrompt || `${cleanUserPrompt}, ${styleLabel} cinematic wide atmosphere`
+  );
+
+  // SINGLE-FETCH PIPELINE: Only fetch ONE scene image so we NEVER trigger 4x rate-limit blocks!
+  const imageResult = await resolveImageWithFallback({
+    safePrompt: safeHeroPrompt,
+    aspectRatio: '16:9',
+    pollinationsDims: { w: 768, h: 432 },
+    title,
+    language: params.language,
+    hasBackendApi: params.hasBackendApi,
+    hasServerGeminiKey: params.hasServerGeminiKey,
+    onStatus: params.onStatus,
+  });
+
+  const singleHeroUrl = imageResult.svgCode
+    ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(imageResult.svgCode)}`
+    : imageResult.imageUrl || '';
+
+  const scenes: VideoScene[] = captions.slice(0, 4).map((caption) => ({
+    caption,
+    visualPrompt: safeHeroPrompt,
+    imageUrl: singleHeroUrl,
   }));
 
   return {
@@ -1043,9 +1484,12 @@ export async function generateVideoUnified(params: {
     narration,
     mood,
     style: styleLabel,
+    heroImageUrl: singleHeroUrl,
+    provider: imageResult.provider,
     scenes,
     aspectRatio: '16:9',
     createdAt: Date.now(),
   };
 }
+
 

@@ -1,4 +1,4 @@
-import { Film, Loader2, X } from 'lucide-react';
+import { Film, Loader2, ShieldCheck, X } from 'lucide-react';
 import { FormEvent, useState } from 'react';
 import { APP_THEMES, AppTheme } from '../themes';
 
@@ -163,6 +163,21 @@ export function VideoCreateModal({
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* Single-Fetch Cinematic Engine Notice */}
+          <div
+            className="rounded-xl border px-3 py-2 text-[11.5px] flex items-center gap-2"
+            style={{
+              backgroundColor: theme.subSurfaceBg,
+              borderColor: theme.borderColor,
+              color: theme.textSecondary,
+            }}
+          >
+            <ShieldCheck className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
+            <span>
+              Single-Fetch Cinematic Engine: 1 HD scene animated across 4 camera acts + .webm export.
+            </span>
           </div>
 
           <div className="flex items-center justify-end gap-2.5 pt-2">

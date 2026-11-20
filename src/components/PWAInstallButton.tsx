@@ -1,14 +1,16 @@
 import { Monitor, Share, Smartphone, WifiOff, X } from 'lucide-react';
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ROOSTERS_LOGO_SRC } from '../constants';
 import { useOnlineStatus, usePWAInstall } from '../hooks/usePWAInstall';
 import { AppTheme } from '../themes';
 
 interface PWAInstallButtonProps {
   theme: AppTheme;
+  onOpenGuide?: () => void;
 }
 
-export function PWAInstallButton({ theme }: PWAInstallButtonProps) {
+export function PWAInstallButton({ theme, onOpenGuide }: PWAInstallButtonProps) {
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
   const [showGuideModal, setShowGuideModal] = useState(false);
 
@@ -22,41 +24,27 @@ export function PWAInstallButton({ theme }: PWAInstallButtonProps) {
       const accepted = await install();
       if (accepted) return;
     }
+    onOpenGuide?.();
     setShowGuideModal(true);
   };
 
-  return (
-    <>
-      <button
-        type="button"
-        onClick={handleClick}
-        title="Install Roosters AI directly onto your phone or PC"
-        className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg font-bold text-[12px] sm:text-[12.5px] transition-all hover:brightness-110 whitespace-nowrap shrink-0 cursor-pointer"
-        style={{
-          backgroundImage: theme.sendButtonGradient,
-          color: theme.sendButtonText,
-          boxShadow: theme.liteMode ? 'none' : theme.sendButtonGlow,
-        }}
-      >
-        <Smartphone className="w-3.5 h-3.5 shrink-0" />
-        <span>Install App</span>
-      </button>
-
-      {showGuideModal && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 px-4 py-6"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="pwa-install-guide-title"
-        >
+  const guideModal =
+    showGuideModal && typeof document !== 'undefined'
+      ? createPortal(
           <div
-            className="w-full max-w-md rounded-2xl border p-5 sm:p-6 shadow-2xl max-h-[90dvh] overflow-y-auto"
-            style={{
-              backgroundColor: theme.cardBg,
-              borderColor: theme.borderColor,
-              color: theme.textPrimary,
-            }}
+            className="fixed inset-0 flex items-center justify-center z-50 p-4 bg-black/75 backdrop-blur-sm"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pwa-install-guide-title"
           >
+            <div
+              className="w-full max-w-md rounded-2xl border p-5 sm:p-6 shadow-2xl max-h-[85vh] overflow-y-auto"
+              style={{
+                backgroundColor: theme.cardBg,
+                borderColor: theme.borderColor,
+                color: theme.textPrimary,
+              }}
+            >
             <div className="flex items-center justify-between gap-3 mb-4">
               <div className="flex items-center gap-3">
                 <img
@@ -162,8 +150,28 @@ export function PWAInstallButton({ theme }: PWAInstallButtonProps) {
               </button>
             </div>
           </div>
-        </div>
-      )}
+        </div>,
+          document.body
+        )
+      : null;
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={handleClick}
+        title="Install Roosters AI directly onto your phone or PC"
+        className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg font-bold text-[12px] sm:text-[12.5px] transition-all hover:brightness-110 whitespace-nowrap shrink-0 cursor-pointer"
+        style={{
+          backgroundImage: theme.sendButtonGradient,
+          color: theme.sendButtonText,
+          boxShadow: theme.liteMode ? 'none' : theme.sendButtonGlow,
+        }}
+      >
+        <Smartphone className="w-3.5 h-3.5 shrink-0" />
+        <span>Install App</span>
+      </button>
+      {guideModal}
     </>
   );
 }
