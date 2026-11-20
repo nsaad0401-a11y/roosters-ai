@@ -304,6 +304,15 @@ export function pickSpeechVoice(
   return bestVoice;
 }
 
+export function isSpeechSynthesisSupported(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    'speechSynthesis' in window &&
+    typeof window.speechSynthesis !== 'undefined' &&
+    typeof SpeechSynthesisUtterance !== 'undefined'
+  );
+}
+
 export function speakWithVoiceProfile(options: {
   text: string;
   language: string;
@@ -314,7 +323,7 @@ export function speakWithVoiceProfile(options: {
   onEnd?: () => void;
   onError?: () => void;
 }): SpeechSynthesisUtterance | null {
-  if (typeof window === 'undefined' || !window.speechSynthesis) {
+  if (!isSpeechSynthesisSupported()) {
     options.onError?.();
     return null;
   }
@@ -333,24 +342,29 @@ export function speakWithVoiceProfile(options: {
     }
   }
 
-  const bcp47 = getBcp47ForLanguage(options.language);
-  const { pitch, rate, genderHint } = getResolvedVoiceParameters(options.voiceSettings);
+  try {
+    const bcp47 = getBcp47ForLanguage(options.language);
+    const { pitch, rate, genderHint } = getResolvedVoiceParameters(options.voiceSettings);
 
-  const utterance = new SpeechSynthesisUtterance(trimmed);
-  utterance.lang = bcp47;
-  utterance.pitch = clamp(0.55, 1.75, pitch);
-  utterance.rate = clamp(0.55, 2.2, rate * (options.speedMultiplier ?? 1));
+    const utterance = new SpeechSynthesisUtterance(trimmed);
+    utterance.lang = bcp47;
+    utterance.pitch = clamp(0.55, 1.75, pitch);
+    utterance.rate = clamp(0.55, 2.2, rate * (options.speedMultiplier ?? 1));
 
-  const voices = window.speechSynthesis.getVoices();
-  const matchedVoice = pickSpeechVoice(voices, bcp47, genderHint);
-  if (matchedVoice) {
-    utterance.voice = matchedVoice;
+    const voices = window.speechSynthesis.getVoices?.() ?? [];
+    const matchedVoice = pickSpeechVoice(voices, bcp47, genderHint);
+    if (matchedVoice) {
+      utterance.voice = matchedVoice;
+    }
+
+    utterance.onstart = () => options.onStart?.();
+    utterance.onend = () => options.onEnd?.();
+    utterance.onerror = () => options.onError?.();
+
+    window.speechSynthesis.speak(utterance);
+    return utterance;
+  } catch {
+    options.onError?.();
+    return null;
   }
-
-  utterance.onstart = () => options.onStart?.();
-  utterance.onend = () => options.onEnd?.();
-  utterance.onerror = () => options.onError?.();
-
-  window.speechSynthesis.speak(utterance);
-  return utterance;
 }

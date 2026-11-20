@@ -196,6 +196,7 @@ export function GeneratedVideoCard({
   const [timelinePct, setTimelinePct] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
   const [exportPct, setExportPct] = useState(0);
+  const [exportNotice, setExportNotice] = useState('');
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const loadedImagesRef = useRef<Array<HTMLImageElement | null>>([null, null, null, null]);
@@ -413,14 +414,25 @@ export function GeneratedVideoCard({
 
   const handleExportWebm = async () => {
     if (isExporting || !isReady) return;
-    if (typeof MediaRecorder === 'undefined') {
+    setExportNotice('');
+
+    const probeCanvas = document.createElement('canvas') as HTMLCanvasElement & {
+      captureStream?: (fps?: number) => MediaStream;
+    };
+
+    if (typeof MediaRecorder === 'undefined' || typeof probeCanvas.captureStream !== 'function') {
+      setExportNotice(
+        'Video file (.webm) recording is not supported in this browser (e.g. older browsers or Safari). You can still play and switch scenes right here!'
+      );
       return;
     }
 
     setIsExporting(true);
     setExportPct(0);
 
-    const exportCanvas = document.createElement('canvas');
+    const exportCanvas = document.createElement('canvas') as HTMLCanvasElement & {
+      captureStream: (fps?: number) => MediaStream;
+    };
     exportCanvas.width = CANVAS_W;
     exportCanvas.height = CANVAS_H;
     const exportCtx = exportCanvas.getContext('2d');
@@ -447,13 +459,15 @@ export function GeneratedVideoCard({
       // Proceed video-only if audio stream creation isn't available
     }
 
-    const preferredMime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
-      ? 'video/webm;codecs=vp9,opus'
-      : MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
-        ? 'video/webm;codecs=vp8,opus'
-        : MediaRecorder.isTypeSupported('video/webm')
-          ? 'video/webm'
-          : '';
+    const canCheck = typeof MediaRecorder.isTypeSupported === 'function';
+    const preferredMime =
+      canCheck && MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+        ? 'video/webm;codecs=vp9,opus'
+        : canCheck && MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
+          ? 'video/webm;codecs=vp8,opus'
+          : canCheck && MediaRecorder.isTypeSupported('video/webm')
+            ? 'video/webm'
+            : '';
 
     const chunks: Blob[] = [];
     const recorder = preferredMime
@@ -640,6 +654,10 @@ export function GeneratedVideoCard({
           <p dir="auto" className="text-[12px] text-[#94a3b8] leading-relaxed">
             {video.narration}
           </p>
+        )}
+
+        {exportNotice && (
+          <p className="text-[11.5px] text-amber-300 leading-relaxed">{exportNotice}</p>
         )}
       </div>
     </div>

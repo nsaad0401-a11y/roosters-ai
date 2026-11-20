@@ -42,7 +42,7 @@ export function SplashScreen({ onComplete }: SplashScreenProps) {
         }
       }}
       aria-label="Roosters AI Splash Screen. Click to continue."
-      className={`fixed inset-0 z-50 flex flex-col items-center justify-center bg-[#07090e] cursor-pointer select-none transition-opacity duration-300 ${
+      className={`fixed inset-0 min-h-[100dvh] z-50 flex flex-col items-center justify-center px-4 bg-[#07090e] cursor-pointer select-none transition-opacity duration-300 ${
         fadingOut ? 'opacity-0 pointer-events-none' : 'opacity-100'
       }`}
     >
@@ -59,7 +59,7 @@ export function SplashScreen({ onComplete }: SplashScreenProps) {
       <div className="relative flex flex-col items-center">
         {/* Centerpiece rounded square dark card (#111622) with subtle neon cyan outer glow */}
         <div
-          className="relative flex items-center justify-center w-[180px] h-[180px] rounded-[24px] bg-[#111622] border border-[#00d4ff]/35 overflow-hidden p-1.5"
+          className="relative flex items-center justify-center w-[148px] h-[148px] sm:w-[180px] sm:h-[180px] rounded-[24px] bg-[#111622] border border-[#00d4ff]/35 overflow-hidden p-1.5"
           style={{
             boxShadow:
               '0 0 38px rgba(0, 212, 255, 0.28), 0 0 14px rgba(0, 212, 255, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.06)',
@@ -75,7 +75,7 @@ export function SplashScreen({ onComplete }: SplashScreenProps) {
 
         {/* Below logo card: Bold uppercase title "ROOSTERS AI" in glowing gold (#ffd700) with wide letter spacing */}
         <h1
-          className="mt-7 font-display text-[26px] sm:text-[28px] font-extrabold uppercase tracking-[0.28em] text-[#ffd700] text-center"
+          className="mt-7 font-display text-[22px] sm:text-[28px] font-extrabold uppercase tracking-[0.22em] sm:tracking-[0.28em] text-[#ffd700] text-center"
           style={{
             textShadow: '0 0 22px rgba(255, 215, 0, 0.45)',
           }}

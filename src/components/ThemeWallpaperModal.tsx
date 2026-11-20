@@ -1,4 +1,4 @@
-import { Check, Image as ImageIcon, Palette, Trash2, Upload, X } from 'lucide-react';
+import { Check, Image as ImageIcon, Palette, Trash2, Upload, X, Zap } from 'lucide-react';
 import { ChangeEvent, useRef, useState } from 'react';
 import { APP_THEMES, BUILTIN_WALLPAPERS, ThemeId, ThemeSettings, WallpaperId } from '../themes';
 
@@ -99,13 +99,13 @@ export function ThemeWallpaperModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm px-4 py-6"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 px-3 sm:px-4 py-4 sm:py-6"
       role="dialog"
       aria-modal="true"
       aria-labelledby="theme-modal-title"
     >
       <div
-        className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl border p-6 shadow-2xl"
+        className="w-full max-w-2xl max-h-[90dvh] overflow-y-auto rounded-2xl border p-4 sm:p-6 shadow-2xl"
         style={{
           backgroundColor: activeTheme.cardBg,
           borderColor: activeTheme.borderColor,
@@ -308,6 +308,53 @@ export function ThemeWallpaperModal({
           </div>
 
           {uploadError && <p className="mt-2 text-[12px] text-[#ff4d4d]">{uploadError}</p>}
+        </section>
+
+        {/* Lite Performance Mode for Older Low-RAM Phones & Legacy PCs */}
+        <section
+          className="mt-5 rounded-xl border p-3.5 flex flex-wrap items-center justify-between gap-3"
+          style={{
+            backgroundColor: activeTheme.subSurfaceBg,
+            borderColor: settings.liteMode ? activeTheme.accentSecondary : activeTheme.borderColor,
+          }}
+        >
+          <div className="flex items-start gap-3 min-w-0 flex-1">
+            <div
+              className="w-9 h-9 rounded-lg border flex items-center justify-center shrink-0"
+              style={{
+                backgroundColor: activeTheme.cardBg,
+                borderColor: activeTheme.borderColor,
+              }}
+            >
+              <Zap
+                className="w-4 h-4"
+                style={{
+                  color: settings.liteMode ? activeTheme.accentSecondary : activeTheme.textMuted,
+                }}
+              />
+            </div>
+            <div className="min-w-0">
+              <div className="text-[13.5px] font-bold">Lite Performance Mode</div>
+              <p className="text-[11.5px] mt-0.5" style={{ color: activeTheme.textMuted }}>
+                Disables heavy background blurs &amp; animations so older low-RAM phones and older PCs run fast with zero lag.
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            role="switch"
+            aria-checked={Boolean(settings.liteMode)}
+            onClick={() => onUpdate({ ...settings, liteMode: !settings.liteMode })}
+            className="px-4 py-2 rounded-lg border text-[12.5px] font-bold cursor-pointer transition-colors whitespace-nowrap shrink-0"
+            style={{
+              backgroundColor: settings.liteMode ? activeTheme.accentSecondary : activeTheme.cardBg,
+              borderColor: settings.liteMode ? activeTheme.accentSecondary : activeTheme.borderColor,
+              color: settings.liteMode ? '#050608' : activeTheme.textPrimary,
+            }}
+          >
+            {settings.liteMode ? 'Lite Mode: ON' : 'Enable Lite Mode'}
+          </button>
         </section>
 
         <div className="mt-6 flex justify-end">

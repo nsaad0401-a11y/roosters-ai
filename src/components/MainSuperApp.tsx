@@ -48,7 +48,7 @@ import {
   saveUserChats,
   saveVoiceSettings,
 } from '../utils/storage';
-import { speakWithVoiceProfile } from '../utils/voiceEngine';
+import { speakWithVoiceProfile, isSpeechSynthesisSupported } from '../utils/voiceEngine';
 import { AdBannerSlot } from './AdBannerSlot';
 import { ApiKeyModal } from './ApiKeyModal';
 import { GeneratedArtworkCard } from './GeneratedArtworkCard';
@@ -58,6 +58,7 @@ import { LegalFooter } from './LegalFooter';
 import { LegalPageId, LegalPagesModal } from './LegalPagesModal';
 import { LiveTalkModal } from './LiveTalkModal';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { PWAInstallButton } from './PWAInstallButton';
 import { TextReaderModal } from './TextReaderModal';
 import { ThemeWallpaperModal } from './ThemeWallpaperModal';
 import { VideoCreateModal } from './VideoCreateModal';
@@ -456,12 +457,27 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const screenVideoRef = useRef<HTMLVideoElement | null>(null);
   const visitorClientIdRef = useRef<string>(createId('visitor'));
 
-  const theme = APP_THEMES[themeSettings.themeId] ?? APP_THEMES['gold-cyan'];
+  const theme: AppTheme = useMemo(
+    () => ({
+      ...(APP_THEMES[themeSettings.themeId] ?? APP_THEMES['gold-cyan']),
+      liteMode: Boolean(themeSettings.liteMode),
+    }),
+    [themeSettings.themeId, themeSettings.liteMode]
+  );
   const hasEnvKey = Boolean(getEnvGeminiKey() || getEnvGroqKey());
+
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      document.documentElement.classList.toggle('lite-mode', Boolean(themeSettings.liteMode));
+    }
+  }, [themeSettings.liteMode]);
 
   const handleUpdateThemeSettings = (next: ThemeSettings) => {
     setThemeSettings(next);
     saveThemeSettings(next);
+    if (typeof document !== 'undefined') {
+      document.documentElement.classList.toggle('lite-mode', Boolean(next.liteMode));
+    }
   };
 
   const handleUpdateVoiceSettings = (next: VoiceStudioSettings) => {
@@ -915,7 +931,9 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     }
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-      setNotice('Screen sharing is not supported in this browser.');
+      setNotice(
+        'Live Screen Share is available on desktop browsers (Chrome, Edge, Firefox). On mobile, tap the Camera icon to upload a screenshot!'
+      );
       return;
     }
 
@@ -969,18 +987,26 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       return;
     }
 
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setNotice('Microphone input is not supported in this browser.');
+    if (
+      typeof MediaRecorder === 'undefined' ||
+      !navigator.mediaDevices ||
+      !navigator.mediaDevices.getUserMedia
+    ) {
+      setNotice(
+        'Voice recording is not supported in this browser. Please type your message or update your browser.'
+      );
       return;
     }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const preferredMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : MediaRecorder.isTypeSupported('audio/webm')
-          ? 'audio/webm'
-          : '';
+      const canCheckType = typeof MediaRecorder.isTypeSupported === 'function';
+      const preferredMime =
+        canCheckType && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+          ? 'audio/webm;codecs=opus'
+          : canCheckType && MediaRecorder.isTypeSupported('audio/webm')
+            ? 'audio/webm'
+            : '';
       const recorder = preferredMime
         ? new MediaRecorder(stream, { mimeType: preferredMime })
         : new MediaRecorder(stream);
@@ -1182,18 +1208,30 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
 
   const handleCopyMessage = async (msg: ChatMessage) => {
     try {
-      await navigator.clipboard.writeText(msg.content);
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(msg.content);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = msg.content;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        textarea.remove();
+      }
       setCopiedMessageId(msg.id);
       window.setTimeout(() => {
         setCopiedMessageId((curr) => (curr === msg.id ? null : curr));
       }, 1800);
     } catch {
-      setNotice('Could not copy message to clipboard.');
+      setNotice('Could not copy message to clipboard on this browser.');
     }
   };
 
   const speakViaVoiceStudio = (msg: ChatMessage): boolean => {
-    if (!window.speechSynthesis) return false;
+    if (!isSpeechSynthesisSupported()) return false;
     const spoken = cleanTextForSpeech(msg.content);
     if (!spoken) return false;
     setTtsPlayingId(msg.id);
@@ -1324,7 +1362,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
 
   return (
     <div
-      className="min-h-screen h-screen flex flex-col overflow-hidden transition-colors duration-200"
+      className="app-viewport-height flex flex-col overflow-hidden overflow-x-hidden transition-colors duration-200"
       style={{
         backgroundColor: theme.canvasBg,
         color: theme.textPrimary,
@@ -1332,15 +1370,15 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     >
       {/* Top Header */}
       <header
-        className="shrink-0 border-b backdrop-blur-md px-4 lg:px-6 py-3"
+        className="shrink-0 border-b backdrop-blur-md px-2.5 sm:px-4 lg:px-6 py-2.5 sm:py-3"
         style={{
           backgroundColor: theme.headerBg,
           borderColor: theme.borderColor,
         }}
       >
-        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2.5">
+        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
           {/* Left: Sidebar Toggle, Uploaded Logo, Title + v2.0 Badge, Live Users Badge, User Badge */}
-          <div className="flex items-center gap-2.5 min-w-0 flex-wrap">
+          <div className="flex items-center gap-1.5 sm:gap-2.5 min-w-0 flex-wrap">
             <button
               type="button"
               onClick={() => setShowHistory((prev) => !prev)}
@@ -1425,8 +1463,8 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
             </div>
           </div>
 
-          {/* Right: World Languages, Theme & Wallpaper, Text Reader, Screen Share, Create Image, Export Chat, New Chat, Logout */}
-          <div className="flex flex-wrap items-center gap-2">
+          {/* Right: World Languages, Theme & Wallpaper, Text Reader, Screen Share, Create Image, Export Chat, New Chat, Install App, Logout */}
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
             {/* World Languages Selector */}
             <div className="relative flex items-center">
               <Globe
@@ -1591,11 +1629,14 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
               <span>New Chat</span>
             </button>
 
+            {/* Prominent PWA Install App Button */}
+            <PWAInstallButton theme={theme} />
+
             {/* Logout Button */}
             <button
               type="button"
               onClick={handleCleanLogout}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[12.5px] font-medium hover:text-[#ff4d4d] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg border text-[12px] sm:text-[12.5px] font-medium hover:text-[#ff4d4d] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               style={{
                 backgroundColor: theme.cardBg,
                 borderColor: theme.borderColor,
@@ -1851,7 +1892,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
 
           {/* Bottom Input Bar */}
           <div
-            className="shrink-0 border-t px-4 sm:px-6 py-3.5"
+            className="shrink-0 border-t px-2.5 sm:px-6 py-2.5 sm:py-3.5"
             style={{
               backgroundColor: theme.headerBg,
               borderColor: theme.borderColor,
@@ -1873,7 +1914,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     type="button"
                     onClick={() => setNotice('')}
                     aria-label="Dismiss notice"
-                    className="cursor-pointer"
+                    className="cursor-pointer shrink-0"
                     style={{ color: theme.textMuted }}
                   >
                     <X className="w-3.5 h-3.5" />
@@ -1884,7 +1925,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
               {/* Attachment Preview */}
               {pendingAttachment && (
                 <div
-                  className="mb-2.5 inline-flex items-center gap-2.5 px-3 py-2 rounded-xl border"
+                  className="mb-2.5 inline-flex items-center gap-2.5 px-3 py-2 rounded-xl border max-w-full"
                   style={{
                     backgroundColor: theme.cardBg,
                     borderColor: theme.accentSecondary,
@@ -1905,11 +1946,11 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                       src={pendingAttachment.dataUrl}
                       alt={pendingAttachment.name}
                       referrerPolicy="no-referrer"
-                      className="w-10 h-10 rounded-lg object-cover border"
+                      className="w-10 h-10 rounded-lg object-cover border shrink-0"
                       style={{ borderColor: theme.borderColor }}
                     />
                   )}
-                  <div className="min-w-0 max-w-[220px]">
+                  <div className="min-w-0 max-w-[180px] sm:max-w-[220px]">
                     <p className="text-[12px] font-medium truncate">{pendingAttachment.name}</p>
                     <p className="text-[11px]" style={{ color: theme.accentSecondary }}>
                       {pendingAttachment.kind === 'file'
@@ -1923,7 +1964,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     type="button"
                     onClick={() => setPendingAttachment(null)}
                     aria-label="Remove attached file"
-                    className="p-1 rounded-md hover:text-[#ff4d4d] cursor-pointer"
+                    className="p-1 rounded-md hover:text-[#ff4d4d] cursor-pointer shrink-0"
                     style={{ color: theme.textMuted }}
                   >
                     <X className="w-4 h-4" />
@@ -1932,9 +1973,9 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
               )}
 
               {/* Input Row + Prominent Live Talk Button */}
-              <div className="flex items-end gap-2.5">
+              <div className="flex items-end gap-1.5 sm:gap-2.5">
                 <div
-                  className="flex-1 flex items-end gap-2 rounded-2xl border p-2 transition-colors"
+                  className="flex-1 min-w-0 flex items-end gap-1 sm:gap-2 rounded-2xl border p-1.5 sm:p-2 transition-colors"
                   style={{
                     backgroundColor: theme.inputBg,
                     borderColor: theme.borderColor,
@@ -1962,7 +2003,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     onClick={() => fileInputRef.current?.click()}
                     title="Upload Image for Vision Analysis"
                     aria-label="Upload Image"
-                    className="p-2.5 rounded-xl border transition-colors shrink-0 cursor-pointer"
+                    className="p-2 sm:p-2.5 rounded-xl border transition-colors shrink-0 cursor-pointer"
                     style={{
                       backgroundColor: theme.subSurfaceBg,
                       borderColor: theme.borderColor,
@@ -1978,7 +2019,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     onClick={() => studyFileInputRef.current?.click()}
                     title="Upload Study Notes or Code File (.txt, .md, .js, .py, .html)"
                     aria-label="Upload Study or Code File"
-                    className="p-2.5 rounded-xl border transition-colors shrink-0 cursor-pointer"
+                    className="p-2 sm:p-2.5 rounded-xl border transition-colors shrink-0 cursor-pointer"
                     style={{
                       backgroundColor: theme.subSurfaceBg,
                       borderColor: theme.borderColor,
@@ -1995,7 +2036,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     disabled={isTranscribing}
                     title={isRecording ? 'Stop Voice Recording' : 'Multi-language Voice Input'}
                     aria-label={isRecording ? 'Stop Voice Recording' : 'Start Voice Input'}
-                    className="p-2.5 rounded-xl border transition-colors shrink-0 cursor-pointer"
+                    className="p-2 sm:p-2.5 rounded-xl border transition-colors shrink-0 cursor-pointer"
                     style={{
                       backgroundColor: isRecording ? 'rgba(255, 77, 77, 0.16)' : theme.subSurfaceBg,
                       borderColor: isRecording
@@ -2030,12 +2071,12 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     onPaste={handlePaste}
                     placeholder={
                       isRecording
-                        ? 'Listening... Click microphone to stop and transcribe'
+                        ? 'Listening... Click mic to stop'
                         : isTranscribing
                           ? 'Transcribing voice...'
-                          : `Ask your Study Tutor (${selectedLanguage})...`
+                          : `Ask Roosters AI (${selectedLanguage})...`
                     }
-                    className="flex-1 bg-transparent px-2 py-2 text-[14.5px] focus:outline-none resize-none max-h-40 leading-relaxed"
+                    className="flex-1 min-w-0 bg-transparent px-1.5 sm:px-2 py-2 text-[14px] sm:text-[14.5px] focus:outline-none resize-none max-h-40 leading-relaxed"
                     style={{ color: theme.textPrimary }}
                   />
 
@@ -2046,7 +2087,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                       onClick={handleStopStreaming}
                       title="Stop Generating"
                       aria-label="Stop Generating"
-                      className="px-4 py-2.5 rounded-xl border font-semibold text-[13px] flex items-center gap-1.5 hover:text-[#ff4d4d] transition-colors shrink-0 cursor-pointer"
+                      className="px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl border font-semibold text-[13px] flex items-center gap-1.5 hover:text-[#ff4d4d] transition-colors shrink-0 cursor-pointer"
                       style={{
                         backgroundColor: theme.subSurfaceBg,
                         borderColor: theme.borderColor,
@@ -2054,7 +2095,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                       }}
                     >
                       <Square className="w-3.5 h-3.5 fill-current" />
-                      <span>Stop</span>
+                      <span className="hidden sm:inline">Stop</span>
                     </button>
                   ) : (
                     <button
@@ -2062,7 +2103,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                       onClick={() => handleSendMessage()}
                       disabled={!inputValue.trim() && !pendingAttachment}
                       aria-label="Send Message"
-                      className="px-4 py-2.5 rounded-xl font-bold text-[13px] flex items-center gap-1.5 disabled:opacity-45 disabled:cursor-not-allowed transition-all hover:brightness-110 active:scale-[0.98] shrink-0 cursor-pointer"
+                      className="px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl font-bold text-[13px] flex items-center gap-1.5 disabled:opacity-45 disabled:cursor-not-allowed transition-all hover:brightness-110 active:scale-[0.98] shrink-0 cursor-pointer"
                       style={{
                         backgroundImage: theme.sendButtonGradient,
                         color: theme.sendButtonText,
@@ -2084,16 +2125,17 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     setIsLiveTalkOpen(true);
                   }}
                   title="Start Hands-Free Live Voice Conversation"
-                  className="px-4 py-3.5 rounded-2xl border font-bold text-[13px] flex items-center gap-2 transition-all hover:brightness-110 active:scale-[0.98] shrink-0 cursor-pointer whitespace-nowrap"
+                  aria-label="Live Talk"
+                  className="px-2.5 sm:px-4 py-3 sm:py-3.5 rounded-2xl border font-bold text-[12.5px] sm:text-[13px] flex items-center gap-1.5 sm:gap-2 transition-all hover:brightness-110 active:scale-[0.98] shrink-0 cursor-pointer whitespace-nowrap"
                   style={{
                     backgroundColor: theme.cardBg,
                     borderColor: theme.accentSecondary,
                     color: theme.accentSecondary,
-                    boxShadow: `0 0 18px ${theme.accentSecondary}30`,
+                    boxShadow: theme.liteMode ? 'none' : `0 0 18px ${theme.accentSecondary}30`,
                   }}
                 >
                   <AudioLines className="w-4 h-4" />
-                  <span>Live Talk</span>
+                  <span className="hidden sm:inline">Live Talk</span>
                 </button>
               </div>
 

@@ -139,6 +139,7 @@ export function loadThemeSettings(): ThemeSettings {
         themeId: parsed.themeId,
         wallpaperId: parsed.wallpaperId,
         customWallpaperUrl: typeof parsed.customWallpaperUrl === 'string' ? parsed.customWallpaperUrl : '',
+        liteMode: Boolean(parsed.liteMode),
       };
       memoryTheme = merged;
       return merged;

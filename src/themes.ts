@@ -39,6 +39,7 @@ export interface AppTheme {
   sendButtonGlow: string;
   codeBlockBg: string;
   codeHeaderBg: string;
+  liteMode?: boolean;
 }
 
 export const APP_THEMES: Record<ThemeId, AppTheme> = {
@@ -186,10 +187,12 @@ export interface ThemeSettings {
   themeId: ThemeId;
   wallpaperId: WallpaperId;
   customWallpaperUrl: string;
+  liteMode?: boolean;
 }
 
 export const DEFAULT_THEME_SETTINGS: ThemeSettings = {
   themeId: 'gold-cyan',
   wallpaperId: 'solid',
   customWallpaperUrl: '',
+  liteMode: false,
 };

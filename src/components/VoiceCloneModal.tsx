@@ -128,8 +128,14 @@ export function VoiceCloneModal({
       mediaRecorderRef.current?.stop();
       return;
     }
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setErrorMessage('Microphone access is unavailable in this browser. Try uploading an audio clip below.');
+    if (
+      typeof MediaRecorder === 'undefined' ||
+      !navigator.mediaDevices ||
+      !navigator.mediaDevices.getUserMedia
+    ) {
+      setErrorMessage(
+        'Direct microphone recording is unavailable in this browser. You can upload an audio clip below or select a built-in AI voice preset!'
+      );
       return;
     }
 
@@ -162,11 +168,13 @@ export function VoiceCloneModal({
         rafRef.current = requestAnimationFrame(meterTick);
       }
 
-      const preferredMime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : MediaRecorder.isTypeSupported('audio/webm')
-          ? 'audio/webm'
-          : '';
+      const canCheckType = typeof MediaRecorder.isTypeSupported === 'function';
+      const preferredMime =
+        canCheckType && MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+          ? 'audio/webm;codecs=opus'
+          : canCheckType && MediaRecorder.isTypeSupported('audio/webm')
+            ? 'audio/webm'
+            : '';
       const recorder = preferredMime
         ? new MediaRecorder(stream, { mimeType: preferredMime })
         : new MediaRecorder(stream);
@@ -263,13 +271,13 @@ export function VoiceCloneModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm px-4 py-6"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm px-3 sm:px-4 py-4 sm:py-6"
       role="dialog"
       aria-modal="true"
       aria-labelledby="voice-clone-title"
     >
       <div
-        className="w-full max-w-2xl rounded-2xl border p-6 shadow-2xl max-h-[90vh] overflow-y-auto"
+        className="w-full max-w-2xl rounded-2xl border p-4 sm:p-6 shadow-2xl max-h-[90vh] max-h-[90dvh] overflow-y-auto"
         style={{
           backgroundColor: theme.cardBg,
           borderColor: theme.borderColor,

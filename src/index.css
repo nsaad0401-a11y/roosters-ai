@@ -15,7 +15,16 @@
     margin: 0;
     padding: 0;
     min-height: 100%;
+    overflow-x: hidden;
+    -webkit-text-size-adjust: 100%;
   }
+}
+
+.app-viewport-height {
+  min-height: 100vh;
+  min-height: 100dvh;
+  height: 100vh;
+  height: 100dvh;
 }
 
 .font-display {
@@ -37,6 +46,25 @@
 
 .animate-splash-bar {
   animation: splash-load 1.05s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* Lite Performance Mode for older low-RAM Android/iOS phones and older Windows PCs */
+.lite-mode *,
+.lite-mode *::before,
+.lite-mode *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  transition-duration: 0.01ms !important;
+}
+
+.lite-mode .animate-pulse,
+.lite-mode .animate-ping {
+  animation: none !important;
+}
+
+.lite-mode .blur-2xl,
+.lite-mode .blur-xl {
+  filter: none !important;
 }
 
 /* Custom sleek dark scrollbar */

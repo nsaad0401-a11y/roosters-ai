@@ -3,7 +3,11 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { getBcp47ForLanguage, ROOSTERS_LOGO_SRC } from '../constants';
 import { MissingApiKeyError, streamChatCompletion } from '../utils/aiClient';
 import { VoiceStudioSettings } from '../types';
-import { getResolvedVoiceParameters, speakWithVoiceProfile } from '../utils/voiceEngine';
+import {
+  getResolvedVoiceParameters,
+  isSpeechSynthesisSupported,
+  speakWithVoiceProfile,
+} from '../utils/voiceEngine';
 
 interface LiveTalkModalProps {
   isOpen: boolean;
@@ -205,7 +209,7 @@ export function LiveTalkModal({
     (sentence: string) => {
       if (!isMountedRef.current) return;
       const spoken = cleanTextForSpeech(sentence);
-      if (!spoken || !window.speechSynthesis) return;
+      if (!spoken || !isSpeechSynthesisSupported()) return;
 
       setStatus('speaking');
       activeUtterancesRef.current += 1;
@@ -468,32 +472,32 @@ export function LiveTalkModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex flex-col items-center justify-between bg-[#07090e]/98 backdrop-blur-xl px-6 py-8 text-white"
+      className="fixed inset-0 min-h-[100dvh] z-50 flex flex-col items-center justify-between bg-[#07090e]/98 backdrop-blur-xl px-3 sm:px-6 py-4 sm:py-8 text-white overflow-y-auto overflow-x-hidden"
       role="dialog"
       aria-modal="true"
       aria-label="Roosters AI Live Talk"
     >
       {/* Top Bar */}
-      <div className="w-full max-w-3xl flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="w-full max-w-3xl flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2.5 min-w-0">
           <img
             src={ROOSTERS_LOGO_SRC}
             alt="Roosters AI"
             referrerPolicy="no-referrer"
-            className="w-9 h-9 rounded-lg object-cover border border-[#1f293d]"
+            className="w-9 h-9 rounded-lg object-cover border border-[#1f293d] shrink-0"
           />
-          <div>
-            <div className="font-display font-bold text-[16px] bg-gradient-to-r from-[#ffd700] to-[#00d4ff] bg-clip-text text-transparent">
+          <div className="min-w-0">
+            <div className="font-display font-bold text-[15px] sm:text-[16px] bg-gradient-to-r from-[#ffd700] to-[#00d4ff] bg-clip-text text-transparent truncate">
               Roosters AI Live Talk
             </div>
-            <div className="text-[12px] text-[#94a3b8]">
+            <div className="text-[11.5px] sm:text-[12px] text-[#94a3b8] truncate">
               Language: {selectedLanguage} · Voice: {getResolvedVoiceParameters(voiceSettings).label}
             </div>
           </div>
         </div>
 
         <span
-          className={`px-3.5 py-1.5 rounded-full text-[12.5px] font-semibold border ${
+          className={`px-3 py-1 rounded-full text-[11.5px] sm:text-[12.5px] font-semibold border whitespace-nowrap ${
             status === 'speaking'
               ? 'bg-[#ffd700]/15 border-[#ffd700]/50 text-[#ffd700]'
               : status === 'thinking'
@@ -508,8 +512,8 @@ export function LiveTalkModal({
       </div>
 
       {/* Center Animated Visualizer Orb */}
-      <div className="flex flex-col items-center justify-center my-auto max-w-2xl w-full text-center">
-        <div className="relative flex items-center justify-center w-64 h-64">
+      <div className="flex flex-col items-center justify-center my-auto max-w-2xl w-full text-center py-4">
+        <div className="relative flex items-center justify-center w-48 h-48 sm:w-64 sm:h-64">
           <div
             aria-hidden="true"
             className={`absolute inset-4 rounded-full border border-[#00d4ff]/25 transition-transform duration-150 ${
@@ -533,7 +537,7 @@ export function LiveTalkModal({
             type="button"
             onClick={status === 'speaking' ? handleInterruptAndListen : undefined}
             title={status === 'speaking' ? 'Tap to interrupt and speak' : statusLabel}
-            className="relative w-40 h-40 rounded-full border border-white/20 shadow-2xl transition-transform duration-150 flex items-center justify-center cursor-pointer"
+            className="relative w-32 h-32 sm:w-40 sm:h-40 rounded-full border border-white/20 shadow-2xl transition-transform duration-150 flex items-center justify-center cursor-pointer"
             style={{
               background: orbColor,
               transform: `scale(${orbScale})`,
@@ -597,11 +601,11 @@ export function LiveTalkModal({
       </div>
 
       {/* Bottom Call Controls */}
-      <div className="flex items-center gap-4">
+      <div className="flex flex-wrap items-center justify-center gap-3 sm:gap-4 pt-3">
         <button
           type="button"
           onClick={handleToggleMute}
-          className={`inline-flex items-center gap-2.5 px-6 py-3.5 rounded-full border font-semibold text-[14px] transition-all cursor-pointer ${
+          className={`inline-flex items-center gap-2 px-4 sm:px-6 py-3 sm:py-3.5 rounded-full border font-semibold text-[13px] sm:text-[14px] transition-all cursor-pointer ${
             isMuted
               ? 'bg-[#1e273b] border-[#ffd700] text-[#ffd700]'
               : 'bg-[#121622] border-[#334155] text-slate-100 hover:border-[#00d4ff]'
@@ -614,7 +618,7 @@ export function LiveTalkModal({
         <button
           type="button"
           onClick={handleEndCall}
-          className="inline-flex items-center gap-2.5 px-7 py-3.5 rounded-full bg-[#ef4444] hover:bg-[#dc2626] text-white font-bold text-[14px] shadow-lg shadow-red-500/25 transition-all cursor-pointer"
+          className="inline-flex items-center gap-2 px-5 sm:px-7 py-3 sm:py-3.5 rounded-full bg-[#ef4444] hover:bg-[#dc2626] text-white font-bold text-[13px] sm:text-[14px] shadow-lg shadow-red-500/25 transition-all cursor-pointer"
         >
           <PhoneOff className="w-4 h-4" />
           <span>End Live Call</span>

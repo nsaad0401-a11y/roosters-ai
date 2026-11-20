@@ -3,7 +3,11 @@ import { useEffect, useRef, useState } from 'react';
 import { getBcp47ForLanguage, WORLD_LANGUAGES } from '../constants';
 import { AppTheme } from '../themes';
 import { VoiceStudioSettings } from '../types';
-import { getResolvedVoiceParameters, speakWithVoiceProfile } from '../utils/voiceEngine';
+import {
+  getResolvedVoiceParameters,
+  isSpeechSynthesisSupported,
+  speakWithVoiceProfile,
+} from '../utils/voiceEngine';
 
 interface TextReaderModalProps {
   isOpen: boolean;
@@ -101,8 +105,10 @@ export function TextReaderModal({
   };
 
   const handlePlay = () => {
-    if (!window.speechSynthesis) {
-      setStatusError('Text-to-Speech is not supported in this browser.');
+    if (!isSpeechSynthesisSupported()) {
+      setStatusError(
+        'Text-to-Speech reading is not supported in this older browser. You can still paste and organize your notes cleanly here.'
+      );
       return;
     }
     setStatusError('');
@@ -157,13 +163,13 @@ export function TextReaderModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm px-4 py-6"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm px-3 sm:px-4 py-4 sm:py-6"
       role="dialog"
       aria-modal="true"
       aria-labelledby="text-reader-title"
     >
       <div
-        className="w-full max-w-2xl rounded-2xl border p-6 shadow-2xl flex flex-col max-h-[90vh]"
+        className="w-full max-w-2xl rounded-2xl border p-4 sm:p-6 shadow-2xl flex flex-col max-h-[90vh] max-h-[90dvh] overflow-y-auto"
         style={{
           backgroundColor: theme.cardBg,
           borderColor: theme.borderColor,

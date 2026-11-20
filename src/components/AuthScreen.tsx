@@ -108,10 +108,10 @@ export function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
   };
 
   return (
-    <div className="min-h-screen w-full bg-[#07090e] flex flex-col items-center justify-center px-4 py-8">
+    <div className="min-h-screen min-h-[100dvh] w-full bg-[#07090e] flex flex-col items-center justify-center px-3 sm:px-4 py-6 sm:py-8 overflow-x-hidden">
       {/* Center Card */}
       <div
-        className="w-full max-w-[380px] bg-[#121622] rounded-[16px] border border-[#1f293d] p-7"
+        className="w-full max-w-[380px] bg-[#121622] rounded-[16px] border border-[#1f293d] p-5 sm:p-7"
         style={{
           boxShadow: '0 24px 60px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.02)',
         }}
