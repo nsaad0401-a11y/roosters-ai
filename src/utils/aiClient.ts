@@ -113,29 +113,37 @@ export function buildClientStudyTutorInstruction(options: {
   const { language, userName, isLiveVoice } = options;
   const langRule =
     !language || language === 'Auto-Detect'
-      ? 'Reply fluently in the exact language of the user’s latest message.'
+      ? "Match the user's latest message language naturally (such as English, Urdu, or Roman Urdu)."
       : `Reply fluently in ${language}.`;
 
+  const baseInstruction =
+    "You are Roosters AI, a helpful and polite AI assistant created by SandSoft. By default, always give clear, simple, direct, and concise answers in plain conversational language (matching the user's language, such as English, Urdu, or Roman Urdu). Do NOT add long headings, bulleted study notes, or practice questions unless the user explicitly asks for 'study notes', 'notes', 'questions', or a detailed explanation.";
+
   const multimodalCore =
-    'You are Roosters AI by SandSoft. You have full permission and ability to view, read, and analyze any photo, screenshot, or document uploaded by the user, including handwritten notes and images.';
+    'You have full permission and ability to view, read, and analyze any photo, screenshot, or document uploaded by the user, including handwritten notes and images.';
 
   if (isLiveVoice) {
     return [
-      `${multimodalCore}${userName ? ` You are warmly assisting ${userName}.` : ''}`,
-      'Be ultra-polite, warm, respectful, and encouraging like a kind study tutor.',
+      baseInstruction,
+      userName ? `You are warmly assisting ${userName}.` : '',
+      multimodalCore,
       'Speak naturally in 2–4 concise, clear sentences without markdown symbols or code fences unless asked.',
       langRule,
-    ].join(' ');
+    ]
+      .filter(Boolean)
+      .join(' ');
   }
 
   return [
-    `${multimodalCore}${userName ? ` You are warmly assisting ${userName}.` : ''}`,
-    'Always be deeply polite, warm, respectful, and encouraging like a patient master teacher.',
-    'For study topics: explain in clear numbered steps with simple examples, crisp study notes, and 1–2 helpful practice questions.',
-    'Format code in fenced markdown blocks with language tags. Examine uploaded images, photos, screenshots, study notes, or code files politely, accurately, and in helpful detail.',
+    baseInstruction,
+    userName ? `You are assisting ${userName}.` : '',
+    multimodalCore,
+    'Format code in fenced markdown blocks with language tags only when code is requested or relevant.',
     'NEVER output ASCII art, text-character drawings, or box-art diagrams when asked for a picture, image, photo, or video.',
     langRule,
-  ].join(' ');
+  ]
+    .filter(Boolean)
+    .join(' ');
 }
 
 export function detectChatMediaIntent(

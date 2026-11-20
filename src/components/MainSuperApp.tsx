@@ -26,11 +26,13 @@ import {
   Trash2,
   User,
   Volume2,
+  WifiOff,
   Wrench,
   X,
 } from 'lucide-react';
 import { ChangeEvent, ClipboardEvent, CSSProperties, KeyboardEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { QUICK_PROMPTS, ROOSTERS_LOGO_SRC, WORLD_LANGUAGES } from '../constants';
+import { useOnlineStatus } from '../hooks/usePWAInstall';
 import { APP_THEMES, AppTheme, ThemeSettings } from '../themes';
 import {
   ActiveUser,
@@ -53,6 +55,7 @@ import {
 import {
   loadThemeSettings,
   loadUserChats,
+  loadUserChatsFromIndexedDB,
   loadVoiceSettings,
   saveThemeSettings,
   saveUserChats,
@@ -65,7 +68,6 @@ import {
   speakWithVoiceProfile,
   unlockSpeechSynthesis,
 } from '../utils/voiceEngine';
-import { AdBannerSlot } from './AdBannerSlot';
 import { ApiKeyModal } from './ApiKeyModal';
 import { GeneratedArtworkCard } from './GeneratedArtworkCard';
 import { GeneratedVideoCard } from './GeneratedVideoCard';
@@ -447,7 +449,10 @@ const ChatMessageRow = memo(function ChatMessageRow({
 });
 
 export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
-  const [sessions, setSessions] = useState<ChatSession[]>(() => loadUserChats(user.id));
+  const isOnline = useOnlineStatus();
+  const [sessions, setSessions] = useState<ChatSession[]>(() =>
+    user.isGuest ? [] : loadUserChats(user)
+  );
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [selectedLanguage, setSelectedLanguage] = useState<string>('Auto-Detect');
@@ -563,10 +568,42 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     saveVoiceSettings(next);
   };
 
-  // Persist sessions whenever they change
+  // Hydrate larger or offline-backed chats from IndexedDB for logged-in accounts only
   useEffect(() => {
-    saveUserChats(user.id, sessions);
-  }, [sessions, user.id]);
+    if (user.isGuest) return;
+    let cancelled = false;
+    void loadUserChatsFromIndexedDB(user).then((idbSessions) => {
+      if (cancelled || !idbSessions || idbSessions.length === 0) return;
+      setSessions((prev) => {
+        if (prev.length === 0) return idbSessions;
+        const merged = new Map<string, ChatSession>();
+        for (const s of idbSessions) merged.set(s.id, s);
+        for (const s of prev) {
+          const existing = merged.get(s.id);
+          if (!existing || s.updatedAt >= existing.updatedAt) {
+            merged.set(s.id, s);
+          }
+        }
+        return Array.from(merged.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
+  // Persist sessions strictly for logged-in users (Guest mode stays in React memory only)
+  useEffect(() => {
+    if (user.isGuest) return;
+    saveUserChats(user, sessions);
+  }, [sessions, user]);
+
+  // Close Live Talk cleanly if connection drops offline
+  useEffect(() => {
+    if (!isOnline && isLiveTalkOpen) {
+      setIsLiveTalkOpen(false);
+    }
+  }, [isOnline, isLiveTalkOpen]);
 
   // Auto-scroll to bottom: instant during streaming for zero lag, smooth on static sends
   useEffect(() => {
@@ -580,8 +617,12 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     }
   }, [screenStream]);
 
-  // Detect backend availability + server Gemini key & run live active visitors heartbeat
+  // Detect backend availability + server Gemini key & run live active visitors heartbeat when online
   useEffect(() => {
+    if (!isOnline) {
+      return;
+    }
+
     let cancelled = false;
     let backendActive = false;
 
@@ -643,7 +684,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [isOnline]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -790,6 +831,13 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   ) => {
     const textToSend = (overrideText ?? inputValue).trim();
     const capturedAttachment = overrideText ? null : pendingAttachment;
+
+    if (!isOnline) {
+      setNotice(
+        'You are offline. You can read your saved conversations, but please connect to the internet to start a new chat.'
+      );
+      return;
+    }
 
     if ((!textToSend && !capturedAttachment) || isStreaming || isGeneratingImage || isGeneratingVideo) {
       return;
@@ -1258,6 +1306,10 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   };
 
   const handleToggleMic = async () => {
+    if (!isOnline) {
+      setNotice('You are offline. Connect to the internet to use voice chat.');
+      return;
+    }
     if (isRecording) {
       mediaRecorderRef.current?.stop();
       setIsRecording(false);
@@ -1352,6 +1404,10 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     aspectRatio: '1:1' | '16:9' | '4:3',
     displayUserText?: string
   ) => {
+    if (!isOnline) {
+      setNotice('You are offline. Connect to the internet to generate new HD images.');
+      return;
+    }
     setIsGeneratingImage(true);
     setNotice('');
 
@@ -1439,6 +1495,10 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     style: string,
     displayUserText?: string
   ) => {
+    if (!isOnline) {
+      setNotice('You are offline. Connect to the internet to generate new AI videos.');
+      return;
+    }
     setIsGeneratingVideo(true);
     setNotice('');
 
@@ -1830,22 +1890,29 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
               <span>New Chat</span>
             </button>
 
-            {/* Prominent Live Talk Button (Always visible & tappable on BOTH mobile and desktop) */}
+            {/* Prominent Live Talk Button (Always visible & tappable when online; disabled offline) */}
             <button
               type="button"
+              disabled={!isOnline}
               onClick={() => {
+                if (!isOnline) return;
                 stopAudioPlayback();
                 setIsToolsMenuOpen(false);
                 setIsLiveTalkOpen(true);
               }}
-              title="Start Hands-Free Live Voice Conversation"
+              title={
+                isOnline
+                  ? 'Start Hands-Free Live Voice Conversation'
+                  : 'Connect to the internet to use Live Talk'
+              }
               aria-label="Live Talk"
-              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg border font-bold text-[12px] sm:text-[12.5px] transition-all hover:brightness-110 active:scale-[0.98] whitespace-nowrap shrink-0 cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg border font-bold text-[12px] sm:text-[12.5px] transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-45 disabled:cursor-not-allowed disabled:hover:brightness-100 whitespace-nowrap shrink-0 cursor-pointer"
               style={{
                 backgroundColor: theme.cardBg,
-                borderColor: theme.accentSecondary,
-                color: theme.accentSecondary,
-                boxShadow: theme.liteMode ? 'none' : `0 0 14px ${theme.accentSecondary}30`,
+                borderColor: isOnline ? theme.accentSecondary : theme.borderColor,
+                color: isOnline ? theme.accentSecondary : theme.textMuted,
+                boxShadow:
+                  !isOnline || theme.liteMode ? 'none' : `0 0 14px ${theme.accentSecondary}30`,
               }}
             >
               <AudioLines className="w-3.5 h-3.5 shrink-0" />
@@ -1938,11 +2005,13 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                   <div className="grid grid-cols-1 gap-1.5">
                     <button
                       type="button"
+                      disabled={!isOnline}
                       onClick={() => {
+                        if (!isOnline) return;
                         setIsToolsMenuOpen(false);
                         setIsImageModalOpen(true);
                       }}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl border text-[12.5px] font-medium text-left cursor-pointer"
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl border text-[12.5px] font-medium text-left cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
                       style={{
                         backgroundColor: theme.subSurfaceBg,
                         borderColor: theme.borderColor,
@@ -1955,11 +2024,13 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
 
                     <button
                       type="button"
+                      disabled={!isOnline}
                       onClick={() => {
+                        if (!isOnline) return;
                         setIsToolsMenuOpen(false);
                         setIsVideoModalOpen(true);
                       }}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl border text-[12.5px] font-medium text-left cursor-pointer"
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl border text-[12.5px] font-medium text-left cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
                       style={{
                         backgroundColor: theme.subSurfaceBg,
                         borderColor: theme.borderColor,
@@ -2174,8 +2245,13 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
               {/* Create Image Button */}
               <button
                 type="button"
-                onClick={() => setIsImageModalOpen(true)}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                disabled={!isOnline}
+                onClick={() => {
+                  if (!isOnline) return;
+                  setIsImageModalOpen(true);
+                }}
+                title={isOnline ? 'Create HD AI Image' : 'Connect to the internet to create images'}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
                 style={{
                   backgroundColor: theme.cardBg,
                   borderColor: theme.borderColor,
@@ -2189,8 +2265,13 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
               {/* Create Video Button */}
               <button
                 type="button"
-                onClick={() => setIsVideoModalOpen(true)}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                disabled={!isOnline}
+                onClick={() => {
+                  if (!isOnline) return;
+                  setIsVideoModalOpen(true);
+                }}
+                title={isOnline ? 'Create AI Video' : 'Connect to the internet to create videos'}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
                 style={{
                   backgroundColor: theme.cardBg,
                   borderColor: theme.borderColor,
@@ -2268,9 +2349,6 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         </div>
       </header>
 
-      {/* Non-Intrusive Responsive Sponsored Header Banner (728x90 / 320x50) */}
-      <AdBannerSlot variant="header-banner" theme={theme} />
-
       {/* Main Content Area */}
       <div className="flex-1 flex min-h-0 relative">
         {/* Mobile backdrop for sidebar drawer */}
@@ -2323,10 +2401,36 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
               </button>
             </div>
 
+            {user.isGuest && (
+              <div
+                role="status"
+                className="mx-2.5 mt-2.5 px-3 py-2.5 rounded-xl border text-[11.5px] leading-relaxed"
+                style={{
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.borderColor,
+                  color: theme.textSecondary,
+                }}
+              >
+                <p className="italic">
+                  Guest Mode: Chats are not saved. Log in or Sign up to save your conversation history.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleCleanLogout}
+                  className="mt-1.5 text-[11.5px] font-semibold underline cursor-pointer"
+                  style={{ color: theme.accentSecondary }}
+                >
+                  Log in / Sign up
+                </button>
+              </div>
+            )}
+
             <div className="flex-1 overflow-y-auto p-2.5 space-y-1.5">
               {sessions.length === 0 ? (
                 <p className="text-[12.5px] px-3 py-8 text-center" style={{ color: theme.textMuted }}>
-                  No saved conversations yet. Send a message to save your study history automatically.
+                  {user.isGuest
+                    ? 'Temporary guest session active. Your messages clear when you refresh or close the tab.'
+                    : 'No saved conversations yet. Send a message to save your study history automatically.'}
                 </p>
               ) : (
                 sessions.map((session) => (
@@ -2364,9 +2468,6 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                 ))
               )}
             </div>
-
-            {/* Sidebar Sponsored Ad Slot */}
-            <AdBannerSlot variant="sidebar-footer" theme={theme} />
           </aside>
         )}
 
@@ -2583,7 +2684,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                   </h2>
 
                   <p className="mt-2 max-w-lg text-[14px]" style={{ color: theme.textMuted }}>
-                    Your polite, encouraging Study Tutor and AI workspace. Ask questions step-by-step, start a hands-free Live Talk call, paste notes into Text Reader, or customize your theme.
+                    Your fast, polite, all-purpose AI assistant by SandSoft. Ask anything for clear direct answers, analyze photos &amp; files, start a hands-free Live Talk call, or create HD images &amp; videos.
                   </p>
 
                   <div className="mt-8 grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-2xl text-left">
@@ -2591,8 +2692,12 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                       <button
                         key={item.title}
                         type="button"
-                        onClick={() => handleSendMessage(item.prompt)}
-                        className="p-4 rounded-xl border transition-colors cursor-pointer group"
+                        disabled={!isOnline}
+                        onClick={() => {
+                          if (!isOnline) return;
+                          void handleSendMessage(item.prompt);
+                        }}
+                        className="p-4 rounded-xl border transition-colors cursor-pointer group disabled:opacity-50 disabled:cursor-not-allowed"
                         style={{
                           backgroundColor: theme.cardBg,
                           borderColor: theme.borderColor,
@@ -2664,235 +2769,270 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                 </div>
               )}
 
-              {/* Attachment Preview */}
-              {pendingAttachment && (
+              {!isOnline ? (
                 <div
-                  className="mb-2.5 inline-flex items-center gap-2.5 px-3 py-2 rounded-xl border max-w-full"
+                  role="status"
+                  className="flex flex-col sm:flex-row items-center justify-between gap-2.5 px-4 py-3 rounded-2xl border text-[13px]"
                   style={{
                     backgroundColor: theme.cardBg,
-                    borderColor: theme.accentSecondary,
+                    borderColor: 'rgba(245, 158, 11, 0.45)',
+                    color: theme.textPrimary,
                   }}
                 >
-                  {pendingAttachment.kind === 'file' ? (
-                    <div
-                      className="w-10 h-10 rounded-lg border flex items-center justify-center shrink-0"
-                      style={{
-                        backgroundColor: theme.subSurfaceBg,
-                        borderColor: theme.borderColor,
-                      }}
-                    >
-                      <FileCode className="w-5 h-5" style={{ color: theme.accentPrimary }} />
-                    </div>
-                  ) : (
-                    <img
-                      src={pendingAttachment.dataUrl}
-                      alt={pendingAttachment.name}
-                      referrerPolicy="no-referrer"
-                      className="w-10 h-10 rounded-lg object-cover border shrink-0"
-                      style={{ borderColor: theme.borderColor }}
-                    />
-                  )}
-                  <div className="min-w-0 max-w-[180px] sm:max-w-[220px]">
-                    <p className="text-[12px] font-medium truncate">{pendingAttachment.name}</p>
-                    <p className="text-[11px]" style={{ color: theme.accentSecondary }}>
-                      {pendingAttachment.kind === 'file'
-                        ? `Study/Code File Ready (${Math.max(1, Math.round((pendingAttachment.fileSize ?? 0) / 1024))} KB)`
-                        : pendingAttachment.source === 'screen'
-                          ? 'Screen Capture Ready'
-                          : 'Image Ready for Vision'}
-                    </p>
+                  <div className="flex items-center gap-2.5 text-center sm:text-left">
+                    <WifiOff className="w-4 h-4 shrink-0 text-amber-400" />
+                    <span>
+                      You are offline. You can read your saved conversations, but please connect to the internet to start a new chat.
+                    </span>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setPendingAttachment(null)}
-                    aria-label="Remove attached file"
-                    className="p-1 rounded-md hover:text-[#ff4d4d] cursor-pointer shrink-0"
-                    style={{ color: theme.textMuted }}
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              )}
-
-              {/* Input Row */}
-              <div className="flex items-end gap-1.5 sm:gap-2.5">
-                <div
-                  className="flex-1 min-w-0 min-h-[48px] flex items-end gap-1 sm:gap-2 rounded-2xl border p-1.5 sm:p-2 transition-colors"
-                  style={{
-                    backgroundColor: theme.inputBg,
-                    borderColor: theme.borderColor,
-                  }}
-                >
-                  {/* Hidden File Inputs: Image + Study/Code File */}
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    onChange={handleImageUploadChange}
-                    className="hidden"
-                  />
-                  <input
-                    ref={studyFileInputRef}
-                    type="file"
-                    accept=".txt,.md,.js,.jsx,.ts,.tsx,.py,.html,.htm,.css,.json,.csv,text/plain,text/markdown,text/html"
-                    onChange={handleStudyFileUploadChange}
-                    className="hidden"
-                  />
-
-                  {/* Image Upload Button */}
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    title="Upload Image for Vision Analysis"
-                    aria-label="Upload Image"
-                    className="p-2 sm:p-2.5 rounded-xl border transition-colors shrink-0 cursor-pointer"
-                    style={{
-                      backgroundColor: theme.subSurfaceBg,
-                      borderColor: theme.borderColor,
-                      color: theme.textPrimary,
-                    }}
-                  >
-                    <Camera className="w-4 h-4" />
-                  </button>
-
-                  {/* Study / Code File Upload Button */}
-                  <button
-                    type="button"
-                    onClick={() => studyFileInputRef.current?.click()}
-                    title="Upload Study Notes or Code File (.txt, .md, .js, .py, .html)"
-                    aria-label="Upload Study or Code File"
-                    className="p-2 sm:p-2.5 rounded-xl border transition-colors shrink-0 cursor-pointer"
-                    style={{
-                      backgroundColor: theme.subSurfaceBg,
-                      borderColor: theme.borderColor,
-                      color: theme.accentPrimary,
-                    }}
-                  >
-                    <FileText className="w-4 h-4" />
-                  </button>
-
-                  {/* Voice Message Mode Toggle (speaks typed text in Sample Voice as WhatsApp Voice Note) */}
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleUpdateVoiceSettings({
-                        ...voiceSettings,
-                        voiceMessageMode: !voiceSettings.voiceMessageMode,
-                      })
-                    }
-                    title={
-                      voiceSettings.voiceMessageMode
-                        ? 'Voice Message Mode ON — Typed text will be spoken in your Active Voice'
-                        : 'Enable Voice Message Mode (speak typed text as a Voice Note)'
-                    }
-                    aria-label="Toggle Voice Message Mode"
-                    aria-pressed={Boolean(voiceSettings.voiceMessageMode)}
-                    className="p-2 sm:p-2.5 rounded-xl border transition-colors shrink-0 cursor-pointer"
-                    style={{
-                      backgroundColor: voiceSettings.voiceMessageMode
-                        ? `${theme.accentSecondary}22`
-                        : theme.subSurfaceBg,
-                      borderColor: voiceSettings.voiceMessageMode
-                        ? theme.accentSecondary
-                        : theme.borderColor,
-                      color: voiceSettings.voiceMessageMode
-                        ? theme.accentSecondary
-                        : theme.textSecondary,
-                    }}
-                  >
-                    <AudioLines className="w-4 h-4" />
-                  </button>
-
-                  {/* Microphone Voice Input Button */}
-                  <button
-                    type="button"
-                    onClick={handleToggleMic}
-                    disabled={isTranscribing}
-                    title={isRecording ? 'Stop Voice Recording' : 'Multi-language Voice Input'}
-                    aria-label={isRecording ? 'Stop Voice Recording' : 'Start Voice Input'}
-                    className="p-2 sm:p-2.5 rounded-xl border transition-colors shrink-0 cursor-pointer"
-                    style={{
-                      backgroundColor: isRecording ? 'rgba(255, 77, 77, 0.16)' : theme.subSurfaceBg,
-                      borderColor: isRecording
-                        ? '#ff4d4d'
-                        : isTranscribing
-                          ? theme.accentSecondary
-                          : theme.borderColor,
-                      color: isRecording
-                        ? '#ff4d4d'
-                        : isTranscribing
-                          ? theme.accentSecondary
-                          : theme.textPrimary,
-                    }}
-                  >
-                    {isTranscribing ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : isRecording ? (
-                      <MicOff className="w-4 h-4" />
-                    ) : (
-                      <Mic className="w-4 h-4" />
-                    )}
-                  </button>
-
-                  {/* Textarea */}
-                  <textarea
-                    ref={textareaRef}
-                    rows={1}
-                    dir="auto"
-                    value={inputValue}
-                    onChange={handleTextareaChange}
-                    onKeyDown={handleTextareaKeyDown}
-                    onPaste={handlePaste}
-                    placeholder={
-                      isRecording
-                        ? 'Listening... Click mic to stop'
-                        : isTranscribing
-                          ? 'Transcribing voice...'
-                          : voiceSettings.voiceMessageMode
-                            ? `Voice Note (${getResolvedVoiceParameters(voiceSettings).voiceName}) — Type to speak...`
-                            : `Ask your Study Tutor (${selectedLanguage})...`
-                    }
-                    className="flex-1 min-w-0 bg-transparent px-1.5 sm:px-2 py-2.5 text-[14px] sm:text-[14.5px] focus:outline-none resize-none max-h-40 leading-normal"
-                    style={{ color: theme.textPrimary }}
-                  />
-
-                  {/* Glowing Gold / Theme Send or Stop Button */}
-                  {isStreaming ? (
+                  {!showHistory && !user.isGuest && sessions.length > 0 && (
                     <button
                       type="button"
-                      onClick={handleStopStreaming}
-                      title="Stop Generating"
-                      aria-label="Stop Generating"
-                      className="px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl border font-semibold text-[13px] flex items-center gap-1.5 hover:text-[#ff4d4d] transition-colors shrink-0 cursor-pointer"
+                      onClick={() => setShowHistory(true)}
+                      className="px-3 py-1.5 rounded-lg border text-[12px] font-semibold whitespace-nowrap shrink-0 cursor-pointer"
                       style={{
                         backgroundColor: theme.subSurfaceBg,
                         borderColor: theme.borderColor,
-                        color: theme.textPrimary,
+                        color: theme.accentSecondary,
                       }}
                     >
-                      <Square className="w-3.5 h-3.5 fill-current" />
-                      <span className="hidden sm:inline">Stop</span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => handleSendMessage()}
-                      disabled={!inputValue.trim() && !pendingAttachment}
-                      aria-label="Send Message"
-                      className="px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl font-bold text-[13px] flex items-center gap-1.5 disabled:opacity-45 disabled:cursor-not-allowed transition-all hover:brightness-110 active:scale-[0.98] shrink-0 cursor-pointer"
-                      style={{
-                        backgroundImage: theme.sendButtonGradient,
-                        color: theme.sendButtonText,
-                        boxShadow:
-                          inputValue.trim() || pendingAttachment ? theme.sendButtonGlow : 'none',
-                      }}
-                    >
-                      <Send className="w-4 h-4" />
-                      <span className="hidden sm:inline">Send</span>
+                      Browse Saved Chats
                     </button>
                   )}
                 </div>
-              </div>
+              ) : (
+                <>
+                  {/* Attachment Preview */}
+                  {pendingAttachment && (
+                    <div
+                      className="mb-2.5 inline-flex items-center gap-2.5 px-3 py-2 rounded-xl border max-w-full"
+                      style={{
+                        backgroundColor: theme.cardBg,
+                        borderColor: theme.accentSecondary,
+                      }}
+                    >
+                      {pendingAttachment.kind === 'file' ? (
+                        <div
+                          className="w-10 h-10 rounded-lg border flex items-center justify-center shrink-0"
+                          style={{
+                            backgroundColor: theme.subSurfaceBg,
+                            borderColor: theme.borderColor,
+                          }}
+                        >
+                          <FileCode className="w-5 h-5" style={{ color: theme.accentPrimary }} />
+                        </div>
+                      ) : (
+                        <img
+                          src={pendingAttachment.dataUrl}
+                          alt={pendingAttachment.name}
+                          referrerPolicy="no-referrer"
+                          className="w-10 h-10 rounded-lg object-cover border shrink-0"
+                          style={{ borderColor: theme.borderColor }}
+                        />
+                      )}
+                      <div className="min-w-0 max-w-[180px] sm:max-w-[220px]">
+                        <p className="text-[12px] font-medium truncate">{pendingAttachment.name}</p>
+                        <p className="text-[11px]" style={{ color: theme.accentSecondary }}>
+                          {pendingAttachment.kind === 'file'
+                            ? `Study/Code File Ready (${Math.max(1, Math.round((pendingAttachment.fileSize ?? 0) / 1024))} KB)`
+                            : pendingAttachment.source === 'screen'
+                              ? 'Screen Capture Ready'
+                              : 'Image Ready for Vision'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setPendingAttachment(null)}
+                        aria-label="Remove attached file"
+                        className="p-1 rounded-md hover:text-[#ff4d4d] cursor-pointer shrink-0"
+                        style={{ color: theme.textMuted }}
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Input Row */}
+                  <div className="flex items-end gap-1.5 sm:gap-2.5">
+                    <div
+                      className="flex-1 min-w-0 min-h-[48px] flex items-end gap-1 sm:gap-2 rounded-2xl border p-1.5 sm:p-2 transition-colors"
+                      style={{
+                        backgroundColor: theme.inputBg,
+                        borderColor: theme.borderColor,
+                      }}
+                    >
+                      {/* Hidden File Inputs: Image + Study/Code File */}
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/*"
+                        onChange={handleImageUploadChange}
+                        className="hidden"
+                      />
+                      <input
+                        ref={studyFileInputRef}
+                        type="file"
+                        accept=".txt,.md,.js,.jsx,.ts,.tsx,.py,.html,.htm,.css,.json,.csv,text/plain,text/markdown,text/html"
+                        onChange={handleStudyFileUploadChange}
+                        className="hidden"
+                      />
+
+                      {/* Image Upload Button */}
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        title="Upload Image for Vision Analysis"
+                        aria-label="Upload Image"
+                        className="p-2 sm:p-2.5 rounded-xl border transition-colors shrink-0 cursor-pointer"
+                        style={{
+                          backgroundColor: theme.subSurfaceBg,
+                          borderColor: theme.borderColor,
+                          color: theme.textPrimary,
+                        }}
+                      >
+                        <Camera className="w-4 h-4" />
+                      </button>
+
+                      {/* Study / Code File Upload Button */}
+                      <button
+                        type="button"
+                        onClick={() => studyFileInputRef.current?.click()}
+                        title="Upload Study Notes or Code File (.txt, .md, .js, .py, .html)"
+                        aria-label="Upload Study or Code File"
+                        className="p-2 sm:p-2.5 rounded-xl border transition-colors shrink-0 cursor-pointer"
+                        style={{
+                          backgroundColor: theme.subSurfaceBg,
+                          borderColor: theme.borderColor,
+                          color: theme.accentPrimary,
+                        }}
+                      >
+                        <FileText className="w-4 h-4" />
+                      </button>
+
+                      {/* Voice Message Mode Toggle (speaks typed text in Sample Voice as WhatsApp Voice Note) */}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleUpdateVoiceSettings({
+                            ...voiceSettings,
+                            voiceMessageMode: !voiceSettings.voiceMessageMode,
+                          })
+                        }
+                        title={
+                          voiceSettings.voiceMessageMode
+                            ? 'Voice Message Mode ON — Typed text will be spoken in your Active Voice'
+                            : 'Enable Voice Message Mode (speak typed text as a Voice Note)'
+                        }
+                        aria-label="Toggle Voice Message Mode"
+                        aria-pressed={Boolean(voiceSettings.voiceMessageMode)}
+                        className="p-2 sm:p-2.5 rounded-xl border transition-colors shrink-0 cursor-pointer"
+                        style={{
+                          backgroundColor: voiceSettings.voiceMessageMode
+                            ? `${theme.accentSecondary}22`
+                            : theme.subSurfaceBg,
+                          borderColor: voiceSettings.voiceMessageMode
+                            ? theme.accentSecondary
+                            : theme.borderColor,
+                          color: voiceSettings.voiceMessageMode
+                            ? theme.accentSecondary
+                            : theme.textSecondary,
+                        }}
+                      >
+                        <AudioLines className="w-4 h-4" />
+                      </button>
+
+                      {/* Microphone Voice Input Button */}
+                      <button
+                        type="button"
+                        onClick={handleToggleMic}
+                        disabled={isTranscribing}
+                        title={isRecording ? 'Stop Voice Recording' : 'Multi-language Voice Input'}
+                        aria-label={isRecording ? 'Stop Voice Recording' : 'Start Voice Input'}
+                        className="p-2 sm:p-2.5 rounded-xl border transition-colors shrink-0 cursor-pointer"
+                        style={{
+                          backgroundColor: isRecording ? 'rgba(255, 77, 77, 0.16)' : theme.subSurfaceBg,
+                          borderColor: isRecording
+                            ? '#ff4d4d'
+                            : isTranscribing
+                              ? theme.accentSecondary
+                              : theme.borderColor,
+                          color: isRecording
+                            ? '#ff4d4d'
+                            : isTranscribing
+                              ? theme.accentSecondary
+                              : theme.textPrimary,
+                        }}
+                      >
+                        {isTranscribing ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : isRecording ? (
+                          <MicOff className="w-4 h-4" />
+                        ) : (
+                          <Mic className="w-4 h-4" />
+                        )}
+                      </button>
+
+                      {/* Textarea */}
+                      <textarea
+                        ref={textareaRef}
+                        rows={1}
+                        dir="auto"
+                        value={inputValue}
+                        onChange={handleTextareaChange}
+                        onKeyDown={handleTextareaKeyDown}
+                        onPaste={handlePaste}
+                        placeholder={
+                          isRecording
+                            ? 'Listening... Click mic to stop'
+                            : isTranscribing
+                              ? 'Transcribing voice...'
+                              : voiceSettings.voiceMessageMode
+                                ? `Voice Note (${getResolvedVoiceParameters(voiceSettings).voiceName}) — Type to speak...`
+                                : 'Ask Roosters AI anything...'
+                        }
+                        className="flex-1 min-w-0 bg-transparent px-1.5 sm:px-2 py-2.5 text-[14px] sm:text-[14.5px] focus:outline-none resize-none max-h-40 leading-normal"
+                        style={{ color: theme.textPrimary }}
+                      />
+
+                      {/* Glowing Gold / Theme Send or Stop Button */}
+                      {isStreaming ? (
+                        <button
+                          type="button"
+                          onClick={handleStopStreaming}
+                          title="Stop Generating"
+                          aria-label="Stop Generating"
+                          className="px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl border font-semibold text-[13px] flex items-center gap-1.5 hover:text-[#ff4d4d] transition-colors shrink-0 cursor-pointer"
+                          style={{
+                            backgroundColor: theme.subSurfaceBg,
+                            borderColor: theme.borderColor,
+                            color: theme.textPrimary,
+                          }}
+                        >
+                          <Square className="w-3.5 h-3.5 fill-current" />
+                          <span className="hidden sm:inline">Stop</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleSendMessage()}
+                          disabled={!inputValue.trim() && !pendingAttachment}
+                          aria-label="Send Message"
+                          className="px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl font-bold text-[13px] flex items-center gap-1.5 disabled:opacity-45 disabled:cursor-not-allowed transition-all hover:brightness-110 active:scale-[0.98] shrink-0 cursor-pointer"
+                          style={{
+                            backgroundImage: theme.sendButtonGradient,
+                            color: theme.sendButtonText,
+                            boxShadow:
+                              inputValue.trim() || pendingAttachment ? theme.sendButtonGlow : 'none',
+                          }}
+                        >
+                          <Send className="w-4 h-4" />
+                          <span className="hidden sm:inline">Send</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
 
               <div className="mt-2 border-t pt-1.5" style={{ borderColor: theme.borderColor }}>
                 <LegalFooter

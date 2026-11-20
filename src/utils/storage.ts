@@ -1,9 +1,13 @@
-import { ChatSession, UserAccount } from '../types';
+import { ActiveUser, ChatSession, UserAccount } from '../types';
 import { DEFAULT_THEME_SETTINGS, ThemeSettings } from '../themes';
 
 const ACCOUNTS_KEY = 'roosters_ai_accounts_v1';
 const CHATS_PREFIX = 'roosters_ai_chats_v1_';
+const ACTIVE_SESSION_KEY = 'roosters_ai_active_session_v1';
 const THEME_KEY = 'roosters_ai_theme_v1';
+const IDB_NAME = 'roosters_ai_offline_db';
+const IDB_VERSION = 1;
+const IDB_STORE = 'chat_histories';
 
 let memoryAccounts: UserAccount[] = [];
 const memoryChats = new Map<string, ChatSession[]>();
@@ -25,6 +29,90 @@ function safeSetItem(key: string, value: string): void {
   }
 }
 
+function safeRemoveItem(key: string): void {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // Ignore storage removal errors
+  }
+}
+
+function isGuestAccount(userOrId: Pick<ActiveUser, 'id' | 'isGuest'> | string): boolean {
+  if (typeof userOrId === 'string') {
+    return !userOrId || userOrId === 'guest_user';
+  }
+  return Boolean(userOrId.isGuest) || !userOrId.id || userOrId.id === 'guest_user';
+}
+
+function getScopedAccountKey(user: Pick<ActiveUser, 'id' | 'email'>): string {
+  const normalizedEmail = (user.email || '').trim().toLowerCase();
+  return `${user.id}__${normalizedEmail}`;
+}
+
+function openChatsIDB(): Promise<IDBDatabase | null> {
+  if (typeof window === 'undefined' || !('indexedDB' in window)) {
+    return Promise.resolve(null);
+  }
+  return new Promise((resolve) => {
+    try {
+      const request = window.indexedDB.open(IDB_NAME, IDB_VERSION);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) {
+          db.createObjectStore(IDB_STORE, { keyPath: 'accountKey' });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function writeChatsToIDB(accountKey: string, sessions: ChatSession[]): Promise<void> {
+  const db = await openChatsIDB();
+  if (!db) return;
+  try {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put({ accountKey, sessions, updatedAt: Date.now() });
+  } catch {
+    // Ignore IDB write errors cleanly
+  }
+}
+
+async function readChatsFromIDB(accountKey: string): Promise<ChatSession[] | null> {
+  const db = await openChatsIDB();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const req = tx.objectStore(IDB_STORE).get(accountKey);
+      req.onsuccess = () => {
+        const record = req.result as { sessions?: ChatSession[] } | undefined;
+        resolve(Array.isArray(record?.sessions) ? record.sessions : null);
+      };
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+export async function purgeGuestChatStorage(): Promise<void> {
+  memoryChats.delete('guest_user');
+  safeRemoveItem(`${CHATS_PREFIX}guest_user`);
+  const db = await openChatsIDB();
+  if (!db) return;
+  try {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).delete('guest_user');
+    tx.objectStore(IDB_STORE).delete('guest_user__guest@sandsoft.local');
+  } catch {
+    // Ignore IDB delete errors
+  }
+}
+
 export function loadAccounts(): UserAccount[] {
   const raw = safeGetItem(ACCOUNTS_KEY);
   if (!raw) return memoryAccounts;
@@ -43,6 +131,45 @@ export function loadAccounts(): UserAccount[] {
 export function saveAccounts(accounts: UserAccount[]): void {
   memoryAccounts = accounts;
   safeSetItem(ACCOUNTS_KEY, JSON.stringify(accounts));
+}
+
+export function saveActiveUser(user: ActiveUser): void {
+  if (isGuestAccount(user)) {
+    safeRemoveItem(ACTIVE_SESSION_KEY);
+    return;
+  }
+  safeSetItem(ACTIVE_SESSION_KEY, JSON.stringify(user));
+}
+
+export function loadActiveUser(): ActiveUser | null {
+  const raw = safeGetItem(ACTIVE_SESSION_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<ActiveUser>;
+    if (!parsed || parsed.isGuest || !parsed.id || !parsed.email || parsed.id === 'guest_user') {
+      safeRemoveItem(ACTIVE_SESSION_KEY);
+      return null;
+    }
+    const accounts = loadAccounts();
+    const matched = accounts.find(
+      (acc) => acc.id === parsed.id && acc.email.toLowerCase() === parsed.email!.trim().toLowerCase()
+    );
+    if (!matched) {
+      return null;
+    }
+    return {
+      id: matched.id,
+      fullName: matched.fullName,
+      email: matched.email,
+      isGuest: false,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function clearActiveUser(): void {
+  safeRemoveItem(ACTIVE_SESSION_KEY);
 }
 
 export function registerAccount(fullName: string, email: string, password: string): { ok: true; account: UserAccount } | { ok: false; error: string } {
@@ -92,23 +219,67 @@ export function authenticateAccount(email: string, password: string): { ok: true
   return { ok: true, account: match };
 }
 
-export function loadUserChats(userId: string): ChatSession[] {
-  const raw = safeGetItem(`${CHATS_PREFIX}${userId}`);
-  if (!raw) return memoryChats.get(userId) ?? [];
+export function loadUserChats(user: Pick<ActiveUser, 'id' | 'email' | 'isGuest'> | string): ChatSession[] {
+  if (isGuestAccount(user)) {
+    void purgeGuestChatStorage();
+    return [];
+  }
+
+  const userId = typeof user === 'string' ? user : user.id;
+  const scopedKey = typeof user === 'string' ? user : getScopedAccountKey(user);
+
+  // Read primary account-scoped key first, with backward-compatible fallback to legacy userId key
+  const rawScoped = safeGetItem(`${CHATS_PREFIX}${scopedKey}`);
+  const rawLegacy = scopedKey !== userId ? safeGetItem(`${CHATS_PREFIX}${userId}`) : null;
+  const raw = rawScoped ?? rawLegacy;
+
+  if (!raw) return memoryChats.get(scopedKey) ?? [];
   try {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed)) {
-      memoryChats.set(userId, parsed);
+      memoryChats.set(scopedKey, parsed);
+      if (!rawScoped && rawLegacy) {
+        safeSetItem(`${CHATS_PREFIX}${scopedKey}`, rawLegacy);
+      }
       return parsed;
     }
   } catch {
     // Ignore malformed JSON
   }
-  return memoryChats.get(userId) ?? [];
+  return memoryChats.get(scopedKey) ?? [];
 }
 
-export function saveUserChats(userId: string, sessions: ChatSession[]): void {
-  memoryChats.set(userId, sessions);
+export async function loadUserChatsFromIndexedDB(
+  user: Pick<ActiveUser, 'id' | 'email' | 'isGuest'>
+): Promise<ChatSession[] | null> {
+  if (isGuestAccount(user)) {
+    await purgeGuestChatStorage();
+    return null;
+  }
+  const scopedKey = getScopedAccountKey(user);
+  const idbSessions = await readChatsFromIDB(scopedKey);
+  if (idbSessions && idbSessions.length > 0) {
+    memoryChats.set(scopedKey, idbSessions);
+    return idbSessions;
+  }
+  return null;
+}
+
+export function saveUserChats(
+  user: Pick<ActiveUser, 'id' | 'email' | 'isGuest'> | string,
+  sessions: ChatSession[]
+): void {
+  if (isGuestAccount(user)) {
+    // Guest chats remain strictly in transient React state and are NEVER persisted to localStorage or IndexedDB
+    return;
+  }
+
+  const scopedKey = typeof user === 'string' ? user : getScopedAccountKey(user);
+  memoryChats.set(scopedKey, sessions);
+
+  // Full backup in IndexedDB (supports larger histories & offline reading)
+  void writeChatsToIDB(scopedKey, sessions.slice(0, 40));
+
   const compactSessions = sessions.slice(0, 20).map((session) => ({
     ...session,
     messages: session.messages.map((msg) => ({
@@ -126,7 +297,7 @@ export function saveUserChats(userId: string, sessions: ChatSession[]): void {
         : undefined,
     })),
   }));
-  safeSetItem(`${CHATS_PREFIX}${userId}`, JSON.stringify(compactSessions));
+  safeSetItem(`${CHATS_PREFIX}${scopedKey}`, JSON.stringify(compactSessions));
 }
 
 export function loadThemeSettings(): ThemeSettings {

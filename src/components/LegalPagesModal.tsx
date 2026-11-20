@@ -246,37 +246,12 @@ export function LegalPagesModal({
 
                 <section>
                   <h4 className="font-semibold text-[15px] mb-1" style={{ color: theme.textPrimary }}>
-                    3. Advertising Partners, Cookies &amp; Web Beacons
+                    3. Ad-Free Experience &amp; Offline Caching
                   </h4>
                   <p>
-                    To keep Roosters AI free for students and creators, we may display non-intrusive
-                    advertisements served by third-party advertising networks including{' '}
-                    <strong>Google AdSense</strong>, <strong>Adsterra</strong>, and <strong>Monetag</strong>.
-                    These third-party vendors may use cookies, JavaScript, or web beacons to measure ad
-                    effectiveness and serve relevant ads based on prior visits to this or other websites.
-                  </p>
-                  <p className="mt-2">
-                    Users may opt out of personalized advertising by visiting Google&apos;s{' '}
-                    <a
-                      href="https://adssettings.google.com"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="underline"
-                      style={{ color: theme.accentSecondary }}
-                    >
-                      Ads Settings
-                    </a>{' '}
-                    or{' '}
-                    <a
-                      href="https://www.aboutads.info/choices/"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="underline"
-                      style={{ color: theme.accentSecondary }}
-                    >
-                      aboutads.info
-                    </a>
-                    . You may also disable cookies directly through your individual browser settings.
+                    Roosters AI provides a completely clean, ad-free learning and creative workspace. We do not
+                    embed third-party ad trackers or sponsored ad networks. Progressive Web App (PWA) caching stores
+                    the application shell locally so signed-in users can read their saved conversations offline.
                   </p>
                 </section>
 
