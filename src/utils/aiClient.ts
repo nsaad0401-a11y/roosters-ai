@@ -535,15 +535,9 @@ async function streamFromGeminiDirect(params: {
     let buffer = '';
     let accumulated = '';
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const events = buffer.split('\n\n');
-      buffer = events.pop() ?? '';
-
+    const processEvents = (events: string[]) => {
       for (const rawEvent of events) {
-        const lines = rawEvent.split('\n');
+        const lines = rawEvent.split(/\r?\n/);
         for (const rawLine of lines) {
           const line = rawLine.trim();
           if (!line.startsWith('data:')) continue;
@@ -552,12 +546,17 @@ async function streamFromGeminiDirect(params: {
           try {
             const parsed = JSON.parse(payload) as {
               candidates?: Array<{
+                finishReason?: string;
                 content?: { parts?: Array<{ text?: string }> };
               }>;
+              promptFeedback?: { blockReason?: string };
               error?: { message?: string };
             };
             if (parsed.error?.message) {
               throw new Error(parsed.error.message);
+            }
+            if (parsed.promptFeedback?.blockReason) {
+              throw new Error(`Gemini blocked the request (${parsed.promptFeedback.blockReason}).`);
             }
             const chunkText = parsed.candidates?.[0]?.content?.parts
               ?.map((p) => p.text ?? '')
@@ -573,6 +572,24 @@ async function streamFromGeminiDirect(params: {
           }
         }
       }
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split(/\r?\n\r?\n/);
+      buffer = events.pop() ?? '';
+      processEvents(events);
+    }
+
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+      processEvents(buffer.split(/\r?\n\r?\n/));
+    }
+
+    if (!accumulated.trim()) {
+      throw new Error('Gemini stream completed without returning any text.');
     }
 
     return accumulated;
@@ -637,39 +654,63 @@ async function streamFromBackendEndpoint(params: {
     const decoder = new TextDecoder();
     let buffer = '';
     let accumulated = '';
+    let streamError: Error | null = null;
+
+    const processBackendEvents = (events: string[]) => {
+      for (const rawEvent of events) {
+        const lines = rawEvent.split(/\r?\n/);
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line.startsWith('data:')) continue;
+          const jsonStr = line.slice(5).trim();
+          if (!jsonStr) continue;
+          const parsed = JSON.parse(jsonStr) as {
+            type: string;
+            text?: string;
+            error?: string;
+            code?: string;
+          };
+          if (parsed.type === 'chunk' && parsed.text) {
+            accumulated += parsed.text;
+            params.onChunk(parsed.text);
+          } else if (parsed.type === 'error') {
+            if (parsed.code === 'MISSING_API_KEY') {
+              streamError = new MissingApiKeyError();
+              return;
+            }
+            streamError = new Error(parsed.error || 'AI streaming failed without details.');
+            return;
+          }
+        }
+      }
+    };
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const events = buffer.split('\n\n');
+      const events = buffer.split(/\r?\n\r?\n/);
       buffer = events.pop() ?? '';
-
-      for (const rawEvent of events) {
-        const line = rawEvent.trim();
-        if (!line.startsWith('data:')) continue;
-        const jsonStr = line.slice(5).trim();
-        if (!jsonStr) continue;
-        const parsed = JSON.parse(jsonStr) as {
-          type: string;
-          text?: string;
-          error?: string;
-          code?: string;
-        };
-        if (parsed.type === 'chunk' && parsed.text) {
-          accumulated += parsed.text;
-          params.onChunk(parsed.text);
-        } else if (parsed.type === 'error') {
-          if (parsed.code === 'MISSING_API_KEY') {
-            return { ok: false, shouldFallbackDirect: false, error: new MissingApiKeyError() };
-          }
-          return {
-            ok: false,
-            shouldFallbackDirect: false,
-            error: new Error(parsed.error || 'I apologize, please try sending your question again.'),
-          };
-        }
+      processBackendEvents(events);
+      if (streamError) {
+        return { ok: false, shouldFallbackDirect: false, error: streamError };
       }
+    }
+
+    buffer += decoder.decode();
+    if (buffer.trim()) {
+      processBackendEvents(buffer.split(/\r?\n\r?\n/));
+      if (streamError) {
+        return { ok: false, shouldFallbackDirect: false, error: streamError };
+      }
+    }
+
+    if (!accumulated.trim()) {
+      return {
+        ok: false,
+        shouldFallbackDirect: Boolean(params.apiKey),
+        error: new Error('Server stream finished without returning any content.'),
+      };
     }
 
     return { ok: true, text: accumulated };
@@ -685,6 +726,128 @@ async function streamFromBackendEndpoint(params: {
   }
 }
 
+async function analyzeImageViaGeminiRest(params: {
+  apiKey: string;
+  prompt: string;
+  base64Data: string;
+  mimeType: string;
+  language?: string;
+  userName?: string;
+  signal?: AbortSignal;
+}): Promise<string> {
+  const cleanBase64 = (
+    params.base64Data.includes(',') ? params.base64Data.split(',')[1] : params.base64Data
+  ).trim();
+
+  if (!cleanBase64) {
+    throw new Error('Image attachment has empty Base64 data.');
+  }
+
+  const systemText = buildClientStudyTutorInstruction({
+    language: params.language,
+    userName: params.userName,
+    isLiveVoice: false,
+  });
+
+  const visionCandidates: Array<{
+    model: string;
+    thinkingConfig?: Record<string, unknown>;
+  }> = [
+    { model: 'gemini-2.5-flash', thinkingConfig: { thinkingBudget: 0 } },
+    { model: 'gemini-3.1-flash-lite', thinkingConfig: { thinkingLevel: 'MINIMAL' } },
+    { model: 'gemini-4-hydrogen', thinkingConfig: { thinkingLevel: 'LOW' } },
+  ];
+
+  let lastError = 'Gemini Vision API request failed.';
+
+  for (let i = 0; i < visionCandidates.length; i++) {
+    const candidate = visionCandidates[i];
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${candidate.model}:generateContent?key=${encodeURIComponent(
+      params.apiKey
+    )}`;
+
+    const requestBody: Record<string, unknown> = {
+      system_instruction: { parts: [{ text: systemText }] },
+      contents: [
+        {
+          parts: [
+            { text: params.prompt || 'Describe and analyze this image in detail.' },
+            {
+              inline_data: {
+                mime_type: params.mimeType || 'image/jpeg',
+                data: cleanBase64,
+              },
+            },
+          ],
+        },
+      ],
+      safetySettings: GEMINI_SAFETY_SETTINGS,
+    };
+
+    if (candidate.thinkingConfig) {
+      requestBody.generationConfig = { thinkingConfig: candidate.thinkingConfig };
+    }
+
+    const reqCtrl = new AbortController();
+    const timeoutId = window.setTimeout(() => reqCtrl.abort(), 12000);
+    const onAbort = () => reqCtrl.abort();
+    params.signal?.addEventListener('abort', onAbort, { once: true });
+
+    let resp: Response;
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+        signal: reqCtrl.signal,
+      });
+    } finally {
+      window.clearTimeout(timeoutId);
+      params.signal?.removeEventListener('abort', onAbort);
+    }
+
+    const rawText = await resp.text();
+    if (!resp.ok) {
+      lastError = `Gemini Vision API (${resp.status}): ${extractReadableApiError(rawText, resp.status)}`;
+      if ((resp.status === 404 || resp.status === 503 || resp.status === 429) && i < visionCandidates.length - 1) {
+        continue;
+      }
+      throw new Error(lastError);
+    }
+
+    const data = JSON.parse(rawText) as {
+      candidates?: Array<{
+        finishReason?: string;
+        content?: { parts?: Array<{ text?: string }> };
+      }>;
+      promptFeedback?: { blockReason?: string };
+      error?: { message?: string };
+    };
+
+    if (data.error?.message) {
+      lastError = `Gemini Vision API error: ${data.error.message}`;
+      if (i < visionCandidates.length - 1) continue;
+      throw new Error(lastError);
+    }
+    if (data.promptFeedback?.blockReason) {
+      throw new Error(`Gemini blocked this image request (${data.promptFeedback.blockReason}).`);
+    }
+
+    const replyText = (
+      data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') || ''
+    ).trim();
+
+    if (!replyText) {
+      const finishReason = data.candidates?.[0]?.finishReason || 'UNKNOWN';
+      throw new Error(`Gemini Vision returned empty text (finishReason: ${finishReason}).`);
+    }
+
+    return replyText;
+  }
+
+  throw new Error(lastError);
+}
+
 export async function streamChatCompletion(params: {
   messages: OutgoingMessage[];
   language?: string;
@@ -697,16 +860,78 @@ export async function streamChatCompletion(params: {
 }): Promise<string> {
   const recentMessages = params.messages.slice(-10);
   const resolved = resolveActiveProvider(params.hasServerGeminiKey);
-  const hasImageAttachment = recentMessages.some(
+  const lastMsg = recentMessages[recentMessages.length - 1];
+  const currentHasImage = Boolean(lastMsg?.attachment?.base64) && lastMsg?.attachment?.kind !== 'file';
+  const hasAnyImageInHistory = recentMessages.some(
     (m) => Boolean(m.attachment?.base64) && m.attachment?.kind !== 'file'
   );
 
-  // Any message containing an uploaded photo/screenshot MUST go to multimodal Gemini 2.5 Flash
-  // (never to text-only Groq, which cannot view pixels!)
-  if (hasImageAttachment) {
+  // When the current message has an uploaded photo/screenshot, bypass Groq completely
+  // and call Gemini Vision REST directly with clean inline_data JSON
+  if (currentHasImage && lastMsg?.attachment?.base64) {
     const localKey = loadCustomApiKey().trim();
     const geminiDirectKey = localKey.startsWith('AIza') ? localKey : getEnvGeminiKey();
+    const promptText =
+      lastMsg.content?.trim() || 'Describe and analyze this image in detail.';
+    const rawB64 = lastMsg.attachment.base64;
+    const base64Data = (rawB64.includes(',') ? rawB64.split(',')[1] : rawB64).trim();
+    const mimeType = lastMsg.attachment.mimeType || 'image/jpeg';
 
+    if (geminiDirectKey) {
+      const visionText = await analyzeImageViaGeminiRest({
+        apiKey: geminiDirectKey,
+        prompt: promptText,
+        base64Data,
+        mimeType,
+        language: params.language,
+        userName: params.userName,
+        signal: params.signal,
+      });
+      params.onChunk(visionText);
+      return visionText;
+    }
+
+    // Server-side Gemini key path: call /api/vision (clean direct Gemini Vision REST call)
+    const visionResp = await fetch('/api/vision', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: promptText,
+        base64Data,
+        mimeType,
+        language: params.language,
+        userName: params.userName,
+      }),
+      signal: params.signal,
+    });
+
+    const contentType = visionResp.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      throw new Error(
+        `Photo analysis endpoint unavailable (HTTP ${visionResp.status}). Ensure a Gemini API key is configured.`
+      );
+    }
+
+    const visionJson = (await visionResp.json()) as { text?: string; error?: string };
+    if (!visionResp.ok) {
+      throw new Error(
+        visionJson.error || `Photo analysis failed with HTTP ${visionResp.status}.`
+      );
+    }
+
+    const resultText = (visionJson.text || '').trim();
+    if (!resultText) {
+      throw new Error('Gemini Vision returned an empty response.');
+    }
+
+    params.onChunk(resultText);
+    return resultText;
+  }
+
+  // Follow-up question in a conversation that contains an earlier image: route to multimodal Gemini
+  if (hasAnyImageInHistory) {
+    const localKey = loadCustomApiKey().trim();
+    const geminiDirectKey = localKey.startsWith('AIza') ? localKey : getEnvGeminiKey();
     if (params.hasBackendApi || params.hasServerGeminiKey || !geminiDirectKey) {
       const backendRes = await streamFromBackendEndpoint({
         endpoint: params.isLiveVoice ? '/api/chat-live-stream' : '/api/chat',
@@ -717,10 +942,7 @@ export async function streamChatCompletion(params: {
         signal: params.signal,
         onChunk: params.onChunk,
       });
-
-      if (backendRes.ok) {
-        return backendRes.text;
-      }
+      if (backendRes.ok) return backendRes.text;
       if (backendRes.shouldFallbackDirect && geminiDirectKey) {
         return streamFromGeminiDirect({
           apiKey: geminiDirectKey,
@@ -734,7 +956,6 @@ export async function streamChatCompletion(params: {
       }
       throw backendRes.error;
     }
-
     return streamFromGeminiDirect({
       apiKey: geminiDirectKey,
       messages: recentMessages,

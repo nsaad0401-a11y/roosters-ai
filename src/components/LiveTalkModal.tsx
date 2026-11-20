@@ -297,7 +297,10 @@ export function LiveTalkModal({
           enqueueSentenceSpeech(remaining);
         }
 
-        const finalReply = fullReply.trim() || 'I am right here with you. Could you please say that once more?';
+        const finalReply = fullReply.trim();
+        if (!finalReply) {
+          throw new Error('AI returned an empty live voice response. Please check your API connection.');
+        }
         setAiCaption(finalReply);
         setTurns([...nextHistory, { role: 'assistant', content: finalReply }]);
 

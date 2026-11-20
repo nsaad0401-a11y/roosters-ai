@@ -283,6 +283,10 @@ async function streamWithFallback(
         }
       }
 
+      if (!emittedAnyChunk) {
+        throw new Error('Gemini stream completed without returning any text.');
+      }
+
       succeeded = true;
       break;
     } catch (err) {
@@ -381,8 +385,148 @@ async function startServer() {
         );
         res.end();
       } else {
-        res.status(formatted.status).json({ error: formatted.message, code: formatted.code });
+      res.status(formatted.status).json({ error: formatted.message, code: formatted.code });
       }
+    }
+  });
+
+  // Direct Gemini 2.5 Flash REST Vision Endpoint (bypasses Groq completely, returns exact REST error if failed)
+  app.post('/api/vision', async (req, res) => {
+    try {
+      const { prompt, base64Data, mimeType, language, userName, apiKey } = req.body as {
+        prompt?: string;
+        base64Data?: string;
+        mimeType?: string;
+        language?: string;
+        userName?: string;
+        apiKey?: string;
+      };
+
+      const resolvedKey = (apiKey || getServerDefaultGeminiKey()).trim();
+      if (!resolvedKey) {
+        res.status(503).json({ error: 'Gemini API key is missing on the server.' });
+        return;
+      }
+
+      const rawB64 = (base64Data || '').trim();
+      const cleanBase64 = (rawB64.includes(',') ? rawB64.split(',')[1] : rawB64).trim();
+      if (!cleanBase64) {
+        res.status(400).json({ error: 'Image Base64 data is empty.' });
+        return;
+      }
+
+      const systemText = buildStudyTutorInstruction({ language, userName, isLiveVoice: false });
+      const userPromptText = (prompt || '').trim() || 'Describe and analyze this image in detail.';
+      const imageMime = mimeType || 'image/jpeg';
+
+      // 1. Direct Gemini 2.5 Flash REST API attempt with clean inline_data JSON body
+      try {
+        const restCtrl = new AbortController();
+        const restTimer = setTimeout(() => restCtrl.abort(), 7000);
+        try {
+          const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
+            resolvedKey
+          )}`;
+          const geminiResp = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: restCtrl.signal,
+            body: JSON.stringify({
+              system_instruction: { parts: [{ text: systemText }] },
+              contents: [
+                {
+                  parts: [
+                    { text: userPromptText },
+                    {
+                      inline_data: {
+                        mime_type: imageMime,
+                        data: cleanBase64,
+                      },
+                    },
+                  ],
+                },
+              ],
+              safetySettings: DEFAULT_SAFETY_SETTINGS.map((s) => ({
+                category: s.category,
+                threshold: 'BLOCK_ONLY_HIGH',
+              })),
+              generationConfig: { thinkingConfig: { thinkingBudget: 0 } },
+            }),
+          });
+
+          if (geminiResp.ok) {
+            const data = (await geminiResp.json()) as {
+              candidates?: Array<{
+                finishReason?: string;
+                content?: { parts?: Array<{ text?: string }> };
+              }>;
+              promptFeedback?: { blockReason?: string };
+              error?: { message?: string };
+            };
+            if (data.promptFeedback?.blockReason) {
+              res.status(400).json({
+                error: `Gemini blocked this image request (${data.promptFeedback.blockReason}).`,
+              });
+              return;
+            }
+            const restText = (
+              data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') || ''
+            ).trim();
+            if (restText) {
+              res.json({ text: restText });
+              return;
+            }
+          } else if (geminiResp.status !== 404 && geminiResp.status !== 503 && geminiResp.status !== 429) {
+            const errTxt = await geminiResp.text().catch(() => '');
+            res.status(geminiResp.status).json({
+              error: `Gemini Vision API (${geminiResp.status}): ${extractReadableErrorMessage(errTxt)}`,
+            });
+            return;
+          }
+        } finally {
+          clearTimeout(restTimer);
+        }
+      } catch {
+        // Fall through to active @google/genai SDK vision models
+      }
+
+      // 2. Fallback to active @google/genai multimodal models (gemini-3.1-flash-lite / gemini-4-hydrogen)
+      const ai = getAiClient(resolvedKey);
+      let lastErr: unknown = null;
+      for (const candidate of FAST_CHAT_MODELS.slice(1)) {
+        try {
+          const response = await ai.models.generateContent({
+            model: candidate.model,
+            contents: [
+              { text: userPromptText },
+              { inlineData: { mimeType: imageMime, data: cleanBase64 } },
+            ],
+            config: {
+              systemInstruction: systemText,
+              thinkingConfig: candidate.thinkingConfig,
+              safetySettings: DEFAULT_SAFETY_SETTINGS,
+            },
+          });
+          const sdkText = (response.text ?? '').trim();
+          if (sdkText) {
+            res.json({ text: sdkText });
+            return;
+          }
+        } catch (err) {
+          lastErr = err;
+          if (isRetryableOrFallbackError(err)) {
+            continue;
+          }
+          break;
+        }
+      }
+
+      const formatted = formatGeminiError(lastErr || new Error('Gemini Vision returned no response.'));
+      res.status(formatted.status).json({ error: formatted.message });
+    } catch (err) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Unexpected server error during photo analysis.',
+      });
     }
   });
 
@@ -464,7 +608,10 @@ async function startServer() {
             },
           });
           const text = (response.text ?? '').trim();
-          res.json({ text: text || 'I am right here with you. Could you please repeat that?' });
+          if (!text) {
+            throw new Error('Gemini returned an empty live voice response.');
+          }
+          res.json({ text });
           return;
         } catch (err) {
           lastErr = err;

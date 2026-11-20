@@ -1018,8 +1018,10 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         },
       });
 
-      const finalAssistantText =
-        accumulated || 'I am right here to help whenever you are ready.';
+      const finalAssistantText = accumulated.trim();
+      if (!finalAssistantText) {
+        throw new Error('AI returned an empty response. Please verify your API key or network connection and try again.');
+      }
       const spokenAssistantText = cleanTextForSpeech(finalAssistantText);
       const assistantVoiceNote = isSampleActive
         ? buildActiveSampleVoiceNote(spokenAssistantText, false, options?.profileOverride)
