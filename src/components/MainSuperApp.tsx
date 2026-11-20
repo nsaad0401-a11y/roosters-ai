@@ -1065,7 +1065,8 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       if ((err as Error).name === 'AbortError') {
         return;
       }
-      const errMessage = err instanceof Error ? err.message : 'Unable to reach Roosters AI right now.';
+      const errMessage =
+        err instanceof Error && err.message ? err.message : String(err || 'Unknown API error');
       const failedMessages: ChatMessage[] = [
         ...nextMessages,
         {

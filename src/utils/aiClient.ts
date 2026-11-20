@@ -33,8 +33,7 @@ export interface ResolvedProvider {
 
 export function getEnvGroqKey(): string {
   try {
-    const metaEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
-    return (metaEnv?.VITE_GROQ_API_KEY || '').trim();
+    return (import.meta.env.VITE_GROQ_API_KEY || '').trim();
   } catch {
     return '';
   }
@@ -42,8 +41,7 @@ export function getEnvGroqKey(): string {
 
 export function getEnvGeminiKey(): string {
   try {
-    const metaEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
-    return (metaEnv?.VITE_GEMINI_API_KEY || '').trim();
+    return (import.meta.env.VITE_GEMINI_API_KEY || '').trim();
   } catch {
     return '';
   }
