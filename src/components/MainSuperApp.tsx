@@ -76,7 +76,7 @@ import { LegalFooter } from './LegalFooter';
 import { LegalPageId, LegalPagesModal } from './LegalPagesModal';
 import { LiveTalkModal } from './LiveTalkModal';
 import { MarkdownRenderer } from './MarkdownRenderer';
-import { PWAInstallButton } from './PWAInstallButton';
+import { InstallAppModal, PWAInstallButton } from './PWAInstallButton';
 import { TextReaderModal } from './TextReaderModal';
 import { ThemeWallpaperModal } from './ThemeWallpaperModal';
 import { VideoCreateModal } from './VideoCreateModal';
@@ -479,6 +479,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const [isLiveTalkOpen, setIsLiveTalkOpen] = useState(false);
   const [isTextReaderOpen, setIsTextReaderOpen] = useState(false);
   const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
+  const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);
   const [isToolsMenuOpen, setIsToolsMenuOpen] = useState(false);
   const [legalPage, setLegalPage] = useState<LegalPageId | null>(null);
 
@@ -2143,7 +2144,10 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                   >
                     <PWAInstallButton
                       theme={theme}
-                      onOpenGuide={() => setIsToolsMenuOpen(false)}
+                      onOpenModal={() => {
+                        setIsToolsMenuOpen(false);
+                        setIsInstallModalOpen(true);
+                      }}
                     />
                     <button
                       type="button"
@@ -2328,7 +2332,10 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
               </button>
 
               {/* Prominent PWA Install App Button */}
-              <PWAInstallButton theme={theme} />
+              <PWAInstallButton
+                theme={theme}
+                onOpenModal={() => setIsInstallModalOpen(true)}
+              />
 
               {/* Logout Button */}
               <button
@@ -3116,6 +3123,12 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         theme={theme}
         onSelectPage={setLegalPage}
         onClose={() => setLegalPage(null)}
+      />
+
+      <InstallAppModal
+        isOpen={isInstallModalOpen}
+        theme={theme}
+        onClose={() => setIsInstallModalOpen(false)}
       />
     </div>
   );
