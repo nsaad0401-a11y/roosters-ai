@@ -170,16 +170,75 @@ function blobToDataUrl(blob: Blob): Promise<string> {
   });
 }
 
+export function estimateFramePitchHz(
+  samples: Float32Array<ArrayBufferLike>,
+  sampleRate: number
+): number | null {
+  const minHz = 75;
+  const maxHz = 340;
+  const minLag = Math.floor(sampleRate / maxHz);
+  const maxLag = Math.min(samples.length - 1, Math.floor(sampleRate / minHz));
+  if (samples.length < maxLag + 64) return null;
+
+  let rms = 0;
+  for (let i = 0; i < samples.length; i++) {
+    rms += samples[i] * samples[i];
+  }
+  rms = Math.sqrt(rms / samples.length);
+  if (rms < 0.015) return null;
+
+  let bestLag = -1;
+  let bestCorr = 0;
+  const checkLen = Math.min(samples.length - maxLag, 1024);
+  let energy = 0;
+  for (let i = 0; i < checkLen; i++) {
+    energy += samples[i] * samples[i];
+  }
+  if (energy <= 0) return null;
+
+  for (let lag = minLag; lag <= maxLag; lag++) {
+    let corr = 0;
+    for (let i = 0; i < checkLen; i++) {
+      corr += samples[i] * samples[i + lag];
+    }
+    const normalized = corr / energy;
+    if (normalized > bestCorr) {
+      bestCorr = normalized;
+      bestLag = lag;
+    }
+  }
+
+  if (bestLag > 0 && bestCorr > 0.35) {
+    return Math.round(sampleRate / bestLag);
+  }
+  return null;
+}
+
+export interface AnalyzeVoiceOptions {
+  measuredDurationSec?: number;
+  liveMedianHz?: number | null;
+  liveBrightness?: number | null;
+  liveRate?: number | null;
+  profileName?: string;
+  language?: string;
+}
+
 export async function analyzeVoiceAudioBlob(
   blob: Blob,
-  measuredDurationSec = 5
+  options: number | AnalyzeVoiceOptions = 5
 ): Promise<ClonedVoiceProfile> {
-  const sampleDataUrl = blob.size <= 165_000 ? await blobToDataUrl(blob) : undefined;
+  const opts: AnalyzeVoiceOptions =
+    typeof options === 'number' ? { measuredDurationSec: options } : options;
 
-  let fundamentalHz = 152;
-  let rate = 1.0;
-  let brightness = 0.45;
-  let durationSec = measuredDurationSec;
+  const sampleDataUrl = blob.size <= 1_500_000 ? await blobToDataUrl(blob) : undefined;
+
+  let fundamentalHz = opts.liveMedianHz && opts.liveMedianHz >= 75 ? opts.liveMedianHz : 152;
+  let rate =
+    typeof opts.liveRate === 'number' ? Number(clamp(0.7, 1.4, opts.liveRate).toFixed(2)) : 1.0;
+  let brightness =
+    typeof opts.liveBrightness === 'number' ? clamp(0.1, 0.95, opts.liveBrightness) : 0.45;
+  let durationSec = opts.measuredDurationSec ?? 5;
+  let decodedPitchSuccess = false;
 
   try {
     const AudioCtx =
@@ -192,20 +251,37 @@ export async function analyzeVoiceAudioBlob(
         const audioBuffer = await ctx.decodeAudioData(buffer);
         durationSec = Math.max(1, Math.round(audioBuffer.duration * 10) / 10);
         const channelData = audioBuffer.getChannelData(0);
-        fundamentalHz = estimateFundamentalHz(channelData, audioBuffer.sampleRate);
+        const decodedF0 = estimateFundamentalHz(channelData, audioBuffer.sampleRate);
+        if (decodedF0 > 0) {
+          decodedPitchSuccess = true;
+          fundamentalHz =
+            opts.liveMedianHz && opts.liveMedianHz >= 75
+              ? Math.round((decodedF0 * 0.65) + (opts.liveMedianHz * 0.35))
+              : decodedF0;
+        }
         const metrics = estimateSpeakingRateAndBrightness(channelData, audioBuffer.sampleRate);
-        rate = metrics.rate;
-        brightness = metrics.brightness;
+        rate =
+          typeof opts.liveRate === 'number'
+            ? Number(clamp(0.7, 1.4, (metrics.rate + opts.liveRate) / 2).toFixed(2))
+            : Number(clamp(0.7, 1.4, metrics.rate).toFixed(2));
+        brightness =
+          typeof opts.liveBrightness === 'number'
+            ? Number(((metrics.brightness + opts.liveBrightness) / 2).toFixed(2))
+            : metrics.brightness;
       } finally {
         ctx.close().catch(() => {});
       }
     }
   } catch {
-    // Graceful acoustic defaults if browser codec cannot decode uploaded file
+    // Graceful fallback using live AnalyserNode metrics when codec cannot decode
   }
 
-  // Map F0 (Hz) relative to neutral 155 Hz into SpeechSynthesis pitch [0.72 .. 1.42]
-  const pitch = Number(clamp(0.72, 1.42, fundamentalHz / 155).toFixed(2));
+  if (!decodedPitchSuccess && opts.liveMedianHz && opts.liveMedianHz >= 75) {
+    fundamentalHz = Math.round(opts.liveMedianHz);
+  }
+
+  // Map F0 (Hz) relative to neutral 155 Hz into calibration range [0.5 .. 1.8]
+  const pitch = Number(clamp(0.5, 1.8, fundamentalHz / 155).toFixed(2));
   const genderHint: 'male' | 'female' | 'neutral' =
     fundamentalHz < 148 ? 'male' : fundamentalHz > 180 ? 'female' : 'neutral';
 
@@ -222,57 +298,92 @@ export async function analyzeVoiceAudioBlob(
             ? 'Clear Smooth Alto'
             : 'Bright Expressive Soprano';
 
+  let preferredVoiceURI: string | undefined;
+  if (isSpeechSynthesisSupported()) {
+    const voices = window.speechSynthesis.getVoices?.() ?? [];
+    const matched = pickSpeechVoice(
+      voices,
+      getBcp47ForLanguage(opts.language || 'Auto-Detect'),
+      genderHint
+    );
+    preferredVoiceURI = matched?.voiceURI;
+  }
+
   return {
-    name: 'My Cloned Voice',
+    id: `sample_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    name: opts.profileName?.trim() || 'Sample Voice 1',
     createdAt: Date.now(),
     durationSec,
     fundamentalHz,
     pitch,
-    rate,
+    rate: Number(clamp(0.7, 1.4, rate).toFixed(2)),
     spectralBrightness: brightness,
     genderHint,
     timbreLabel,
+    preferredVoiceURI,
     sampleDataUrl,
   };
 }
 
 export function getResolvedVoiceParameters(settings: VoiceStudioSettings): {
   label: string;
+  voiceName: string;
   pitch: number;
   rate: number;
   genderHint: 'male' | 'female' | 'neutral';
+  preferredVoiceURI?: string;
 } {
   if (settings.activeVoiceId === 'cloned' && settings.clonedProfile) {
     return {
       label: `${settings.clonedProfile.name} (${settings.clonedProfile.timbreLabel})`,
-      pitch: settings.clonedProfile.pitch,
-      rate: settings.clonedProfile.rate,
+      voiceName: settings.clonedProfile.name,
+      pitch: clamp(0.5, 1.8, settings.clonedProfile.pitch),
+      rate: clamp(0.7, 1.4, settings.clonedProfile.rate),
       genderHint: settings.clonedProfile.genderHint,
+      preferredVoiceURI: settings.clonedProfile.preferredVoiceURI,
     };
   }
 
   const preset = VOICE_PRESETS.find((p) => p.id === settings.activeVoiceId) ?? VOICE_PRESETS[0];
   return {
     label: preset.label,
+    voiceName: preset.label,
     pitch: preset.pitch,
     rate: preset.rate,
     genderHint: preset.genderHint,
   };
 }
 
+export function getAvailableSpeechVoices(language: string): SpeechSynthesisVoice[] {
+  if (!isSpeechSynthesisSupported()) return [];
+  const voices = window.speechSynthesis.getVoices?.() ?? [];
+  if (voices.length === 0) return [];
+  const bcp47 = getBcp47ForLanguage(language);
+  const langPrefix = bcp47.split('-')[0].toLowerCase();
+  const sameLang = voices.filter((v) => v.lang.toLowerCase().startsWith(langPrefix));
+  const others = voices.filter((v) => !v.lang.toLowerCase().startsWith(langPrefix));
+  return [...sameLang, ...others];
+}
+
 export function pickSpeechVoice(
   voices: SpeechSynthesisVoice[],
   bcp47Lang: string,
-  genderHint: 'male' | 'female' | 'neutral'
+  genderHint: 'male' | 'female' | 'neutral',
+  preferredVoiceURI?: string
 ): SpeechSynthesisVoice | null {
   if (!voices || voices.length === 0) return null;
+
+  if (preferredVoiceURI) {
+    const exactMatch = voices.find((v) => v.voiceURI === preferredVoiceURI);
+    if (exactMatch) return exactMatch;
+  }
 
   const langPrefix = bcp47Lang.split('-')[0].toLowerCase();
   const langMatches = voices.filter((v) => v.lang.toLowerCase().startsWith(langPrefix));
   const pool = langMatches.length > 0 ? langMatches : voices;
 
-  const maleKeywords = /(male|david|mark|daniel|george|alex|guy|christopher|ryan|arthur|liam|james|arjun)/i;
-  const femaleKeywords = /(female|samantha|victoria|karen|zira|aria|jenny|sonia|libby|sara|emma|olivia|priya|fatima|google uk english female)/i;
+  const maleKeywords = /(male|david|mark|daniel|george|alex|guy|christopher|ryan|arthur|liam|james|arjun|rishi|prabhat)/i;
+  const femaleKeywords = /(female|samantha|victoria|karen|zira|aria|jenny|sonia|libby|sara|emma|olivia|priya|fatima|neerja|google uk english female)/i;
   const qualityKeywords = /(natural|neural|online|google|microsoft|enhanced|premium)/i;
 
   let bestVoice: SpeechSynthesisVoice | null = null;
@@ -313,10 +424,39 @@ export function isSpeechSynthesisSupported(): boolean {
   );
 }
 
+export function estimateSpeechDurationSec(rawText: string, rate = 1.0): number {
+  const words = rawText.trim().split(/\s+/).filter(Boolean).length;
+  if (words === 0) return 1;
+  // Average ~2.5 words/sec at rate 1.0
+  const sec = words / (2.5 * clamp(0.7, 1.4, rate));
+  return Math.max(1, Math.round(sec));
+}
+
+export function unlockSpeechSynthesis(): void {
+  if (!isSpeechSynthesisSupported()) return;
+  try {
+    window.speechSynthesis.getVoices?.();
+    if (!window.speechSynthesis.speaking) {
+      const prime = new SpeechSynthesisUtterance('');
+      prime.volume = 0;
+      window.speechSynthesis.speak(prime);
+      window.speechSynthesis.cancel();
+    }
+  } catch {
+    // Ignore mobile speech unlock errors
+  }
+}
+
 export function speakWithVoiceProfile(options: {
   text: string;
   language: string;
   voiceSettings: VoiceStudioSettings;
+  overrideParams?: {
+    pitch: number;
+    rate: number;
+    genderHint: 'male' | 'female' | 'neutral';
+    preferredVoiceURI?: string;
+  };
   speedMultiplier?: number;
   cancelPrevious?: boolean;
   onStart?: () => void;
@@ -344,15 +484,20 @@ export function speakWithVoiceProfile(options: {
 
   try {
     const bcp47 = getBcp47ForLanguage(options.language);
-    const { pitch, rate, genderHint } = getResolvedVoiceParameters(options.voiceSettings);
+    const resolved = options.overrideParams ?? getResolvedVoiceParameters(options.voiceSettings);
 
     const utterance = new SpeechSynthesisUtterance(trimmed);
     utterance.lang = bcp47;
-    utterance.pitch = clamp(0.55, 1.75, pitch);
-    utterance.rate = clamp(0.55, 2.2, rate * (options.speedMultiplier ?? 1));
+    utterance.pitch = clamp(0.5, 1.8, resolved.pitch);
+    utterance.rate = clamp(0.65, 2.0, resolved.rate * (options.speedMultiplier ?? 1));
 
     const voices = window.speechSynthesis.getVoices?.() ?? [];
-    const matchedVoice = pickSpeechVoice(voices, bcp47, genderHint);
+    const matchedVoice = pickSpeechVoice(
+      voices,
+      bcp47,
+      resolved.genderHint,
+      resolved.preferredVoiceURI
+    );
     if (matchedVoice) {
       utterance.voice = matchedVoice;
     }

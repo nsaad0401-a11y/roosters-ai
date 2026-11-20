@@ -68,6 +68,7 @@ export type VoicePresetId =
   | 'cloned';
 
 export interface ClonedVoiceProfile {
+  id?: string;
   name: string;
   createdAt: number;
   durationSec: number;
@@ -77,12 +78,26 @@ export interface ClonedVoiceProfile {
   spectralBrightness: number;
   genderHint: 'male' | 'female' | 'neutral';
   timbreLabel: string;
+  preferredVoiceURI?: string;
   sampleDataUrl?: string;
 }
 
 export interface VoiceStudioSettings {
   activeVoiceId: VoicePresetId;
   clonedProfile: ClonedVoiceProfile | null;
+  savedProfiles?: ClonedVoiceProfile[];
+  autoSpeakReplies?: boolean;
+  voiceMessageMode?: boolean;
+}
+
+export interface MessageVoiceNote {
+  voiceName: string;
+  pitch: number;
+  rate: number;
+  genderHint: 'male' | 'female' | 'neutral';
+  preferredVoiceURI?: string;
+  durationEstSec: number;
+  isUserVoiceMessage?: boolean;
 }
 
 export interface ChatMessage {
@@ -93,6 +108,7 @@ export interface ChatMessage {
   attachment?: MessageAttachment;
   generatedImage?: GeneratedArtwork;
   generatedVideo?: GeneratedVideo;
+  voiceNote?: MessageVoiceNote;
   isError?: boolean;
   isPending?: boolean;
   isMissingKeyPrompt?: boolean;

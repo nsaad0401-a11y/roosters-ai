@@ -32,7 +32,15 @@ import {
 import { ChangeEvent, ClipboardEvent, CSSProperties, KeyboardEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { QUICK_PROMPTS, ROOSTERS_LOGO_SRC, WORLD_LANGUAGES } from '../constants';
 import { APP_THEMES, AppTheme, ThemeSettings } from '../themes';
-import { ActiveUser, ChatMessage, ChatSession, MessageAttachment, VoiceStudioSettings } from '../types';
+import {
+  ActiveUser,
+  ChatMessage,
+  ChatSession,
+  ClonedVoiceProfile,
+  MessageAttachment,
+  MessageVoiceNote,
+  VoiceStudioSettings,
+} from '../types';
 import {
   detectChatMediaIntent,
   generateArtworkUnified,
@@ -50,7 +58,13 @@ import {
   saveUserChats,
   saveVoiceSettings,
 } from '../utils/storage';
-import { speakWithVoiceProfile, isSpeechSynthesisSupported } from '../utils/voiceEngine';
+import {
+  estimateSpeechDurationSec,
+  getResolvedVoiceParameters,
+  isSpeechSynthesisSupported,
+  speakWithVoiceProfile,
+  unlockSpeechSynthesis,
+} from '../utils/voiceEngine';
 import { AdBannerSlot } from './AdBannerSlot';
 import { ApiKeyModal } from './ApiKeyModal';
 import { GeneratedArtworkCard } from './GeneratedArtworkCard';
@@ -65,6 +79,7 @@ import { TextReaderModal } from './TextReaderModal';
 import { ThemeWallpaperModal } from './ThemeWallpaperModal';
 import { VideoCreateModal } from './VideoCreateModal';
 import { VoiceCloneModal } from './VoiceCloneModal';
+import { VoiceNotePlayer } from './VoiceNotePlayer';
 
 interface MainSuperAppProps {
   user: ActiveUser;
@@ -230,6 +245,7 @@ interface ChatMessageRowProps {
   isCopied: boolean;
   isTtsLoading: boolean;
   isTtsPlaying: boolean;
+  isTtsPaused: boolean;
   onCopy: (msg: ChatMessage) => void;
   onListen: (msg: ChatMessage) => void;
 }
@@ -242,6 +258,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   isCopied,
   isTtsLoading,
   isTtsPlaying,
+  isTtsPaused,
   onCopy,
   onListen,
 }: ChatMessageRowProps) {
@@ -280,6 +297,17 @@ const ChatMessageRow = memo(function ChatMessageRow({
           <p dir="auto" className="text-[14.5px] leading-relaxed whitespace-pre-wrap break-words">
             {msg.content}
           </p>
+          {msg.voiceNote && (
+            <VoiceNotePlayer
+              voiceName={msg.voiceNote.voiceName}
+              durationEstSec={msg.voiceNote.durationEstSec}
+              isPlaying={isTtsPlaying}
+              isPaused={isTtsPaused}
+              isOnUserBubble
+              theme={theme}
+              onTogglePlay={() => onListen(msg)}
+            />
+          )}
         </div>
       </div>
     );
@@ -350,6 +378,17 @@ const ChatMessageRow = memo(function ChatMessageRow({
             video={msg.generatedVideo}
             language={selectedLanguage}
             voiceSettings={voiceSettings}
+          />
+        )}
+
+        {msg.voiceNote && !msg.isPending && !msg.isError && (
+          <VoiceNotePlayer
+            voiceName={msg.voiceNote.voiceName}
+            durationEstSec={msg.voiceNote.durationEstSec}
+            isPlaying={isTtsPlaying}
+            isPaused={isTtsPaused}
+            theme={theme}
+            onTogglePlay={() => onListen(msg)}
           />
         )}
 
@@ -455,6 +494,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [ttsLoadingId, setTtsLoadingId] = useState<string | null>(null);
   const [ttsPlayingId, setTtsPlayingId] = useState<string | null>(null);
+  const [ttsPausedId, setTtsPausedId] = useState<string | null>(null);
 
   // Microphone recording states
   const [isRecording, setIsRecording] = useState(false);
@@ -474,6 +514,12 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const audioChunksRef = useRef<Blob[]>([]);
   const screenVideoRef = useRef<HTMLVideoElement | null>(null);
   const visitorClientIdRef = useRef<string>(createId('visitor'));
+  const pendingReplySpeechRef = useRef<{
+    assistantId: string;
+    text: string;
+    voiceNote: MessageVoiceNote;
+  } | null>(null);
+  const isSpeakingUserNoteRef = useRef<boolean>(false);
 
   const theme: AppTheme = useMemo(
     () => ({
@@ -625,6 +671,8 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   }, [screenStream]);
 
   const stopAudioPlayback = () => {
+    pendingReplySpeechRef.current = null;
+    isSpeakingUserNoteRef.current = false;
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
@@ -636,6 +684,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       // Ignore speechSynthesis cancel errors
     }
     setTtsPlayingId(null);
+    setTtsPausedId(null);
   };
 
   const handleCleanLogout = () => {
@@ -711,12 +760,57 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     }
   };
 
-  const handleSendMessage = async (overrideText?: string) => {
+  const buildActiveSampleVoiceNote = (
+    spokenText: string,
+    isUserVoiceMessage = false,
+    profileOverride?: ClonedVoiceProfile
+  ): MessageVoiceNote | undefined => {
+    const profile = profileOverride ?? voiceSettings.clonedProfile;
+    const useSample = Boolean(profileOverride) || (voiceSettings.activeVoiceId === 'cloned' && Boolean(profile));
+    if (useSample && profile) {
+      return {
+        voiceName: profile.name || 'Sample Voice 1',
+        pitch: profile.pitch,
+        rate: profile.rate,
+        genderHint: profile.genderHint,
+        preferredVoiceURI: profile.preferredVoiceURI,
+        durationEstSec: estimateSpeechDurationSec(spokenText, profile.rate),
+        isUserVoiceMessage,
+      };
+    }
+    if (isUserVoiceMessage) {
+      const resolved = getResolvedVoiceParameters(voiceSettings);
+      return {
+        voiceName: resolved.voiceName,
+        pitch: resolved.pitch,
+        rate: resolved.rate,
+        genderHint: resolved.genderHint,
+        preferredVoiceURI: resolved.preferredVoiceURI,
+        durationEstSec: estimateSpeechDurationSec(spokenText, resolved.rate),
+        isUserVoiceMessage: true,
+      };
+    }
+    return undefined;
+  };
+
+  const handleSendMessage = async (
+    overrideText?: string,
+    options?: { forceVoiceMessage?: boolean; profileOverride?: ClonedVoiceProfile }
+  ) => {
     const textToSend = (overrideText ?? inputValue).trim();
     const attachmentToSend = overrideText ? null : pendingAttachment;
 
     if ((!textToSend && !attachmentToSend) || isStreaming || isGeneratingImage || isGeneratingVideo) {
       return;
+    }
+
+    const isSampleActive =
+      Boolean(options?.profileOverride) ||
+      (voiceSettings.activeVoiceId === 'cloned' && Boolean(voiceSettings.clonedProfile));
+    const shouldSpeakUserText = Boolean(options?.forceVoiceMessage || voiceSettings.voiceMessageMode);
+
+    if (isSampleActive || shouldSpeakUserText) {
+      unlockSpeechSynthesis();
     }
 
     // Auto-detect real HD Image or Multi-Scene Video requests in ANY language (never ASCII art!)
@@ -745,12 +839,19 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         : 'Please analyze this image kindly.'
       : '';
 
+    const finalUserText = textToSend || defaultPrompt;
+    const userVoiceNote = shouldSpeakUserText
+      ? buildActiveSampleVoiceNote(finalUserText, true, options?.profileOverride)
+      : undefined;
+
+    const userMsgId = createId('msg');
     const userMessage: ChatMessage = {
-      id: createId('msg'),
+      id: userMsgId,
       role: 'user',
-      content: textToSend || defaultPrompt,
+      content: finalUserText,
       createdAt: Date.now(),
       attachment: attachmentToSend ?? undefined,
+      voiceNote: userVoiceNote,
     };
 
     const assistantId = createId('msg');
@@ -764,6 +865,62 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     const nextMessages = [...messages, userMessage];
     const currentSessionId = syncMessagesToSession(nextMessages);
     setMessages([...nextMessages, placeholderAssistant]);
+
+    const speakQueuedAssistantReply = (queued: {
+      assistantId: string;
+      text: string;
+      voiceNote: MessageVoiceNote;
+    }) => {
+      setTtsPlayingId(queued.assistantId);
+      speakWithVoiceProfile({
+        text: queued.text,
+        language: selectedLanguage,
+        voiceSettings,
+        overrideParams: {
+          pitch: queued.voiceNote.pitch,
+          rate: queued.voiceNote.rate,
+          genderHint: queued.voiceNote.genderHint,
+          preferredVoiceURI: queued.voiceNote.preferredVoiceURI,
+        },
+        onEnd: () => setTtsPlayingId((curr) => (curr === queued.assistantId ? null : curr)),
+        onError: () => setTtsPlayingId((curr) => (curr === queued.assistantId ? null : curr)),
+      });
+    };
+
+    if (userVoiceNote && isSpeechSynthesisSupported()) {
+      stopAudioPlayback();
+      isSpeakingUserNoteRef.current = true;
+      setTtsPlayingId(userMsgId);
+      speakWithVoiceProfile({
+        text: cleanTextForSpeech(finalUserText),
+        language: selectedLanguage,
+        voiceSettings,
+        overrideParams: {
+          pitch: userVoiceNote.pitch,
+          rate: userVoiceNote.rate,
+          genderHint: userVoiceNote.genderHint,
+          preferredVoiceURI: userVoiceNote.preferredVoiceURI,
+        },
+        onEnd: () => {
+          isSpeakingUserNoteRef.current = false;
+          setTtsPlayingId((curr) => (curr === userMsgId ? null : curr));
+          const queued = pendingReplySpeechRef.current;
+          if (queued) {
+            pendingReplySpeechRef.current = null;
+            speakQueuedAssistantReply(queued);
+          }
+        },
+        onError: () => {
+          isSpeakingUserNoteRef.current = false;
+          setTtsPlayingId((curr) => (curr === userMsgId ? null : curr));
+          const queued = pendingReplySpeechRef.current;
+          if (queued) {
+            pendingReplySpeechRef.current = null;
+            speakQueuedAssistantReply(queued);
+          }
+        },
+      });
+    }
 
     if (!overrideText) {
       setInputValue('');
@@ -820,17 +977,47 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         },
       });
 
+      const finalAssistantText =
+        accumulated || 'I am right here to help whenever you are ready.';
+      const spokenAssistantText = cleanTextForSpeech(finalAssistantText);
+      const assistantVoiceNote = isSampleActive
+        ? buildActiveSampleVoiceNote(spokenAssistantText, false, options?.profileOverride)
+        : undefined;
+
       const finalMessages: ChatMessage[] = [
         ...nextMessages,
         {
           id: assistantId,
           role: 'assistant',
-          content: accumulated || 'I am right here to help whenever you are ready.',
+          content: finalAssistantText,
           createdAt: Date.now(),
+          voiceNote: assistantVoiceNote,
         },
       ];
       setMessages(finalMessages);
       syncMessagesToSession(finalMessages, currentSessionId);
+
+      if (
+        assistantVoiceNote &&
+        spokenAssistantText &&
+        voiceSettings.autoSpeakReplies !== false &&
+        isSpeechSynthesisSupported()
+      ) {
+        if (isSpeakingUserNoteRef.current && window.speechSynthesis?.speaking) {
+          pendingReplySpeechRef.current = {
+            assistantId,
+            text: spokenAssistantText,
+            voiceNote: assistantVoiceNote,
+          };
+        } else {
+          stopAudioPlayback();
+          speakQueuedAssistantReply({
+            assistantId,
+            text: spokenAssistantText,
+            voiceNote: assistantVoiceNote,
+          });
+        }
+      }
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
         return;
@@ -1299,21 +1486,71 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     if (!isSpeechSynthesisSupported()) return false;
     const spoken = cleanTextForSpeech(msg.content);
     if (!spoken) return false;
+    unlockSpeechSynthesis();
+    setTtsPausedId(null);
     setTtsPlayingId(msg.id);
+
+    const overrideParams = msg.voiceNote
+      ? {
+          pitch: msg.voiceNote.pitch,
+          rate: msg.voiceNote.rate,
+          genderHint: msg.voiceNote.genderHint,
+          preferredVoiceURI: msg.voiceNote.preferredVoiceURI,
+        }
+      : undefined;
+
+    // Attach voiceNote badge dynamically if Sample Voice is active so user gets WhatsApp player
+    if (!msg.voiceNote && voiceSettings.activeVoiceId === 'cloned' && voiceSettings.clonedProfile) {
+      const note = buildActiveSampleVoiceNote(spoken, msg.role === 'user');
+      if (note) {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === msg.id ? { ...m, voiceNote: note } : m))
+        );
+      }
+    }
+
     speakWithVoiceProfile({
       text: spoken,
       language: selectedLanguage,
       voiceSettings,
-      onEnd: () => setTtsPlayingId((curr) => (curr === msg.id ? null : curr)),
-      onError: () => setTtsPlayingId(null),
+      overrideParams,
+      onEnd: () => {
+        setTtsPlayingId((curr) => (curr === msg.id ? null : curr));
+        setTtsPausedId((curr) => (curr === msg.id ? null : curr));
+      },
+      onError: () => {
+        setTtsPlayingId((curr) => (curr === msg.id ? null : curr));
+        setTtsPausedId((curr) => (curr === msg.id ? null : curr));
+      },
     });
     return true;
   };
 
   const handleListenTTS = async (msg: ChatMessage) => {
     if (ttsPlayingId === msg.id) {
+      if (msg.voiceNote && isSpeechSynthesisSupported()) {
+        try {
+          window.speechSynthesis.pause();
+          setTtsPlayingId(null);
+          setTtsPausedId(msg.id);
+          return;
+        } catch {
+          // Fall through to clean stop
+        }
+      }
       stopAudioPlayback();
       return;
+    }
+
+    if (ttsPausedId === msg.id && isSpeechSynthesisSupported() && window.speechSynthesis.paused) {
+      try {
+        window.speechSynthesis.resume();
+        setTtsPausedId(null);
+        setTtsPlayingId(msg.id);
+        return;
+      } catch {
+        // Fall through to clean replay
+      }
     }
 
     stopAudioPlayback();
@@ -1321,8 +1558,8 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     setNotice('');
 
     try {
-      // If user picked a custom preset or cloned voice, speak directly with Voice Cloning Studio profile
-      if (voiceSettings.activeVoiceId !== 'default') {
+      // If message has a saved Voice Note or a custom preset/cloned voice is active, play via Voice Engine
+      if (msg.voiceNote || voiceSettings.activeVoiceId !== 'default') {
         if (speakViaVoiceStudio(msg)) return;
       }
 
@@ -1418,7 +1655,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const handleListenCallback = useCallback((msg: ChatMessage) => {
     void handleListenTTS(msg);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ttsPlayingId, selectedLanguage, voiceSettings]);
+  }, [ttsPlayingId, ttsPausedId, selectedLanguage, voiceSettings]);
 
   const wallpaperStyle = useMemo(
     () => getWallpaperStyle(themeSettings, theme),
@@ -2087,6 +2324,129 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
 
         {/* Chat Workspace with Theme + Wallpaper */}
         <main className="flex-1 flex flex-col min-w-0 min-h-0" style={wallpaperStyle}>
+          {/* Top-of-Chat Active Voice Toggle Strip */}
+          <div
+            className="shrink-0 border-b px-3 sm:px-6 py-1.5 flex flex-wrap items-center justify-between gap-2 text-[12px]"
+            style={{
+              backgroundColor: theme.headerBg,
+              borderColor: theme.borderColor,
+            }}
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <Dna
+                className="w-3.5 h-3.5 shrink-0"
+                style={{
+                  color:
+                    voiceSettings.activeVoiceId === 'cloned' && voiceSettings.clonedProfile
+                      ? theme.accentPrimary
+                      : theme.accentSecondary,
+                }}
+              />
+              <span className="truncate font-medium" style={{ color: theme.textSecondary }}>
+                Active Voice:{' '}
+                <strong
+                  style={{
+                    color:
+                      voiceSettings.activeVoiceId === 'cloned' && voiceSettings.clonedProfile
+                        ? theme.accentPrimary
+                        : theme.textPrimary,
+                  }}
+                >
+                  {voiceSettings.activeVoiceId === 'cloned' && voiceSettings.clonedProfile
+                    ? voiceSettings.clonedProfile.name
+                    : voiceSettings.clonedProfile
+                      ? `${voiceSettings.clonedProfile.name} (Paused)`
+                      : 'Default Roosters AI'}
+                </strong>
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 shrink-0">
+              {voiceSettings.clonedProfile ? (
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={voiceSettings.activeVoiceId === 'cloned'}
+                  onClick={() =>
+                    handleUpdateVoiceSettings({
+                      ...voiceSettings,
+                      activeVoiceId:
+                        voiceSettings.activeVoiceId === 'cloned' ? 'default' : 'cloned',
+                    })
+                  }
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11.5px] font-bold transition-all cursor-pointer"
+                  style={{
+                    backgroundColor:
+                      voiceSettings.activeVoiceId === 'cloned'
+                        ? `${theme.accentPrimary}22`
+                        : theme.subSurfaceBg,
+                    borderColor:
+                      voiceSettings.activeVoiceId === 'cloned'
+                        ? theme.accentPrimary
+                        : theme.borderColor,
+                    color:
+                      voiceSettings.activeVoiceId === 'cloned'
+                        ? theme.accentPrimary
+                        : theme.textSecondary,
+                  }}
+                >
+                  <span>{voiceSettings.activeVoiceId === 'cloned' ? 'ON' : 'OFF'}</span>
+                  <span
+                    className="w-7 h-3.5 rounded-full p-0.5 transition-colors flex items-center"
+                    style={{
+                      backgroundColor:
+                        voiceSettings.activeVoiceId === 'cloned' ? theme.accentPrimary : '#334155',
+                      justifyContent:
+                        voiceSettings.activeVoiceId === 'cloned' ? 'flex-end' : 'flex-start',
+                    }}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full bg-white shadow" />
+                  </span>
+                </button>
+              ) : null}
+
+              <button
+                type="button"
+                role="switch"
+                aria-checked={Boolean(voiceSettings.voiceMessageMode)}
+                onClick={() =>
+                  handleUpdateVoiceSettings({
+                    ...voiceSettings,
+                    voiceMessageMode: !voiceSettings.voiceMessageMode,
+                  })
+                }
+                title="When ON, any text you type and send is also spoken aloud as a Voice Note"
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border text-[11.5px] font-semibold transition-all cursor-pointer"
+                style={{
+                  backgroundColor: voiceSettings.voiceMessageMode
+                    ? `${theme.accentSecondary}22`
+                    : theme.subSurfaceBg,
+                  borderColor: voiceSettings.voiceMessageMode
+                    ? theme.accentSecondary
+                    : theme.borderColor,
+                  color: voiceSettings.voiceMessageMode
+                    ? theme.accentSecondary
+                    : theme.textSecondary,
+                }}
+              >
+                <AudioLines className="w-3 h-3 shrink-0" />
+                <span>Voice Msg: {voiceSettings.voiceMessageMode ? 'ON' : 'OFF'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsVoiceModalOpen(true)}
+                className="px-2.5 py-1 rounded-lg border text-[11.5px] font-semibold transition-colors cursor-pointer"
+                style={{
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.borderColor,
+                  color: theme.accentSecondary,
+                }}
+              >
+                {voiceSettings.clonedProfile ? 'Calibrate / Speak' : 'Clone Your Voice'}
+              </button>
+            </div>
+          </div>
           {/* Active Screen Share Bar */}
           {screenStream && (
             <div
@@ -2214,6 +2574,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     isCopied={copiedMessageId === msg.id}
                     isTtsLoading={ttsLoadingId === msg.id}
                     isTtsPlaying={ttsPlayingId === msg.id}
+                    isTtsPaused={ttsPausedId === msg.id}
                     onCopy={handleCopyCallback}
                     onListen={handleListenCallback}
                   />
@@ -2362,6 +2723,38 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     <FileText className="w-4 h-4" />
                   </button>
 
+                  {/* Voice Message Mode Toggle (speaks typed text in Sample Voice as WhatsApp Voice Note) */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleUpdateVoiceSettings({
+                        ...voiceSettings,
+                        voiceMessageMode: !voiceSettings.voiceMessageMode,
+                      })
+                    }
+                    title={
+                      voiceSettings.voiceMessageMode
+                        ? 'Voice Message Mode ON — Typed text will be spoken in your Active Voice'
+                        : 'Enable Voice Message Mode (speak typed text as a Voice Note)'
+                    }
+                    aria-label="Toggle Voice Message Mode"
+                    aria-pressed={Boolean(voiceSettings.voiceMessageMode)}
+                    className="p-2 sm:p-2.5 rounded-xl border transition-colors shrink-0 cursor-pointer"
+                    style={{
+                      backgroundColor: voiceSettings.voiceMessageMode
+                        ? `${theme.accentSecondary}22`
+                        : theme.subSurfaceBg,
+                      borderColor: voiceSettings.voiceMessageMode
+                        ? theme.accentSecondary
+                        : theme.borderColor,
+                      color: voiceSettings.voiceMessageMode
+                        ? theme.accentSecondary
+                        : theme.textSecondary,
+                    }}
+                  >
+                    <AudioLines className="w-4 h-4" />
+                  </button>
+
                   {/* Microphone Voice Input Button */}
                   <button
                     type="button"
@@ -2407,7 +2800,9 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                         ? 'Listening... Click mic to stop'
                         : isTranscribing
                           ? 'Transcribing voice...'
-                          : `Ask your Study Tutor (${selectedLanguage})...`
+                          : voiceSettings.voiceMessageMode
+                            ? `Voice Note (${getResolvedVoiceParameters(voiceSettings).voiceName}) — Type to speak...`
+                            : `Ask your Study Tutor (${selectedLanguage})...`
                     }
                     className="flex-1 min-w-0 bg-transparent px-1.5 sm:px-2 py-2.5 text-[14px] sm:text-[14.5px] focus:outline-none resize-none max-h-40 leading-normal"
                     style={{ color: theme.textPrimary }}
@@ -2486,6 +2881,9 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         language={selectedLanguage}
         settings={voiceSettings}
         onUpdate={handleUpdateVoiceSettings}
+        onSendVoiceMessageToChat={(text, profile) => {
+          void handleSendMessage(text, { forceVoiceMessage: true, profileOverride: profile });
+        }}
         onClose={() => setIsVoiceModalOpen(false)}
       />
 

@@ -195,8 +195,28 @@ const VOICE_SETTINGS_KEY = 'roosters_ai_voice_v1';
 const DEFAULT_VOICE_SETTINGS: import('../types').VoiceStudioSettings = {
   activeVoiceId: 'default',
   clonedProfile: null,
+  savedProfiles: [],
+  autoSpeakReplies: true,
+  voiceMessageMode: false,
 };
 let memoryVoiceSettings: import('../types').VoiceStudioSettings = DEFAULT_VOICE_SETTINGS;
+
+const memorySampleAudioMap = new Map<string, string>();
+
+function getProfileStorageKey(profile: import('../types').ClonedVoiceProfile): string {
+  return profile.id || String(profile.createdAt);
+}
+
+function hydrateProfileSample(
+  profile: import('../types').ClonedVoiceProfile
+): import('../types').ClonedVoiceProfile {
+  if (profile.sampleDataUrl) {
+    memorySampleAudioMap.set(getProfileStorageKey(profile), profile.sampleDataUrl);
+    return profile;
+  }
+  const cached = memorySampleAudioMap.get(getProfileStorageKey(profile));
+  return cached ? { ...profile, sampleDataUrl: cached } : profile;
+}
 
 export function loadVoiceSettings(): import('../types').VoiceStudioSettings {
   const raw = safeGetItem(VOICE_SETTINGS_KEY);
@@ -204,9 +224,18 @@ export function loadVoiceSettings(): import('../types').VoiceStudioSettings {
   try {
     const parsed = JSON.parse(raw) as Partial<import('../types').VoiceStudioSettings>;
     if (parsed && parsed.activeVoiceId) {
+      const cloned = parsed.clonedProfile ? hydrateProfileSample(parsed.clonedProfile) : null;
+      const savedRaw = Array.isArray(parsed.savedProfiles)
+        ? parsed.savedProfiles
+        : cloned
+          ? [cloned]
+          : [];
       const merged: import('../types').VoiceStudioSettings = {
         activeVoiceId: parsed.activeVoiceId,
-        clonedProfile: parsed.clonedProfile ?? null,
+        clonedProfile: cloned,
+        savedProfiles: savedRaw.map(hydrateProfileSample),
+        autoSpeakReplies: parsed.autoSpeakReplies ?? true,
+        voiceMessageMode: Boolean(parsed.voiceMessageMode),
       };
       memoryVoiceSettings = merged;
       return merged;
@@ -217,22 +246,43 @@ export function loadVoiceSettings(): import('../types').VoiceStudioSettings {
   return memoryVoiceSettings;
 }
 
-export function saveVoiceSettings(settings: import('../types').VoiceStudioSettings): void {
-  const compact: import('../types').VoiceStudioSettings = {
-    ...settings,
-    clonedProfile: settings.clonedProfile
-      ? {
-          ...settings.clonedProfile,
-          sampleDataUrl:
-            settings.clonedProfile.sampleDataUrl &&
-            settings.clonedProfile.sampleDataUrl.length < 220_000
-              ? settings.clonedProfile.sampleDataUrl
-              : undefined,
-        }
-      : null,
+function compactClonedProfileForStorage(
+  profile: import('../types').ClonedVoiceProfile
+): import('../types').ClonedVoiceProfile {
+  if (profile.sampleDataUrl) {
+    memorySampleAudioMap.set(getProfileStorageKey(profile), profile.sampleDataUrl);
+  }
+  return {
+    ...profile,
+    sampleDataUrl:
+      profile.sampleDataUrl && profile.sampleDataUrl.length < 450_000
+        ? profile.sampleDataUrl
+        : undefined,
   };
-  memoryVoiceSettings = compact;
-  safeSetItem(VOICE_SETTINGS_KEY, JSON.stringify(compact));
+}
+
+export function saveVoiceSettings(settings: import('../types').VoiceStudioSettings): void {
+  const hydratedSaved = (settings.savedProfiles ?? []).slice(0, 6).map(hydrateProfileSample);
+  const hydratedCloned = settings.clonedProfile
+    ? hydrateProfileSample(settings.clonedProfile)
+    : null;
+
+  memoryVoiceSettings = {
+    activeVoiceId: settings.activeVoiceId,
+    clonedProfile: hydratedCloned,
+    savedProfiles: hydratedSaved,
+    autoSpeakReplies: settings.autoSpeakReplies ?? true,
+    voiceMessageMode: Boolean(settings.voiceMessageMode),
+  };
+
+  const compactForLocalStorage: import('../types').VoiceStudioSettings = {
+    activeVoiceId: settings.activeVoiceId,
+    clonedProfile: hydratedCloned ? compactClonedProfileForStorage(hydratedCloned) : null,
+    savedProfiles: hydratedSaved.map(compactClonedProfileForStorage),
+    autoSpeakReplies: settings.autoSpeakReplies ?? true,
+    voiceMessageMode: Boolean(settings.voiceMessageMode),
+  };
+  safeSetItem(VOICE_SETTINGS_KEY, JSON.stringify(compactForLocalStorage));
 }
 
 
