@@ -180,6 +180,7 @@ function buildStudyTutorInstruction(options: {
     baseInstruction,
     userName ? `You are assisting ${userName}.` : '',
     multimodalCore,
+    'Roosters AI has full built-in HD image and video creation capabilities. NEVER say "I cannot create images", "I cannot generate pictures", or refuse to create images in English, Urdu, or Roman Urdu. If the user asks for an image, picture, photo, portrait, logo, or floor plan/design (e.g., "pic bna do", "tasveer banao", "naksha banao"), reply ONLY with [CREATE_IMAGE: <detailed, photorealistic English prompt>].',
     'Format code in fenced markdown blocks with language tags only when code is requested or relevant.',
     'NEVER generate ASCII art or text-character drawings when asked for images, photos, portraits, or videos.',
     langRule,
@@ -636,6 +637,101 @@ async function startServer() {
     } catch (err) {
       const formatted = formatGeminiError(err);
       res.status(formatted.status).json({ error: formatted.message, code: formatted.code });
+    }
+  });
+
+  // Step 1: Gemini Multilingual Image/Design Intent Detector & Professional Prompt Enhancer
+  app.post('/api/detect-image-intent', async (req, res) => {
+    try {
+      const { text, forceImage, apiKey } = req.body as {
+        text: string;
+        forceImage?: boolean;
+        apiKey?: string;
+      };
+
+      const cleaned = (text || '').trim();
+      if (!cleaned) {
+        res.status(400).json({ error: 'Input text is required.' });
+        return;
+      }
+
+      const ai = getAiClient(apiKey);
+      const enhancerSystemInstruction = forceImage
+        ? [
+            'You are a world-class AI visual prompt engineer.',
+            'Understand ANY language (English, Urdu, Roman Urdu like "ghar ka naksha", "pic bna do", "tasveer banao", Hindi, Arabic, etc.).',
+            'Set intent to "image". Translate and expand the user idea into a highly detailed, professional, family-friendly English image-generation prompt (35 to 65 words).',
+            'Add realistic natural or studio lighting, sharp focus, authentic textures, architectural or environmental details, camera perspective, and photorealistic/cinematic quality.',
+            'Strip command words like "pic bna do", "tasveer banao", "naksha banao", "generate image", "draw me". Never include unsafe, explicit, or violent terms.',
+          ].join(' ')
+        : [
+            'You are an intent classifier and professional AI image-prompt engineer.',
+            'Analyze the user message in ANY language (especially English, Urdu script, and Roman Urdu such as "pic bna do", "tasveer banao", "naksha banao", "photo bana dy", "design bna do", "ghar ka naksha", "logo banao").',
+            'Classify intent:',
+            '- "video": if the user asks to create/generate/make a video, reel, clip, or animation.',
+            '- "image": if the user asks to create, generate, draw, paint, sketch, design, show, or make a picture, photo, portrait, wallpaper, logo, poster, illustration, architecture/house design, or map/floor-plan (naksha/naqsha).',
+            '- "chat": if the user is asking a normal question, greeting, translation, math, explanation, or asking for HTML/CSS/JS/Python code/tutorials (e.g., "how to make an image slider in HTML").',
+            'If intent is "image": translate and expand the user idea into a highly detailed, professional, family-friendly English image-generation prompt (35 to 65 words) with realistic lighting, rich textures, architectural or environmental details, sharp focus, and photorealistic/cinematic style. Also provide a short 3-6 word English shortTitle.',
+            'If intent is "chat" or "video", set enhancedPrompt to "" and shortTitle to "".',
+          ].join(' ');
+
+      let lastErr: unknown = null;
+      for (let i = 0; i < FAST_CHAT_MODELS.length; i++) {
+        const candidate = FAST_CHAT_MODELS[i];
+        try {
+          const response = await ai.models.generateContent({
+            model: candidate.model,
+            contents: cleaned,
+            config: {
+              systemInstruction: enhancerSystemInstruction,
+              thinkingConfig: candidate.thinkingConfig,
+              safetySettings: DEFAULT_SAFETY_SETTINGS,
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  intent: { type: Type.STRING },
+                  shortTitle: { type: Type.STRING },
+                  enhancedPrompt: { type: Type.STRING },
+                },
+                required: ['intent', 'shortTitle', 'enhancedPrompt'],
+              },
+            },
+          });
+
+          const parsed = JSON.parse((response.text ?? '{}').trim()) as {
+            intent?: string;
+            shortTitle?: string;
+            enhancedPrompt?: string;
+          };
+          const normalizedIntent =
+            forceImage || parsed.intent === 'image'
+              ? 'image'
+              : parsed.intent === 'video'
+                ? 'video'
+                : 'chat';
+
+          res.json({
+            intent: normalizedIntent,
+            shortTitle: (parsed.shortTitle || '').trim(),
+            enhancedPrompt: (parsed.enhancedPrompt || '').trim(),
+          });
+          return;
+        } catch (err) {
+          lastErr = err;
+          if (isRetryableOrFallbackError(err) && i < FAST_CHAT_MODELS.length - 1) {
+            await sleep(120);
+            continue;
+          }
+          break;
+        }
+      }
+
+      const formatted = formatGeminiError(lastErr);
+      res.status(formatted.status).json({ error: formatted.message });
+    } catch (err) {
+      const formatted = formatGeminiError(err);
+      res.status(formatted.status).json({ error: formatted.message });
     }
   });
 

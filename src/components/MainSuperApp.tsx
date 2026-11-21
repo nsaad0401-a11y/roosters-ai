@@ -44,7 +44,8 @@ import {
   VoiceStudioSettings,
 } from '../types';
 import {
-  detectChatMediaIntent,
+  buildSafeArtisticPrompt,
+  detectAndEnhanceChatMediaIntent,
   generateArtworkUnified,
   generateVideoUnified,
   getEnvGeminiKey,
@@ -879,17 +880,24 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       unlockSpeechSynthesis();
     }
 
-    // Auto-detect real HD Image or Multi-Scene Video requests in ANY language (never ASCII art!)
-    const mediaIntent = detectChatMediaIntent(textToSend, Boolean(attachmentToSend));
-    if (mediaIntent === 'image') {
+    // Step 1: Gemini Multilingual Intent & Prompt Enhancer (English, Urdu, Roman Urdu like "pic bna do", "tasveer banao", "naksha banao")
+    const detectedMedia = await detectAndEnhanceChatMediaIntent({
+      text: textToSend,
+      hasAttachment: Boolean(attachmentToSend),
+      hasBackendApi,
+      hasServerGeminiKey,
+    });
+    if (detectedMedia.intent === 'image') {
       if (!overrideText) {
         setInputValue('');
         if (textareaRef.current) textareaRef.current.style.height = 'auto';
       }
-      await handleGenerateArtwork(textToSend, '1:1', textToSend);
+      await handleGenerateArtwork(textToSend, '1:1', textToSend, {
+        preEnhanced: detectedMedia.preEnhanced,
+      });
       return;
     }
-    if (mediaIntent === 'video') {
+    if (detectedMedia.intent === 'video') {
       if (!overrideText) {
         setInputValue('');
         if (textareaRef.current) textareaRef.current.style.height = 'auto';
@@ -1071,6 +1079,25 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       if (!finalAssistantText) {
         throw new Error('AI returned an empty response. Please verify your API key or network connection and try again.');
       }
+
+      // Safety net: if a chat model emits [CREATE_IMAGE: ...], execute Step 2 HD image generation immediately
+      const createImageMatch = finalAssistantText.match(/\[CREATE_IMAGE:\s*([\s\S]+?)\]/i);
+      if (createImageMatch && createImageMatch[1]?.trim()) {
+        const extractedPrompt = buildSafeArtisticPrompt(createImageMatch[1].trim());
+        setIsStreaming(false);
+        abortControllerRef.current = null;
+        await handleGenerateArtwork(extractedPrompt, '1:1', textToSend, {
+          preEnhanced: {
+            shortTitle: textToSend.slice(0, 48) || 'Ultra-HD AI Artwork',
+            detailedPrompt: extractedPrompt,
+          },
+          replaceAssistantId: assistantId,
+          baseMessages: nextMessages,
+          sessionId: currentSessionId,
+        });
+        return;
+      }
+
       const spokenAssistantText = cleanTextForSpeech(finalAssistantText);
       const assistantVoiceNote = isSampleActive
         ? buildActiveSampleVoiceNote(spokenAssistantText, false, options?.profileOverride)
@@ -1403,7 +1430,13 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const handleGenerateArtwork = async (
     prompt: string,
     aspectRatio: '1:1' | '16:9' | '4:3',
-    displayUserText?: string
+    displayUserText?: string,
+    options?: {
+      preEnhanced?: { detailedPrompt: string; shortTitle: string };
+      replaceAssistantId?: string;
+      baseMessages?: ChatMessage[];
+      sessionId?: string;
+    }
   ) => {
     if (!isOnline) {
       setNotice('You are offline. Connect to the internet to generate new HD images.');
@@ -1412,22 +1445,28 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     setIsGeneratingImage(true);
     setNotice('');
 
-    const userMsg: ChatMessage = {
-      id: createId('msg'),
-      role: 'user',
-      content: displayUserText || `Create Image (${aspectRatio}): ${prompt}`,
-      createdAt: Date.now(),
-    };
-    const assistantPlaceholderId = createId('msg');
+    const nextMessages: ChatMessage[] = options?.baseMessages
+      ? options.baseMessages
+      : [
+          ...messages,
+          {
+            id: createId('msg'),
+            role: 'user',
+            content: displayUserText || `Create Image (${aspectRatio}): ${prompt}`,
+            createdAt: Date.now(),
+          },
+        ];
+    const assistantPlaceholderId = options?.replaceAssistantId || createId('msg');
     const loadingMsg: ChatMessage = {
       id: assistantPlaceholderId,
       role: 'assistant',
-      content: 'Enhancing your prompt safely for HD image generation...',
+      content: options?.preEnhanced
+        ? 'Generating 1024×1024 Ultra-HD Flux image...'
+        : 'Enhancing your prompt with Gemini AI...',
       createdAt: Date.now(),
       isPending: true,
     };
-    const nextMessages = [...messages, userMsg];
-    const currentSessionId = syncMessagesToSession(nextMessages);
+    const currentSessionId = options?.sessionId ?? syncMessagesToSession(nextMessages);
     setMessages([...nextMessages, loadingMsg]);
     setIsImageModalOpen(false);
 
@@ -1444,6 +1483,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         language: selectedLanguage,
         hasBackendApi,
         hasServerGeminiKey,
+        preEnhanced: options?.preEnhanced,
         onStatus: updateProgressText,
       });
 

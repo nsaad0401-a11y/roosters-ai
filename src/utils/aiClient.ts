@@ -138,6 +138,7 @@ export function buildClientStudyTutorInstruction(options: {
     baseInstruction,
     userName ? `You are assisting ${userName}.` : '',
     multimodalCore,
+    'Roosters AI has full built-in HD image and video creation capabilities. NEVER say "I cannot create images", "I cannot generate pictures", or refuse to create images in English, Urdu, or Roman Urdu. If the user asks for an image, picture, photo, portrait, logo, or floor plan/design (e.g., "pic bna do", "tasveer banao", "naksha banao"), reply ONLY with [CREATE_IMAGE: <detailed, photorealistic English prompt>].',
     'Format code in fenced markdown blocks with language tags only when code is requested or relevant.',
     'NEVER output ASCII art, text-character drawings, or box-art diagrams when asked for a picture, image, photo, or video.',
     langRule,
@@ -157,38 +158,197 @@ export function detectChatMediaIntent(
 
   // Exclude coding/explanatory/tutorial questions unless explicitly asking to render an image/video directly
   const isTutorialOrCodeQuestion =
-    /\b(how to|how do i|explain|what is|html|css|python|javascript|react|code for|script for|algorithm|tag|tutorial|difference between)\b/i.test(
+    /\b(how to|how do i|explain|what is|html|css|python|javascript|typescript|react|code for|script for|algorithm|tag|tutorial|difference between)\b/i.test(
       lower
-    ) && !/\b(pic banao|tasveer banao|tasweer banao|video banao|generate image|create video)\b/i.test(lower);
+    ) &&
+    !/\b(pic\s*bna|pic\s*bana|tasveer\s*bna|tasveer\s*bana|tasweer\s*bna|tasweer\s*bana|naksha\s*bna|naksha\s*bana|naqsha\s*bna|naqsha\s*bana|video\s*bna|video\s*bana|generate image|create image|create video)\b/i.test(
+      lower
+    );
 
   if (isTutorialOrCodeQuestion) return 'chat';
 
-  // 1. Video intent (check first so "video banao" / "create video" always triggers Video Generator)
+  // 1. Video intent (check first so "video banao" / "video bna do" always triggers Video Generator)
   const videoPatterns: RegExp[] = [
     /\b(create|generate|make|render|produce|animate|build|show)\s+(me\s+)?(a\s+|an\s+|the\s+|some\s+)?(short\s+|cinematic\s+|ai\s+|hd\s+|animated\s+)?(video|clip|animation|movie|reel|short\s*film)\b/i,
     /\b(video|clip|reel|animation)\s+(of|about|for|on)\b/i,
-    /\b(video|veedio|vedio|clip|reel|animation)\s*(banao|bana\s*do|banado|bnao|taiyar\s*karo|dikhao|chahiye)\b/i,
-    /\b(banao|bana\s*do|banado)\s*(ek\s+)?(video|clip|reel|animation)\b/i,
-    /(ویڈیو\s*(بنائیں|بناؤ|بنا\s*دو|دکھائیں)|فيديو|إنشاء\s+فيديو|वीडियो\s*(बनाओ|बनाएं|बना\s*दो)|créer\s+une\s+vidéo|generar\s+(un\s+)?vídeo|crear\s+(un\s+)?video|video\s+erstellen|buat\s+video)/i,
+    /\b(video|veedio|vedio|clip|reel|animation)\s*(banao|bnao|bna\s*do|bna\s*dy|bna\s*de|bana\s*do|bana\s*dy|bana\s*de|bana\s*kar\s*do|bana\s*kr\s*do|banado|bnado|taiyar\s*karo|dikhao|chahiye)\b/i,
+    /\b(banao|bnao|bna\s*do|bana\s*do|banado|bnado)\s*(ek\s+|aik\s+)?(video|clip|reel|animation)\b/i,
+    /(ویڈیو\s*(بنائیں|بناؤ|بنا\s*دو|بنا\s*دیں|دکھائیں)|فيديو|إنشاء\s+فيديو|वीडियो\s*(बनाओ|बनाएं|बना\s*दो)|créer\s+une\s+vidéo|generar\s+(un\s+)?vídeo|crear\s+(un\s+)?video|video\s+erstellen|buat\s+video)/i,
   ];
   if (videoPatterns.some((rx) => rx.test(text))) {
     return 'video';
   }
 
-  // 2. Image / Photo / Drawing intent in ANY language
+  // 2. Image / Photo / Drawing / Design / Naksha intent in ANY language (English, Urdu, Roman Urdu, etc.)
   const imagePatterns: RegExp[] = [
-    /\b(create|generate|make|draw|paint|sketch|render|design|illustrate|show)\s+(me\s+)?(a\s+|an\s+|some\s+|the\s+)?(hd\s+|4k\s+|real\s+|realistic\s+|photorealistic\s+|cute\s+|cool\s+|beautiful\s+)?(picture|pic|pics|image|img|photo|photograph|portrait|wallpaper|illustration|artwork|drawing|poster|avatar|painting|sketch)\b/i,
-    /^(draw|paint|sketch|illustrate)\s+(a|an|the|me|some)?\s*\S+/i,
-    /\b(picture|pic|image|photo|portrait)\s+of\b/i,
-    /\b(pic|pics|picture|tasveer|tasweer|tasvir|taswir|photo|foto|image|img|drawing|sketch|chitra|portrait|wallpaper)\s*(banao|bana\s*do|banado|bnao|dikhao|nikalo|chahiye|khincho)\b/i,
-    /\b(banao|bana\s*do|banado|draw\s*karo)\s*(ek\s+)?(pyari\s+si\s+|khoobsurat\s+|sundar\s+)?(pic|picture|tasveer|tasweer|tasvir|photo|image|sketch|drawing)\b/i,
-    /(تصویر\s*(بنائیں|بناؤ|بنا\s*دو|دکھائیں)|صورة|ارسم|تصوير|चित्र\s*(बनाओ|बनाएं)|तस्वीर\s*(बनाओ|बनाएं)|फोटो\s*(बनाओ|बनाएं)|dessine|créer\s+une\s+image|generar\s+(una\s+)?imagen|dibujar|criar\s+imagem|bild\s+erstellen|buat\s+gambar|resim\s+(çiz|yap))/i,
+    /\b(create|generate|make|draw|paint|sketch|render|design|illustrate|show)\s+(me\s+)?(a\s+|an\s+|some\s+|the\s+)?(hd\s+|ultra[\s-]*hd\s+|4k\s+|real\s+|realistic\s+|photorealistic\s+|cute\s+|cool\s+|beautiful\s+|modern\s+|3d\s+)?(picture|pic|pics|image|img|photo|photograph|portrait|wallpaper|illustration|artwork|drawing|poster|avatar|painting|sketch|logo|banner|icon|blueprint|floor\s*plan|house\s*design|interior\s*design)\b/i,
+    /^(draw|paint|sketch|illustrate|design)\s+(a|an|the|me|some)?\s*\S+/i,
+    /\b(picture|pic|image|photo|portrait|drawing|sketch|illustration|logo|design)\s+of\b/i,
+    /\b(pic|pics|picture|tasveer|tasweer|tasvir|taswir|photo|foto|image|img|drawing|sketch|chitra|portrait|wallpaper|naksha|naqsha|logo|design|poster)\s*(banao|bnao|bna\s*do|bna\s*dy|bna\s*de|bna\s*kar\s*do|bna\s*kr\s*do|bana\s*do|bana\s*dy|bana\s*de|bana\s*kar\s*do|bana\s*kr\s*do|banado|bnado|dikhao|dikha\s*do|nikalo|chahiye|khincho|bna|bana)\b/i,
+    /\b(banao|bnao|bna\s*do|bna\s*dy|bna\s*de|bana\s*do|bana\s*dy|banado|bnado|draw\s*karo|design\s*karo|design\s*kr\s*do)\s*(ek\s+|aik\s+|mujy\s+|mujhe\s+)?(pyari\s+si\s+|khoobsurat\s+|khubsurat\s+|sundar\s+|acha\s+sa\s+|achha\s+sa\s+)?(pic|picture|tasveer|tasweer|tasvir|taswir|photo|image|sketch|drawing|naksha|naqsha|logo|design|poster)\b/i,
+    /(تصویر|فوٹو|نقشہ|اسکیچ|ڈیزائن|لوگو)\s*(بنائیں|بناؤ|بنا\s*دو|بنا\s*دیں|بنا\s*کر\s*دیں|دکھائیں|چاہیے)|(بنائیں|بناؤ|بنا\s*دو|بنا\s*دیں)\s*(ایک\s+)?(خوبصورت\s+)?(تصویر|فوٹو|نقشہ|اسکیچ|ڈیزائن|لوگو)|(صورة|ارسم|تصوير|चित्र\s*(बनाओ|बनाएं)|तस्वीर\s*(बनाओ|बनाएं)|फोटो\s*(बनाओ|बनाएं)|dessine|créer\s+une\s+image|generar\s+(una\s+)?imagen|dibujar|criar\s+imagem|bild\s+erstellen|buat\s+gambar|resim\s+(çiz|yap))/i,
   ];
   if (imagePatterns.some((rx) => rx.test(text))) {
     return 'image';
   }
 
   return 'chat';
+}
+
+function shouldInvokeGeminiIntentCheck(rawText: string): boolean {
+  const text = rawText.trim();
+  if (!text || text.length > 500) return false;
+  if (detectChatMediaIntent(text, false) !== 'chat') return true;
+
+  const lower = text.toLowerCase();
+  // Skip obvious pure greetings/math/code/translation questions unless visual cues exist
+  if (
+    /^(hi|hello|hey|salam|assalam|how are you|what is|who is|why |when |where |explain |translate |write code|write a function)/i.test(
+      lower
+    ) &&
+    !/\b(pic|photo|image|picture|tasveer|tasweer|naksha|naqsha|draw|paint|sketch|design|logo|portrait|wallpaper|bna|bana|تصویر|نقشہ|فوٹو)\b/i.test(
+      lower
+    )
+  ) {
+    return false;
+  }
+
+  // Invoke Gemini Step-1 classifier for any message with Urdu/Arabic/Hindi script, Roman Urdu creation verbs, or visual/design keywords
+  const hasNonAsciiScript = /[\u0600-\u06FF\u0900-\u097F]/.test(text);
+  const hasVisualOrCreationCue =
+    /\b(pic|pics|picture|photo|foto|image|img|tasveer|tasweer|tasvir|taswir|naksha|naqsha|draw|paint|sketch|design|logo|poster|banner|portrait|wallpaper|illustration|artwork|render|scene|house|ghar|makan|villa|masjid|mosque|bna|bnao|bnado|bana|banado|dikhao|dikha|chahiye|make me|create|generate|show me|give me)\b/i.test(
+      lower
+    );
+
+  return hasNonAsciiScript || hasVisualOrCreationCue;
+}
+
+export async function detectAndEnhanceChatMediaIntent(params: {
+  text: string;
+  hasAttachment: boolean;
+  hasBackendApi: boolean;
+  hasServerGeminiKey: boolean;
+}): Promise<{
+  intent: 'video' | 'image' | 'chat';
+  preEnhanced?: { detailedPrompt: string; shortTitle: string };
+}> {
+  if (params.hasAttachment) return { intent: 'chat' };
+  const cleaned = params.text.trim();
+  if (!cleaned || cleaned.length > 500) return { intent: 'chat' };
+
+  const fastIntent = detectChatMediaIntent(cleaned, false);
+  if (!shouldInvokeGeminiIntentCheck(cleaned)) {
+    return { intent: fastIntent };
+  }
+
+  const localKey = loadCustomApiKey().trim();
+  const envGeminiKey = getEnvGeminiKey();
+  const clientGeminiKey = localKey.startsWith('AIza') ? localKey : envGeminiKey;
+
+  // Step 1A: Server-side Gemini intent & prompt enhancer (preferred)
+  if (params.hasBackendApi || params.hasServerGeminiKey) {
+    try {
+      const resp = await fetch('/api/detect-image-intent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: cleaned,
+          forceImage: fastIntent === 'image',
+          apiKey: clientGeminiKey || undefined,
+        }),
+      });
+      if (resp.ok) {
+        const data = (await resp.json()) as {
+          intent?: string;
+          shortTitle?: string;
+          enhancedPrompt?: string;
+        };
+        const resolvedIntent: 'video' | 'image' | 'chat' =
+          fastIntent === 'video' || data.intent === 'video'
+            ? 'video'
+            : fastIntent === 'image' || data.intent === 'image'
+              ? 'image'
+              : 'chat';
+
+        if (resolvedIntent === 'image' && data.enhancedPrompt?.trim()) {
+          return {
+            intent: 'image',
+            preEnhanced: {
+              shortTitle: (data.shortTitle || cleaned).slice(0, 56),
+              detailedPrompt: buildSafeArtisticPrompt(data.enhancedPrompt.trim()),
+            },
+          };
+        }
+        return { intent: resolvedIntent };
+      }
+    } catch {
+      // Fall through to direct Gemini REST or deterministic fallback
+    }
+  }
+
+  // Step 1B: Direct Gemini REST fallback (for static deployments with client Gemini key)
+  if (clientGeminiKey) {
+    try {
+      const sysText = [
+        'Classify the user message in ANY language (English, Urdu, Roman Urdu like "pic bna do", "tasveer banao", "naksha banao") as intent "image", "video", or "chat".',
+        'If intent is "image", translate and expand the idea into a highly detailed, photorealistic/cinematic English image-generation prompt (35-65 words) with realistic lighting, textures, architectural or environmental detail, and crisp focus, plus a 3-6 word shortTitle.',
+        'Return ONLY JSON: {"intent":"image|video|chat","shortTitle":"...","enhancedPrompt":"..."}',
+      ].join(' ');
+      const resp = await fetch(
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': clientGeminiKey,
+          },
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: sysText }] },
+            contents: [{ role: 'user', parts: [{ text: cleaned }] }],
+            generationConfig: {
+              thinkingConfig: { thinkingBudget: 0 },
+              responseMimeType: 'application/json',
+            },
+          }),
+        }
+      );
+      if (resp.ok) {
+        const json = (await resp.json()) as {
+          candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+        };
+        const rawOut = json.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+        const start = rawOut.indexOf('{');
+        const end = rawOut.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+          const parsed = JSON.parse(rawOut.slice(start, end + 1)) as {
+            intent?: string;
+            shortTitle?: string;
+            enhancedPrompt?: string;
+          };
+          const resolvedIntent: 'video' | 'image' | 'chat' =
+            fastIntent === 'video' || parsed.intent === 'video'
+              ? 'video'
+              : fastIntent === 'image' || parsed.intent === 'image'
+                ? 'image'
+                : 'chat';
+          if (resolvedIntent === 'image' && parsed.enhancedPrompt?.trim()) {
+            return {
+              intent: 'image',
+              preEnhanced: {
+                shortTitle: (parsed.shortTitle || cleaned).slice(0, 56),
+                detailedPrompt: buildSafeArtisticPrompt(parsed.enhancedPrompt.trim()),
+              },
+            };
+          }
+          return { intent: resolvedIntent };
+        }
+      }
+    } catch {
+      // Fall back cleanly
+    }
+  }
+
+  return { intent: fastIntent };
 }
 
 function formatMessageTextWithFile(msg: OutgoingMessage): string {
@@ -1142,9 +1302,10 @@ const BARE_HUMAN_SUBJECT_RX =
 export function buildSafeArtisticPrompt(rawInput: string): string {
   let text = rawInput
     .replace(
-      /\b(create|generate|make|draw|paint|sketch|render|show|please|kindly|me|a|an|pic|pics|picture|tasveer|tasweer|tasvir|photo|foto|image|img|banao|bana do|banado|dikhao|chahiye)\b/gi,
+      /\b(create|generate|make|draw|paint|sketch|render|show|please|kindly|me|mujy|mujhe|a|an|ek|aik|pic|pics|picture|tasveer|tasweer|tasvir|taswir|photo|foto|image|img|banao|bnao|bna\s*do|bna\s*dy|bna\s*de|bana\s*do|bana\s*dy|bana\s*de|banado|bnado|dikhao|chahiye|khincho|kar\s*do|kr\s*do)\b/gi,
       ' '
     )
+    .replace(/\b(naksha|naqsha)\b/gi, 'modern architectural floor plan and elevation design')
     .replace(/\bof\b/gi, ' ')
     .replace(/[^\p{L}\p{N}\s,.-]/gu, ' ')
     .replace(/\s+/g, ' ')
@@ -1157,30 +1318,29 @@ export function buildSafeArtisticPrompt(rawInput: string): string {
   if (!text || BARE_HUMAN_SUBJECT_RX.test(text)) {
     const noun = text.toLowerCase();
     if (noun.includes('woman') || noun.includes('girl') || noun.includes('larki')) {
-      return 'Portrait of a friendly smiling woman wearing casual modern attire in a sunlit studio, warm natural lighting, ultra detailed, digital illustration, wholesome family-friendly artwork';
+      return 'Photorealistic portrait of a friendly smiling woman wearing stylish modern attire in a sunlit studio, natural soft lighting, shallow depth of field, sharp focus, ultra-detailed 8k photography';
     }
     if (noun.includes('man') || noun.includes('boy') || noun.includes('larka')) {
-      return 'Portrait of a friendly smiling young man wearing casual modern attire in a sunlit studio, warm natural lighting, ultra detailed, digital illustration, wholesome family-friendly artwork';
+      return 'Photorealistic portrait of a friendly smiling young man wearing stylish modern attire in a sunlit studio, natural soft lighting, shallow depth of field, sharp focus, ultra-detailed 8k photography';
     }
-    return 'Portrait of a friendly smiling person wearing casual modern attire in a sunlit contemporary studio, warm golden hour lighting, ultra detailed, digital illustration, wholesome family-friendly art';
+    return 'Photorealistic portrait of a friendly smiling person wearing modern casual attire in a sunlit contemporary studio, natural golden hour lighting, sharp focus, ultra-detailed 8k photography';
   }
 
-  // If the prompt mentions a human/person briefly without artistic scene context, frame it safely
+  // If already a rich, detailed prompt (e.g., from Gemini Prompt Enhancer), preserve its photographic/architectural realism intact
+  const wordCount = text.split(/\s+/).length;
+  if (wordCount >= 12) {
+    return `${text}, sharp focus, ultra-HD 8k detail`;
+  }
+
+  // If the prompt mentions a human/person briefly without scene context, frame it photorealistically
   const hasHumanNoun = /\b(human|person|people|man|woman|boy|girl|child|student|teacher|doctor|astronaut|face|portrait)\b/i.test(
     text
   );
-  if (hasHumanNoun && text.split(/\s+/).length <= 5) {
-    return `Artistic portrait of a friendly ${text} in wholesome modern attire, bright sunlit studio background, warm natural lighting, ultra detailed, digital illustration, family-friendly`;
+  if (hasHumanNoun && wordCount <= 6) {
+    return `Photorealistic studio portrait of a friendly ${text} in stylish modern attire, warm natural sunlight, crisp textures, shallow depth of field, ultra-detailed 8k`;
   }
 
-  const hasStyleWords = /\b(illustration|digital art|painting|photorealistic|studio|lighting|detailed|cinematic|wholesome)\b/i.test(
-    text
-  );
-  if (hasStyleWords) {
-    return `${text}, wholesome family-friendly digital artwork, crisp focus, balanced warm lighting`;
-  }
-
-  return `${text}, vivid artistic digital illustration, warm natural lighting, ultra detailed, crisp focus, wholesome family-friendly composition`;
+  return `${text}, photorealistic ultra-detailed 8k resolution, natural cinematic lighting, crisp textures, sharp focus`;
 }
 
 function buildProceduralFallbackSvg(title: string, width: number, height: number): string {
@@ -1249,13 +1409,13 @@ async function tryPollinationsImage(params: {
   const seed = Math.floor(Math.random() * 100000);
   const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(
     params.safePrompt
-  )}?width=${params.width}&height=${params.height}&nologo=true&seed=${seed}`;
+  )}?model=flux&width=${params.width}&height=${params.height}&enhance=true&nologo=true&seed=${seed}`;
 
-  params.onStatus?.('Generating HD image...');
+  params.onStatus?.(`Generating ${params.width}×${params.height} Ultra-HD Flux image...`);
 
   try {
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 24000);
+    const timeoutId = window.setTimeout(() => controller.abort(), 32000);
     try {
       const resp = await fetch(url, { mode: 'cors', signal: controller.signal });
       if (!resp.ok) {
@@ -1280,7 +1440,10 @@ async function tryPollinationsImage(params: {
     } finally {
       window.clearTimeout(timeoutId);
     }
-  } catch {
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      return { ok: false, reason: 'Primary Flux server timed out' };
+    }
     // Even if CORS blob verification fails, direct URL can still render cleanly in <img>
     return { ok: true, imageUrl: url };
   }
@@ -1417,18 +1580,50 @@ export async function translatePromptToDetailedEnglish(params: {
   hasServerGeminiKey: boolean;
 }): Promise<{ detailedPrompt: string; shortTitle: string }> {
   const cleaned = params.rawPrompt.trim();
+
+  // 1. Prefer Gemini API Step-1 Prompt Enhancer via backend endpoint
+  if (params.hasBackendApi || params.hasServerGeminiKey) {
+    try {
+      const localKey = loadCustomApiKey().trim();
+      const clientGeminiKey = localKey.startsWith('AIza') ? localKey : getEnvGeminiKey();
+      const resp = await fetch('/api/detect-image-intent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: cleaned,
+          forceImage: true,
+          apiKey: clientGeminiKey || undefined,
+        }),
+      });
+      if (resp.ok) {
+        const data = (await resp.json()) as {
+          shortTitle?: string;
+          enhancedPrompt?: string;
+        };
+        if (data.enhancedPrompt && data.enhancedPrompt.trim().length > 4) {
+          return {
+            shortTitle: (data.shortTitle || cleaned).slice(0, 56),
+            detailedPrompt: buildSafeArtisticPrompt(data.enhancedPrompt.trim()),
+          };
+        }
+      }
+    } catch {
+      // Fall through to generic text enhancer below
+    }
+  }
+
   const translated = await runQuickTextCompletion({
     systemPrompt: [
-      'You are an expert, family-friendly visual prompt enhancer.',
-      'Convert ANY user request from ANY language (English, Urdu, Roman Urdu, Hindi, Arabic, Spanish, etc.) into a safe, wholesome, vivid, artistic English description (under 40 words).',
-      'If the input is short or ambiguous (like "make pic of human", "person", "girl", "boy"), expand it into a warm, friendly artistic portrait (e.g., "Portrait of a friendly smiling person wearing modern casual attire in a sunlit studio, ultra detailed, digital illustration").',
-      'Strip command words like "pic banao", "generate image", "draw me". Never include unsafe, explicit, or violent terms.',
-      'Return ONLY JSON: {"title":"short 3-6 word title","detailedPrompt":"safe vivid artistic English prompt"}',
+      'You are an expert, family-friendly AI visual prompt engineer.',
+      'Convert ANY user request from ANY language (English, Urdu, Roman Urdu like "pic bna do", "tasveer banao", "naksha banao", Hindi, Arabic, Spanish, etc.) into a highly detailed, professional English image-generation prompt (35-65 words).',
+      'Include realistic studio or natural lighting, authentic textures, architectural or environmental details, camera depth, and photorealistic/cinematic style.',
+      'Strip command words like "pic bna do", "tasveer banao", "naksha banao", "generate image", "draw me". Never include unsafe, explicit, or violent terms.',
+      'Return ONLY JSON: {"title":"short 3-6 word title","detailedPrompt":"detailed photorealistic English prompt"}',
     ].join(' '),
     userPrompt: cleaned,
     hasBackendApi: params.hasBackendApi,
     hasServerGeminiKey: params.hasServerGeminiKey,
-    maxTokens: 220,
+    maxTokens: 260,
   });
 
   if (translated) {
@@ -1455,14 +1650,14 @@ export async function translatePromptToDetailedEnglish(params: {
   const safePrompt = buildSafeArtisticPrompt(cleaned);
   const titleCandidate = cleaned
     .replace(
-      /\b(create|generate|make|draw|paint|sketch|render|show|please|kindly|me|a|an|pic|picture|tasveer|tasweer|photo|image|banao|bana do|banado|dikhao|chahiye)\b/gi,
+      /\b(create|generate|make|draw|paint|sketch|render|show|please|kindly|me|mujy|mujhe|a|an|ek|aik|pic|picture|tasveer|tasweer|photo|image|banao|bnao|bna\s*do|bana\s*do|banado|dikhao|chahiye)\b/gi,
       ' '
     )
     .replace(/\s+/g, ' ')
     .trim();
 
   return {
-    shortTitle: (titleCandidate || 'HD AI Artwork').slice(0, 52),
+    shortTitle: (titleCandidate || 'Ultra-HD AI Artwork').slice(0, 52),
     detailedPrompt: safePrompt,
   };
 }
@@ -1545,6 +1740,7 @@ export async function generateArtworkUnified(params: {
   language?: string;
   hasBackendApi: boolean;
   hasServerGeminiKey: boolean;
+  preEnhanced?: { detailedPrompt: string; shortTitle: string };
   onStatus?: (msg: string) => void;
 }): Promise<{
   title: string;
@@ -1559,17 +1755,20 @@ export async function generateArtworkUnified(params: {
 }> {
   const dims =
     params.aspectRatio === '16:9'
-      ? { w: 896, h: 504 }
+      ? { w: 1280, h: 720 }
       : params.aspectRatio === '4:3'
-        ? { w: 768, h: 576 }
-        : { w: 768, h: 768 };
+        ? { w: 1024, h: 768 }
+        : { w: 1024, h: 1024 };
 
-  params.onStatus?.('Enhancing prompt into safe artistic English...');
-  const { detailedPrompt, shortTitle } = await translatePromptToDetailedEnglish({
-    rawPrompt: params.prompt,
-    hasBackendApi: params.hasBackendApi,
-    hasServerGeminiKey: params.hasServerGeminiKey,
-  });
+  params.onStatus?.('Enhancing prompt with Gemini AI...');
+  const { detailedPrompt, shortTitle } =
+    params.preEnhanced?.detailedPrompt
+      ? params.preEnhanced
+      : await translatePromptToDetailedEnglish({
+          rawPrompt: params.prompt,
+          hasBackendApi: params.hasBackendApi,
+          hasServerGeminiKey: params.hasServerGeminiKey,
+        });
 
   const resolved = await resolveImageWithFallback({
     safePrompt: detailedPrompt,
@@ -1583,7 +1782,7 @@ export async function generateArtworkUnified(params: {
   });
 
   return {
-    title: shortTitle || 'HD AI Artwork',
+    title: shortTitle || 'Ultra-HD AI Artwork',
     description: detailedPrompt,
     detailedPrompt,
     imageUrl: resolved.imageUrl,
