@@ -1,5 +1,93 @@
 import { getBcp47ForLanguage } from '../constants';
-import { ClonedVoiceProfile, VoicePresetId, VoiceStudioSettings } from '../types';
+import {
+  ClonedVoiceLanguage,
+  ClonedVoiceProfile,
+  VoiceAccentToneId,
+  VoiceGenderChoice,
+  VoicePresetId,
+  VoiceStudioSettings,
+} from '../types';
+import { loadUserSettings } from './storage';
+
+export const SAFE_PITCH_MIN = 0.82;
+export const SAFE_PITCH_MAX = 1.22;
+export const SAFE_RATE_MIN = 0.82;
+export const SAFE_RATE_MAX = 1.22;
+
+export const CLONED_VOICE_LANGUAGES: Array<{
+  code: ClonedVoiceLanguage;
+  label: string;
+  native: string;
+  bcp47: string;
+}> = [
+  { code: 'Urdu', label: 'Urdu', native: 'اردو', bcp47: 'ur-PK' },
+  { code: 'English', label: 'English', native: 'English', bcp47: 'en-US' },
+  { code: 'Hindi', label: 'Hindi', native: 'हिन्दी', bcp47: 'hi-IN' },
+  { code: 'Arabic', label: 'Arabic', native: 'العربية', bcp47: 'ar-SA' },
+  { code: 'Spanish', label: 'Spanish', native: 'Español', bcp47: 'es-ES' },
+];
+
+export interface VoiceAccentToneOption {
+  id: VoiceAccentToneId;
+  label: string;
+  shortLabel: string;
+  lahjaNote: string;
+  pitchFactor: number;
+  rateFactor: number;
+  genderPreference?: 'male' | 'female';
+}
+
+export const VOICE_ACCENT_TONES: VoiceAccentToneOption[] = [
+  {
+    id: 'pakistani-south-asian',
+    label: 'Pakistani / South Asian Accent',
+    shortLabel: 'Pakistani / South Asian',
+    lahjaNote: 'Warm Pakistani & South Asian conversational lahja',
+    pitchFactor: 0.99,
+    rateFactor: 0.96,
+  },
+  {
+    id: 'american',
+    label: 'American Accent',
+    shortLabel: 'American',
+    lahjaNote: 'Crisp modern US English cadence & pronunciation',
+    pitchFactor: 1.0,
+    rateFactor: 1.0,
+  },
+  {
+    id: 'british',
+    label: 'British Accent',
+    shortLabel: 'British',
+    lahjaNote: 'Refined UK RP cadence & articulate delivery',
+    pitchFactor: 0.98,
+    rateFactor: 0.97,
+  },
+  {
+    id: 'natural-friendly',
+    label: 'Natural Friendly Tone',
+    shortLabel: 'Natural Friendly',
+    lahjaNote: 'Polite, expressive, everyday friendly tone',
+    pitchFactor: 1.03,
+    rateFactor: 0.99,
+  },
+  {
+    id: 'deep-serious',
+    label: 'Deep & Serious',
+    shortLabel: 'Deep & Serious',
+    lahjaNote: 'Calm, grounded baritone depth with steady pacing',
+    pitchFactor: 0.88,
+    rateFactor: 0.92,
+    genderPreference: 'male',
+  },
+  {
+    id: 'news-anchor',
+    label: 'News Anchor Style',
+    shortLabel: 'News Anchor',
+    lahjaNote: 'Clear broadcast authority & balanced studio rhythm',
+    pitchFactor: 0.95,
+    rateFactor: 1.04,
+  },
+];
 
 export interface VoicePresetMeta {
   id: Exclude<VoicePresetId, 'cloned'>;
@@ -19,13 +107,13 @@ export const VOICE_PRESETS: VoicePresetMeta[] = [
     pitch: 1.0,
     rate: 1.0,
     genderHint: 'neutral',
-    previewLine: 'Hello! I am Roosters AI, ready to help you learn step by step.',
+    previewLine: 'Hello! I am Roosters AI, ready to help you clearly step by step.',
   },
   {
     id: 'deep-male',
     label: 'Deep Male Mentor',
     tagline: 'Grounded baritone timbre with calm, reassuring delivery',
-    pitch: 0.78,
+    pitch: 0.86,
     rate: 0.94,
     genderHint: 'male',
     previewLine: 'Welcome back. Let us break down this concept clearly and calmly.',
@@ -34,8 +122,8 @@ export const VOICE_PRESETS: VoicePresetMeta[] = [
     id: 'warm-female',
     label: 'Warm Female Tutor',
     tagline: 'Gentle, encouraging tone ideal for study & explanations',
-    pitch: 1.15,
-    rate: 0.99,
+    pitch: 1.1,
+    rate: 0.98,
     genderHint: 'female',
     previewLine: 'You are doing wonderfully! Let us walk through the next example together.',
   },
@@ -43,8 +131,8 @@ export const VOICE_PRESETS: VoicePresetMeta[] = [
     id: 'energetic-youth',
     label: 'Energetic Youth',
     tagline: 'Bright, upbeat pace for quick coding & brainstorms',
-    pitch: 1.18,
-    rate: 1.12,
+    pitch: 1.12,
+    rate: 1.08,
     genderHint: 'neutral',
     previewLine: 'Awesome idea! Here is the fastest way to build and test this project.',
   },
@@ -52,7 +140,7 @@ export const VOICE_PRESETS: VoicePresetMeta[] = [
     id: 'news-anchor',
     label: 'News Anchor',
     tagline: 'Crisp studio articulation and authoritative broadcast cadence',
-    pitch: 0.92,
+    pitch: 0.94,
     rate: 1.04,
     genderHint: 'male',
     previewLine: 'Good day. Here is a clear executive summary of your topic.',
@@ -63,9 +151,100 @@ function clamp(min: number, max: number, val: number): number {
   return Math.max(min, Math.min(max, val));
 }
 
+export function normalizeClonedVoiceLanguage(raw?: string): ClonedVoiceLanguage {
+  if (
+    raw === 'Urdu' ||
+    raw === 'English' ||
+    raw === 'Hindi' ||
+    raw === 'Arabic' ||
+    raw === 'Spanish'
+  ) {
+    return raw;
+  }
+  if (raw === 'Roman Urdu') return 'Urdu';
+  return 'English';
+}
+
+export function getAccentToneMeta(id?: VoiceAccentToneId): VoiceAccentToneOption {
+  return VOICE_ACCENT_TONES.find((a) => a.id === id) ?? VOICE_ACCENT_TONES[3];
+}
+
+export function resolveBcp47ForVoice(
+  language?: string,
+  accentTone?: VoiceAccentToneId
+): string {
+  const normalizedLang = language?.trim() || 'English';
+
+  if (normalizedLang === 'English') {
+    if (accentTone === 'british') return 'en-GB';
+    if (accentTone === 'pakistani-south-asian') return 'en-IN';
+    return 'en-US';
+  }
+  if (normalizedLang === 'Urdu' || normalizedLang === 'Roman Urdu') {
+    return 'ur-PK';
+  }
+  if (normalizedLang === 'Hindi') {
+    return 'hi-IN';
+  }
+  if (normalizedLang === 'Arabic') {
+    return 'ar-SA';
+  }
+  if (normalizedLang === 'Spanish') {
+    return accentTone === 'american' ? 'es-US' : 'es-ES';
+  }
+  return getBcp47ForLanguage(normalizedLang);
+}
+
+export function getSamplePreviewText(
+  language: ClonedVoiceLanguage,
+  accentTone: VoiceAccentToneId,
+  profileName: string
+): string {
+  const accentLabel = getAccentToneMeta(accentTone).shortLabel;
+  switch (language) {
+    case 'Urdu':
+      return `Assalam-o-Alaikum! Main ${profileName} hoon, aur ab main ${accentLabel} lahjay mein bilkul saaf bol raha hoon.`;
+    case 'Hindi':
+      return `Namaste! Main ${profileName} hoon, aur ab main ${accentLabel} style mein bilkul saaf bol raha hoon.`;
+    case 'Arabic':
+      return `Marhaban! Ana ${profileName}, atahaddathu al-aan bi-nibratin wadihatin wa tabi-iyyah.`;
+    case 'Spanish':
+      return `Hola! Soy ${profileName}, hablando ahora con una entonacion clara y natural.`;
+    case 'English':
+    default:
+      if (accentTone === 'british') {
+        return `Good day! This is ${profileName}, speaking clearly in a refined British tone.`;
+      }
+      if (accentTone === 'pakistani-south-asian') {
+        return `Assalam-o-Alaikum and hello! This is ${profileName}, calibrated in a warm South Asian tone.`;
+      }
+      return `Hello! This is ${profileName}, calibrated clearly with a ${accentLabel.toLowerCase()} voice.`;
+  }
+}
+
+export function getClonedVoiceLiveTalkInstruction(profile: ClonedVoiceProfile): string {
+  const lang = normalizeClonedVoiceLanguage(profile.language);
+  const accent = getAccentToneMeta(profile.accentTone);
+  const parts: string[] = [
+    `Voice Persona Active ("${profile.name}"):`,
+    `Primary spoken language preference: ${lang}.`,
+    `Speaking tone & accent (lahja): ${accent.label} (${accent.lahjaNote}).`,
+  ];
+  if (lang === 'Urdu' && accent.id === 'pakistani-south-asian') {
+    parts.push('Use natural conversational Pakistani Urdu or Roman Urdu phrasing suitable for spoken voice.');
+  } else if (accent.id === 'british') {
+    parts.push('Use polite, natural British English phrasing.');
+  } else if (accent.id === 'deep-serious') {
+    parts.push('Keep sentences concise, calm, and thoughtful.');
+  } else if (accent.id === 'news-anchor') {
+    parts.push('Keep delivery crisp, structured, and broadcast-ready.');
+  }
+  return parts.join(' ');
+}
+
 function estimateFundamentalHz(samples: Float32Array, sampleRate: number): number {
-  const minHz = 75;
-  const maxHz = 330;
+  const minHz = 80;
+  const maxHz = 310;
   const minLag = Math.floor(sampleRate / maxHz);
   const maxLag = Math.floor(sampleRate / minHz);
   const frameSize = Math.min(2048, Math.floor(sampleRate * 0.045));
@@ -105,7 +284,7 @@ function estimateFundamentalHz(samples: Float32Array, sampleRate: number): numbe
       }
     }
 
-    if (bestLag > 0 && bestCorr > 0.32) {
+    if (bestLag > 0 && bestCorr > 0.34) {
       f0Estimates.push(sampleRate / bestLag);
     }
   }
@@ -119,7 +298,6 @@ function estimateSpeakingRateAndBrightness(
   samples: Float32Array,
   sampleRate: number
 ): { rate: number; brightness: number } {
-  // Zero-crossing ratio approximates vocal spectral brightness
   let zeroCrossings = 0;
   const sampleLimit = Math.min(samples.length, sampleRate * 8);
   for (let i = 1; i < sampleLimit; i++) {
@@ -128,9 +306,8 @@ function estimateSpeakingRateAndBrightness(
     }
   }
   const zcrPerSec = sampleLimit > 0 ? zeroCrossings / (sampleLimit / sampleRate) : 1200;
-  const brightness = clamp(0, 1, (zcrPerSec - 400) / 2800);
+  const brightness = clamp(0.1, 0.95, (zcrPerSec - 400) / 2800);
 
-  // Energy envelope syllable bursts every 25ms
   const hop = Math.max(1, Math.floor(sampleRate * 0.025));
   const energies: number[] = [];
   for (let i = 0; i + hop < sampleLimit; i += hop) {
@@ -156,8 +333,8 @@ function estimateSpeakingRateAndBrightness(
 
   const durSec = Math.max(1, sampleLimit / sampleRate);
   const peaksPerSec = peaks / durSec;
-  // Normal speaking ~ 2.5 - 4.5 syllable peaks/sec -> map to [0.90, 1.15]
-  const rate = Number(clamp(0.88, 1.16, 0.86 + (peaksPerSec / 6.5) * 0.28).toFixed(2));
+  // Natural speech speed window [0.90 .. 1.12] to avoid rushed or sluggish distortion
+  const rate = Number(clamp(0.9, 1.12, 0.91 + (peaksPerSec / 6.5) * 0.19).toFixed(2));
   return { rate, brightness: Number(brightness.toFixed(2)) };
 }
 
@@ -174,8 +351,8 @@ export function estimateFramePitchHz(
   samples: Float32Array<ArrayBufferLike>,
   sampleRate: number
 ): number | null {
-  const minHz = 75;
-  const maxHz = 340;
+  const minHz = 80;
+  const maxHz = 310;
   const minLag = Math.floor(sampleRate / maxHz);
   const maxLag = Math.min(samples.length - 1, Math.floor(sampleRate / minHz));
   if (samples.length < maxLag + 64) return null;
@@ -220,7 +397,8 @@ export interface AnalyzeVoiceOptions {
   liveBrightness?: number | null;
   liveRate?: number | null;
   profileName?: string;
-  language?: string;
+  language?: ClonedVoiceLanguage;
+  accentTone?: VoiceAccentToneId;
 }
 
 export async function analyzeVoiceAudioBlob(
@@ -230,11 +408,15 @@ export async function analyzeVoiceAudioBlob(
   const opts: AnalyzeVoiceOptions =
     typeof options === 'number' ? { measuredDurationSec: options } : options;
 
-  const sampleDataUrl = blob.size <= 1_500_000 ? await blobToDataUrl(blob) : undefined;
+  const selectedLanguage = normalizeClonedVoiceLanguage(opts.language);
+  const selectedAccent: VoiceAccentToneId = opts.accentTone ?? 'natural-friendly';
+  const sampleDataUrl = blob.size <= 1_200_000 ? await blobToDataUrl(blob) : undefined;
 
   let fundamentalHz = opts.liveMedianHz && opts.liveMedianHz >= 75 ? opts.liveMedianHz : 152;
   let rate =
-    typeof opts.liveRate === 'number' ? Number(clamp(0.7, 1.4, opts.liveRate).toFixed(2)) : 1.0;
+    typeof opts.liveRate === 'number'
+      ? Number(clamp(0.86, 1.14, opts.liveRate).toFixed(2))
+      : 1.0;
   let brightness =
     typeof opts.liveBrightness === 'number' ? clamp(0.1, 0.95, opts.liveBrightness) : 0.45;
   let durationSec = opts.measuredDurationSec ?? 5;
@@ -256,14 +438,14 @@ export async function analyzeVoiceAudioBlob(
           decodedPitchSuccess = true;
           fundamentalHz =
             opts.liveMedianHz && opts.liveMedianHz >= 75
-              ? Math.round((decodedF0 * 0.65) + (opts.liveMedianHz * 0.35))
+              ? Math.round(decodedF0 * 0.65 + opts.liveMedianHz * 0.35)
               : decodedF0;
         }
         const metrics = estimateSpeakingRateAndBrightness(channelData, audioBuffer.sampleRate);
         rate =
           typeof opts.liveRate === 'number'
-            ? Number(clamp(0.7, 1.4, (metrics.rate + opts.liveRate) / 2).toFixed(2))
-            : Number(clamp(0.7, 1.4, metrics.rate).toFixed(2));
+            ? Number(clamp(0.86, 1.14, (metrics.rate + opts.liveRate) / 2).toFixed(2))
+            : Number(clamp(0.86, 1.14, metrics.rate).toFixed(2));
         brightness =
           typeof opts.liveBrightness === 'number'
             ? Number(((metrics.brightness + opts.liveBrightness) / 2).toFixed(2))
@@ -280,8 +462,8 @@ export async function analyzeVoiceAudioBlob(
     fundamentalHz = Math.round(opts.liveMedianHz);
   }
 
-  // Map F0 (Hz) relative to neutral 155 Hz into calibration range [0.5 .. 1.8]
-  const pitch = Number(clamp(0.5, 1.8, fundamentalHz / 155).toFixed(2));
+  // Gentle natural pitch mapping [0.86 .. 1.16] prevents robotic formant artifacts
+  const pitch = Number(clamp(0.86, 1.16, 0.86 + ((fundamentalHz - 85) / 180) * 0.28).toFixed(2));
   const genderHint: 'male' | 'female' | 'neutral' =
     fundamentalHz < 148 ? 'male' : fundamentalHz > 180 ? 'female' : 'neutral';
 
@@ -301,107 +483,172 @@ export async function analyzeVoiceAudioBlob(
   let preferredVoiceURI: string | undefined;
   if (isSpeechSynthesisSupported()) {
     const voices = window.speechSynthesis.getVoices?.() ?? [];
-    const matched = pickSpeechVoice(
-      voices,
-      getBcp47ForLanguage(opts.language || 'Auto-Detect'),
-      genderHint
-    );
+    const targetBcp47 = resolveBcp47ForVoice(selectedLanguage, selectedAccent);
+    const matched = pickSpeechVoice(voices, targetBcp47, genderHint, undefined, selectedAccent);
     preferredVoiceURI = matched?.voiceURI;
   }
 
   return {
     id: `sample_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    name: opts.profileName?.trim() || 'Sample Voice 1',
+    name: opts.profileName?.trim() || 'Custom Voice 1',
     createdAt: Date.now(),
     durationSec,
     fundamentalHz,
     pitch,
-    rate: Number(clamp(0.7, 1.4, rate).toFixed(2)),
+    rate: Number(clamp(SAFE_RATE_MIN, SAFE_RATE_MAX, rate).toFixed(2)),
     spectralBrightness: brightness,
     genderHint,
     timbreLabel,
+    language: selectedLanguage,
+    accentTone: selectedAccent,
     preferredVoiceURI,
     sampleDataUrl,
   };
 }
 
-export function getResolvedVoiceParameters(settings: VoiceStudioSettings): {
+export function getResolvedVoiceParameters(
+  settings: VoiceStudioSettings,
+  preferredGender?: VoiceGenderChoice
+): {
   label: string;
   voiceName: string;
   pitch: number;
   rate: number;
   genderHint: 'male' | 'female' | 'neutral';
+  language?: ClonedVoiceLanguage;
+  accentTone?: VoiceAccentToneId;
   preferredVoiceURI?: string;
 } {
   if (settings.activeVoiceId === 'cloned' && settings.clonedProfile) {
+    const profile = settings.clonedProfile;
+    const accent = getAccentToneMeta(profile.accentTone);
+    const lang = normalizeClonedVoiceLanguage(profile.language);
+    const finalPitch = Number(clamp(SAFE_PITCH_MIN, SAFE_PITCH_MAX, profile.pitch * accent.pitchFactor).toFixed(2));
+    const finalRate = Number(clamp(SAFE_RATE_MIN, SAFE_RATE_MAX, profile.rate * accent.rateFactor).toFixed(2));
+    const effectiveGender = accent.genderPreference ?? profile.genderHint;
+
     return {
-      label: `${settings.clonedProfile.name} (${settings.clonedProfile.timbreLabel})`,
-      voiceName: settings.clonedProfile.name,
-      pitch: clamp(0.5, 1.8, settings.clonedProfile.pitch),
-      rate: clamp(0.7, 1.4, settings.clonedProfile.rate),
-      genderHint: settings.clonedProfile.genderHint,
-      preferredVoiceURI: settings.clonedProfile.preferredVoiceURI,
+      label: `${profile.name} (${lang} · ${accent.shortLabel})`,
+      voiceName: profile.name,
+      pitch: finalPitch,
+      rate: finalRate,
+      genderHint: effectiveGender,
+      language: lang,
+      accentTone: accent.id,
+      preferredVoiceURI: profile.preferredVoiceURI,
     };
   }
 
   const preset = VOICE_PRESETS.find((p) => p.id === settings.activeVoiceId) ?? VOICE_PRESETS[0];
+  let genderHint = preset.genderHint;
+  let pitch = preset.pitch;
+  if (preferredGender === 'male') {
+    genderHint = 'male';
+    if (preset.id === 'default') pitch = 0.9;
+  } else if (preferredGender === 'female') {
+    genderHint = 'female';
+    if (preset.id === 'default') pitch = 1.08;
+  }
+
   return {
     label: preset.label,
     voiceName: preset.label,
-    pitch: preset.pitch,
-    rate: preset.rate,
-    genderHint: preset.genderHint,
+    pitch: clamp(SAFE_PITCH_MIN, SAFE_PITCH_MAX, pitch),
+    rate: clamp(SAFE_RATE_MIN, SAFE_RATE_MAX, preset.rate),
+    genderHint,
   };
 }
 
-export function getAvailableSpeechVoices(language: string): SpeechSynthesisVoice[] {
+export function getAvailableSpeechVoices(
+  language: string,
+  accentTone?: VoiceAccentToneId
+): SpeechSynthesisVoice[] {
   if (!isSpeechSynthesisSupported()) return [];
   const voices = window.speechSynthesis.getVoices?.() ?? [];
   if (voices.length === 0) return [];
-  const bcp47 = getBcp47ForLanguage(language);
+  const bcp47 = resolveBcp47ForVoice(language, accentTone);
   const langPrefix = bcp47.split('-')[0].toLowerCase();
-  const sameLang = voices.filter((v) => v.lang.toLowerCase().startsWith(langPrefix));
+  const sameExact = voices.filter((v) => v.lang.toLowerCase() === bcp47.toLowerCase());
+  const samePrefix = voices.filter(
+    (v) => v.lang.toLowerCase().startsWith(langPrefix) && v.lang.toLowerCase() !== bcp47.toLowerCase()
+  );
   const others = voices.filter((v) => !v.lang.toLowerCase().startsWith(langPrefix));
-  return [...sameLang, ...others];
+  return [...sameExact, ...samePrefix, ...others];
 }
 
 export function pickSpeechVoice(
   voices: SpeechSynthesisVoice[],
   bcp47Lang: string,
   genderHint: 'male' | 'female' | 'neutral',
-  preferredVoiceURI?: string
+  preferredVoiceURI?: string,
+  accentTone?: VoiceAccentToneId
 ): SpeechSynthesisVoice | null {
   if (!voices || voices.length === 0) return null;
 
+  const langPrefix = bcp47Lang.split('-')[0].toLowerCase();
+
   if (preferredVoiceURI) {
     const exactMatch = voices.find((v) => v.voiceURI === preferredVoiceURI);
-    if (exactMatch) return exactMatch;
+    // Only reuse preferredVoiceURI if its language family matches target language
+    if (exactMatch && exactMatch.lang.toLowerCase().startsWith(langPrefix)) {
+      return exactMatch;
+    }
   }
 
-  const langPrefix = bcp47Lang.split('-')[0].toLowerCase();
-  const langMatches = voices.filter((v) => v.lang.toLowerCase().startsWith(langPrefix));
+  let langMatches = voices.filter((v) => v.lang.toLowerCase().startsWith(langPrefix));
+  // If Urdu TTS voice pack isn't installed on device, gracefully try Hindi/South Asian English before generic fallback
+  if (langMatches.length === 0 && langPrefix === 'ur') {
+    langMatches = voices.filter(
+      (v) =>
+        v.lang.toLowerCase().startsWith('hi') ||
+        v.lang.toLowerCase() === 'en-in' ||
+        /(urdu|hindi|pakistan|india|heera|ravi|neerja|prabhat)/i.test(v.name)
+    );
+  }
   const pool = langMatches.length > 0 ? langMatches : voices;
 
-  const maleKeywords = /(male|david|mark|daniel|george|alex|guy|christopher|ryan|arthur|liam|james|arjun|rishi|prabhat)/i;
-  const femaleKeywords = /(female|samantha|victoria|karen|zira|aria|jenny|sonia|libby|sara|emma|olivia|priya|fatima|neerja|google uk english female)/i;
+  const maleKeywords = /(male|david|mark|daniel|george|alex|guy|christopher|ryan|arthur|liam|james|arjun|rishi|prabhat|ravi|asad|salman|maged|tarik)/i;
+  const femaleKeywords = /(female|samantha|victoria|karen|zira|aria|jenny|sonia|libby|sara|emma|olivia|priya|fatima|neerja|heera|uzma|leila|monica|paulina|google uk english female)/i;
   const qualityKeywords = /(natural|neural|online|google|microsoft|enhanced|premium)/i;
 
   let bestVoice: SpeechSynthesisVoice | null = null;
-  let bestScore = -1;
+  let bestScore = -999;
 
   for (const voice of pool) {
     let score = 0;
-    if (voice.lang.toLowerCase() === bcp47Lang.toLowerCase()) score += 10;
-    else if (voice.lang.toLowerCase().startsWith(langPrefix)) score += 6;
+    const vLang = voice.lang.toLowerCase();
+    const vName = voice.name;
 
-    if (qualityKeywords.test(voice.name)) score += 5;
+    if (vLang === bcp47Lang.toLowerCase()) score += 16;
+    else if (vLang.startsWith(langPrefix)) score += 9;
+
+    if (qualityKeywords.test(vName)) score += 6;
+
+    // Accent-specific scoring
+    if (accentTone === 'pakistani-south-asian') {
+      if (/(ur-pk|ur-in|hi-in|en-in|en-pk)/i.test(vLang) || /(pakistan|urdu|india|hindi|heera|ravi|neerja|prabhat|uzma|asad|lekha|veena|rishi)/i.test(vName)) {
+        score += 18;
+      }
+    } else if (accentTone === 'british') {
+      if (vLang === 'en-gb' || /(uk|british|england|daniel|sonia|libby|george|kate|hazel|serena)/i.test(vName)) {
+        score += 18;
+      }
+    } else if (accentTone === 'american') {
+      if (vLang === 'en-us' || vLang === 'es-us' || /(united states|us english|samantha|alex|aria|jenny|guy|david|zira|mark)/i.test(vName)) {
+        score += 18;
+      }
+    } else if (accentTone === 'deep-serious') {
+      if (maleKeywords.test(vName)) score += 14;
+    } else if (accentTone === 'news-anchor') {
+      if (/(natural|neural|online|daniel|aria|jenny|guy|mark|george|ravi)/i.test(vName)) score += 10;
+    }
 
     if (genderHint === 'male') {
-      if (maleKeywords.test(voice.name)) score += 14;
-      if (femaleKeywords.test(voice.name)) score -= 8;
+      if (maleKeywords.test(vName)) score += 12;
+      if (femaleKeywords.test(vName)) score -= 8;
     } else if (genderHint === 'female') {
-      if (femaleKeywords.test(voice.name)) score += 14;
-      if (maleKeywords.test(voice.name)) score -= 8;
+      if (femaleKeywords.test(vName)) score += 12;
+      if (maleKeywords.test(vName)) score -= 8;
     }
 
     if (voice.default && genderHint === 'neutral') score += 2;
@@ -427,8 +674,7 @@ export function isSpeechSynthesisSupported(): boolean {
 export function estimateSpeechDurationSec(rawText: string, rate = 1.0): number {
   const words = rawText.trim().split(/\s+/).filter(Boolean).length;
   if (words === 0) return 1;
-  // Average ~2.5 words/sec at rate 1.0
-  const sec = words / (2.5 * clamp(0.7, 1.4, rate));
+  const sec = words / (2.5 * clamp(SAFE_RATE_MIN, SAFE_RATE_MAX, rate));
   return Math.max(1, Math.round(sec));
 }
 
@@ -436,8 +682,8 @@ export function unlockSpeechSynthesis(): void {
   if (!isSpeechSynthesisSupported()) return;
   try {
     window.speechSynthesis.getVoices?.();
-    if (!window.speechSynthesis.speaking) {
-      const prime = new SpeechSynthesisUtterance('');
+    if (!window.speechSynthesis.speaking && !window.speechSynthesis.pending) {
+      const prime = new SpeechSynthesisUtterance(' ');
       prime.volume = 0;
       window.speechSynthesis.speak(prime);
       window.speechSynthesis.cancel();
@@ -447,14 +693,69 @@ export function unlockSpeechSynthesis(): void {
   }
 }
 
+function splitIntoNaturalSpeechChunks(text: string, maxLen = 210): string[] {
+  const normalized = text
+    .replace(/[*_`#>~]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return [];
+  if (normalized.length <= maxLen) return [normalized];
+
+  const sentences = normalized.split(/(?<=[.!?۔؟\n])\s+/);
+  const chunks: string[] = [];
+  let current = '';
+
+  for (const sentence of sentences) {
+    if (!sentence.trim()) continue;
+    if ((current ? `${current} ${sentence}` : sentence).length <= maxLen) {
+      current = current ? `${current} ${sentence}` : sentence;
+    } else {
+      if (current) chunks.push(current);
+      if (sentence.length <= maxLen) {
+        current = sentence;
+      } else {
+        // Split very long clause at commas or spaces
+        const words = sentence.split(/\s+/);
+        let sub = '';
+        for (const w of words) {
+          if ((sub ? `${sub} ${w}` : w).length <= maxLen) {
+            sub = sub ? `${sub} ${w}` : w;
+          } else {
+            if (sub) chunks.push(sub);
+            sub = w;
+          }
+        }
+        current = sub;
+      }
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+let activeSpeechToken = 0;
+
+export function cancelVoicePlayback(): void {
+  activeSpeechToken += 1;
+  if (!isSpeechSynthesisSupported()) return;
+  try {
+    window.speechSynthesis.cancel();
+  } catch {
+    // Ignore cancel errors
+  }
+}
+
 export function speakWithVoiceProfile(options: {
   text: string;
   language: string;
   voiceSettings: VoiceStudioSettings;
+  voiceGender?: VoiceGenderChoice;
   overrideParams?: {
     pitch: number;
     rate: number;
     genderHint: 'male' | 'female' | 'neutral';
+    language?: ClonedVoiceLanguage;
+    accentTone?: VoiceAccentToneId;
     preferredVoiceURI?: string;
   };
   speedMultiplier?: number;
@@ -475,39 +776,92 @@ export function speakWithVoiceProfile(options: {
   }
 
   if (options.cancelPrevious !== false) {
-    try {
-      window.speechSynthesis.cancel();
-    } catch {
-      // Ignore cancel errors
-    }
+    cancelVoicePlayback();
   }
 
-  try {
-    const bcp47 = getBcp47ForLanguage(options.language);
-    const resolved = options.overrideParams ?? getResolvedVoiceParameters(options.voiceSettings);
+  const myToken = activeSpeechToken;
 
-    const utterance = new SpeechSynthesisUtterance(trimmed);
-    utterance.lang = bcp47;
-    utterance.pitch = clamp(0.5, 1.8, resolved.pitch);
-    utterance.rate = clamp(0.65, 2.0, resolved.rate * (options.speedMultiplier ?? 1));
+  try {
+    const userPrefs = loadUserSettings();
+    const resolved =
+      options.overrideParams ??
+      getResolvedVoiceParameters(options.voiceSettings, options.voiceGender ?? userPrefs.voiceGender);
+
+    const effectiveAccent: VoiceAccentToneId | undefined =
+      options.overrideParams?.accentTone ??
+      ('accentTone' in resolved ? resolved.accentTone : undefined);
+
+    const effectiveLanguage =
+      options.overrideParams?.language ??
+      ('language' in resolved && resolved.language ? resolved.language : undefined) ??
+      options.language;
+
+    const accentMeta = effectiveAccent ? getAccentToneMeta(effectiveAccent) : null;
+    const bcp47 = resolveBcp47ForVoice(effectiveLanguage, effectiveAccent);
+
+    const accentPitchMultiplier =
+      options.overrideParams && accentMeta ? accentMeta.pitchFactor : 1.0;
+    const accentRateMultiplier =
+      options.overrideParams && accentMeta ? accentMeta.rateFactor : 1.0;
+
+    const effectiveSpeed = options.speedMultiplier ?? userPrefs.speechSpeed ?? 1.0;
+    const safePitch = clamp(SAFE_PITCH_MIN, SAFE_PITCH_MAX, resolved.pitch * accentPitchMultiplier);
+    const safeRate = clamp(
+      SAFE_RATE_MIN,
+      SAFE_RATE_MAX,
+      resolved.rate * accentRateMultiplier * (effectiveSpeed === 1.0 ? 1.0 : 0.92 + (effectiveSpeed - 1.0) * 0.6)
+    );
 
     const voices = window.speechSynthesis.getVoices?.() ?? [];
     const matchedVoice = pickSpeechVoice(
       voices,
       bcp47,
       resolved.genderHint,
-      resolved.preferredVoiceURI
+      resolved.preferredVoiceURI,
+      effectiveAccent
     );
-    if (matchedVoice) {
-      utterance.voice = matchedVoice;
+
+    const chunks = splitIntoNaturalSpeechChunks(trimmed);
+    if (chunks.length === 0) {
+      options.onEnd?.();
+      return null;
     }
 
-    utterance.onstart = () => options.onStart?.();
-    utterance.onend = () => options.onEnd?.();
-    utterance.onerror = () => options.onError?.();
+    let firstUtterance: SpeechSynthesisUtterance | null = null;
 
-    window.speechSynthesis.speak(utterance);
-    return utterance;
+    const speakChunkAt = (index: number) => {
+      if (myToken !== activeSpeechToken && options.cancelPrevious !== false) return;
+      if (index >= chunks.length) {
+        options.onEnd?.();
+        return;
+      }
+
+      const utterance = new SpeechSynthesisUtterance(chunks[index]);
+      utterance.lang = bcp47;
+      utterance.pitch = safePitch;
+      utterance.rate = safeRate;
+      if (matchedVoice) {
+        utterance.voice = matchedVoice;
+      }
+
+      if (index === 0) {
+        utterance.onstart = () => options.onStart?.();
+        firstUtterance = utterance;
+      }
+      utterance.onend = () => {
+        if (options.cancelPrevious !== false && myToken !== activeSpeechToken) return;
+        speakChunkAt(index + 1);
+      };
+      utterance.onerror = () => {
+        if (options.cancelPrevious !== false && myToken !== activeSpeechToken) return;
+        options.onError?.();
+      };
+
+      window.speechSynthesis.speak(utterance);
+    };
+
+    speakChunkAt(0);
+    return firstUtterance;
   } catch {
     options.onError?.();
     return null;

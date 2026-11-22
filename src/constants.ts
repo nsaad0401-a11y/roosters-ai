@@ -3,6 +3,7 @@ export const ROOSTERS_LOGO_SRC = '/assets/aistudio/image_786e4f86_9bf3030e.jpg';
 export const WORLD_LANGUAGES: Array<{ code: string; label: string; native: string; bcp47: string }> = [
   { code: 'Auto-Detect', label: 'Auto-Detect', native: 'All Languages', bcp47: 'en-US' },
   { code: 'English', label: 'English', native: 'English', bcp47: 'en-US' },
+  { code: 'Roman Urdu', label: 'Roman Urdu', native: 'Roman Urdu', bcp47: 'ur-PK' },
   { code: 'Urdu', label: 'Urdu', native: 'اردو', bcp47: 'ur-PK' },
   { code: 'Arabic', label: 'Arabic', native: 'العربية', bcp47: 'ar-SA' },
   { code: 'Hindi', label: 'Hindi', native: 'हिन्दी', bcp47: 'hi-IN' },

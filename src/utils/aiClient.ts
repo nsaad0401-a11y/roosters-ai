@@ -1,5 +1,5 @@
-import { loadCustomApiKey } from './storage';
-import { GeneratedVideo, VideoScene } from '../types';
+import { loadCustomApiKey, loadOwnerConfig, loadUserSettings } from './storage';
+import { GeneratedVideo, ResponseStyleMode, VideoScene } from '../types';
 
 export interface OutgoingAttachment {
   kind?: 'image' | 'file';
@@ -109,18 +109,51 @@ export function buildClientStudyTutorInstruction(options: {
   language?: string;
   userName?: string;
   isLiveVoice?: boolean;
+  responseStyle?: ResponseStyleMode;
+  customInstructions?: string;
+  globalSystemPrompt?: string;
 }): string {
-  const { language, userName, isLiveVoice } = options;
+  const userPrefs = loadUserSettings();
+  const ownerCfg = loadOwnerConfig();
+
+  const {
+    language,
+    userName,
+    isLiveVoice,
+    responseStyle = userPrefs.responseStyle || 'simple',
+    customInstructions = userPrefs.customInstructions,
+    globalSystemPrompt = ownerCfg.globalSystemPrompt,
+  } = options;
+
   const langRule =
     !language || language === 'Auto-Detect'
-      ? "Match the user's latest message language naturally (such as English, Urdu, or Roman Urdu)."
-      : `Reply fluently in ${language}.`;
+      ? "CRITICAL LANGUAGE & SCRIPT RULE: Match the user's exact language and script. If the user writes in Roman Urdu (Urdu written with English letters like 'kya haal hai', 'mujhe samjhao', 'aik insan moon pr'), you MUST reply in natural Roman Urdu using English letters — NEVER switch to Arabic/Urdu script unless the user explicitly asks for Urdu script or writes in Urdu script."
+      : language === 'Roman Urdu'
+        ? 'CRITICAL LANGUAGE & SCRIPT RULE: Reply fluently in natural Roman Urdu using English/Latin letters only (do NOT use Arabic/Urdu script).'
+        : `Reply fluently in ${language}.`;
 
-  const baseInstruction =
-    "You are Roosters AI, a helpful and polite AI assistant created by SandSoft. By default, always give clear, simple, direct, and concise answers in plain conversational language (matching the user's language, such as English, Urdu, or Roman Urdu). Do NOT add long headings, bulleted study notes, or practice questions unless the user explicitly asks for 'study notes', 'notes', 'questions', or a detailed explanation.";
+  const styleRule =
+    responseStyle === 'study'
+      ? 'Use Study & Exam Mode: explain clearly with structured headings, concise study notes, real-world examples, and 2–3 helpful practice questions at the end when teaching a concept.'
+      : responseStyle === 'detailed'
+        ? 'Use Detailed Mode: provide thorough, comprehensive, well-structured explanations with clear step-by-step examples.'
+        : "By default, always give clear, simple, direct, and concise answers in plain conversational language. Do NOT add long headings, bulleted study notes, or practice questions unless the user explicitly asks for 'study notes', 'notes', 'questions', or a detailed explanation.";
+
+  const baseInstruction = [
+    'You are Roosters AI, a helpful, polite educational, technical, and creative AI assistant created by SandSoft.',
+    'Always answer normal questions, coding queries, educational topics, creative prompts, and Roman Urdu messages directly and helpfully without unnecessary refusals.',
+    styleRule,
+  ].join(' ');
 
   const multimodalCore =
-    'You have full permission and ability to view, read, and analyze any photo, screenshot, or document uploaded by the user, including handwritten notes and images.';
+    'You have full permission and ability to view, read, and analyze any photo, screenshot, live camera frame, or document uploaded by the user, including handwritten notes and images.';
+
+  const globalExtra = globalSystemPrompt?.trim()
+    ? `Global Owner Guidance: ${globalSystemPrompt.trim()}`
+    : '';
+  const userExtra = customInstructions?.trim()
+    ? `User Custom Preferences: ${customInstructions.trim()}`
+    : '';
 
   if (isLiveVoice) {
     return [
@@ -129,6 +162,8 @@ export function buildClientStudyTutorInstruction(options: {
       multimodalCore,
       'Speak naturally in 2–4 concise, clear sentences without markdown symbols or code fences unless asked.',
       langRule,
+      globalExtra,
+      userExtra,
     ]
       .filter(Boolean)
       .join(' ');
@@ -142,10 +177,25 @@ export function buildClientStudyTutorInstruction(options: {
     'Format code in fenced markdown blocks with language tags only when code is requested or relevant.',
     'NEVER output ASCII art, text-character drawings, or box-art diagrams when asked for a picture, image, photo, or video.',
     langRule,
+    globalExtra,
+    userExtra,
   ]
     .filter(Boolean)
     .join(' ');
 }
+
+function extractSubjectRemainder(rawText: string): string {
+  return rawText
+    .replace(
+      /\b(please|kindly|can you|could you|create|generate|make|draw|paint|sketch|render|show|give|me|mujy|mujhe|mjhe|ek|aik|a|an|the|ki|ka|ke|k|ko|do|dy|de|kar|kr|pic|pics|picture|tasveer|tasweer|tasvir|taswir|photo|foto|image|img|banao|bnao|banado|bnado|bna|bana|dikhao|chahiye|khincho)\b/gi,
+      ' '
+    )
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const IMAGE_CONTEXT_CUE_RX =
+  /\b(pic|pics|picture|photo|foto|image|img|tasveer|tasweer|tasvir|taswir|naksha|naqsha|draw|paint|sketch|design|logo|poster|banner|portrait|wallpaper|bna|bnao|bnado|bana|banado|تصویر|نقشہ|فوٹو)\b/i;
 
 export function detectChatMediaIntent(
   rawText: string,
@@ -184,21 +234,44 @@ export function detectChatMediaIntent(
     /\b(create|generate|make|draw|paint|sketch|render|design|illustrate|show)\s+(me\s+)?(a\s+|an\s+|some\s+|the\s+)?(hd\s+|ultra[\s-]*hd\s+|4k\s+|real\s+|realistic\s+|photorealistic\s+|cute\s+|cool\s+|beautiful\s+|modern\s+|3d\s+)?(picture|pic|pics|image|img|photo|photograph|portrait|wallpaper|illustration|artwork|drawing|poster|avatar|painting|sketch|logo|banner|icon|blueprint|floor\s*plan|house\s*design|interior\s*design)\b/i,
     /^(draw|paint|sketch|illustrate|design)\s+(a|an|the|me|some)?\s*\S+/i,
     /\b(picture|pic|image|photo|portrait|drawing|sketch|illustration|logo|design)\s+of\b/i,
-    /\b(pic|pics|picture|tasveer|tasweer|tasvir|taswir|photo|foto|image|img|drawing|sketch|chitra|portrait|wallpaper|naksha|naqsha|logo|design|poster)\s*(banao|bnao|bna\s*do|bna\s*dy|bna\s*de|bna\s*kar\s*do|bna\s*kr\s*do|bana\s*do|bana\s*dy|bana\s*de|bana\s*kar\s*do|bana\s*kr\s*do|banado|bnado|dikhao|dikha\s*do|nikalo|chahiye|khincho|bna|bana)\b/i,
-    /\b(banao|bnao|bna\s*do|bna\s*dy|bna\s*de|bana\s*do|bana\s*dy|banado|bnado|draw\s*karo|design\s*karo|design\s*kr\s*do)\s*(ek\s+|aik\s+|mujy\s+|mujhe\s+)?(pyari\s+si\s+|khoobsurat\s+|khubsurat\s+|sundar\s+|acha\s+sa\s+|achha\s+sa\s+)?(pic|picture|tasveer|tasweer|tasvir|taswir|photo|image|sketch|drawing|naksha|naqsha|logo|design|poster)\b/i,
+    /\b(pic|pics|picture|tasveer|tasweer|tasvir|taswir|photo|foto|image|img|drawing|sketch|chitra|portrait|wallpaper|naksha|naqsha|logo|design|poster)\s*(banao|bnao|bna\s*do|bna\s*dy|bna\s*de|bna\s*kar\s*do|bna\s*kr\s*do|bna\s*k\s*do|bana\s*do|bana\s*dy|bana\s*de|bana\s*kar\s*do|bana\s*kr\s*do|bana\s*k\s*do|banado|bnado|dikhao|dikha\s*do|nikalo|chahiye|khincho|bna|bana)\b/i,
+    /\b(banao|bnao|bna\s*do|bna\s*dy|bna\s*de|bna\s*k\s*do|bana\s*do|bana\s*dy|bana\s*k\s*do|banado|bnado|draw\s*karo|design\s*karo|design\s*kr\s*do)\s*(ek\s+|aik\s+|mujy\s+|mujhe\s+)?(pyari\s+si\s+|khoobsurat\s+|khubsurat\s+|sundar\s+|acha\s+sa\s+|achha\s+sa\s+)?(pic|picture|tasveer|tasweer|tasvir|taswir|photo|image|sketch|drawing|naksha|naqsha|logo|design|poster)\b/i,
     /(تصویر|فوٹو|نقشہ|اسکیچ|ڈیزائن|لوگو)\s*(بنائیں|بناؤ|بنا\s*دو|بنا\s*دیں|بنا\s*کر\s*دیں|دکھائیں|چاہیے)|(بنائیں|بناؤ|بنا\s*دو|بنا\s*دیں)\s*(ایک\s+)?(خوبصورت\s+)?(تصویر|فوٹو|نقشہ|اسکیچ|ڈیزائن|لوگو)|(صورة|ارسم|تصوير|चित्र\s*(बनाओ|बनाएं)|तस्वीर\s*(बनाओ|बनाएं)|फोटो\s*(बनाओ|बनाएं)|dessine|créer\s+une\s+image|generar\s+(una\s+)?imagen|dibujar|criar\s+imagem|bild\s+erstellen|buat\s+gambar|resim\s+(çiz|yap))/i,
   ];
   if (imagePatterns.some((rx) => rx.test(text))) {
+    // If the user sent only a bare opener like "Mujhe aik pic bna k do" with NO subject noun,
+    // allow chat to ask what subject they want — the next reply (e.g. "Aik insan ki moon pr") combines both!
+    const subjectRemainder = extractSubjectRemainder(text);
+    if (!subjectRemainder || subjectRemainder.length < 2) {
+      return 'chat';
+    }
     return 'image';
   }
 
   return 'chat';
 }
 
-function shouldInvokeGeminiIntentCheck(rawText: string): boolean {
+function hasPendingImageContext(recentMessages?: Array<{ role: string; content: string }>): boolean {
+  if (!recentMessages || recentMessages.length === 0) return false;
+  return recentMessages.slice(-3).some((m) => {
+    const content = (m.content || '').trim();
+    if (!content) return false;
+    return IMAGE_CONTEXT_CUE_RX.test(content);
+  });
+}
+
+function shouldInvokeGeminiIntentCheck(
+  rawText: string,
+  recentMessages?: Array<{ role: string; content: string }>
+): boolean {
   const text = rawText.trim();
   if (!text || text.length > 500) return false;
   if (detectChatMediaIntent(text, false) !== 'chat') return true;
+
+  // Check if previous 1-3 turns asked for a picture/photo (e.g., "Mujhe aik pic bna k do" -> next turn: "Aik insan ki moon pr")
+  if (hasPendingImageContext(recentMessages)) {
+    return true;
+  }
 
   const lower = text.toLowerCase();
   // Skip obvious pure greetings/math/code/translation questions unless visual cues exist
@@ -206,9 +279,7 @@ function shouldInvokeGeminiIntentCheck(rawText: string): boolean {
     /^(hi|hello|hey|salam|assalam|how are you|what is|who is|why |when |where |explain |translate |write code|write a function)/i.test(
       lower
     ) &&
-    !/\b(pic|photo|image|picture|tasveer|tasweer|naksha|naqsha|draw|paint|sketch|design|logo|portrait|wallpaper|bna|bana|تصویر|نقشہ|فوٹو)\b/i.test(
-      lower
-    )
+    !IMAGE_CONTEXT_CUE_RX.test(lower)
   ) {
     return false;
   }
@@ -225,6 +296,7 @@ function shouldInvokeGeminiIntentCheck(rawText: string): boolean {
 
 export async function detectAndEnhanceChatMediaIntent(params: {
   text: string;
+  recentMessages?: Array<{ role: string; content: string }>;
   hasAttachment: boolean;
   hasBackendApi: boolean;
   hasServerGeminiKey: boolean;
@@ -236,8 +308,15 @@ export async function detectAndEnhanceChatMediaIntent(params: {
   const cleaned = params.text.trim();
   if (!cleaned || cleaned.length > 500) return { intent: 'chat' };
 
+  const recentSlice = (params.recentMessages ?? []).slice(-4).map((m) => ({
+    role: m.role,
+    content: m.content.slice(0, 260),
+  }));
+
   const fastIntent = detectChatMediaIntent(cleaned, false);
-  if (!shouldInvokeGeminiIntentCheck(cleaned)) {
+  const pendingContext = hasPendingImageContext(recentSlice);
+
+  if (!shouldInvokeGeminiIntentCheck(cleaned, recentSlice)) {
     return { intent: fastIntent };
   }
 
@@ -253,6 +332,7 @@ export async function detectAndEnhanceChatMediaIntent(params: {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text: cleaned,
+          recentMessages: recentSlice,
           forceImage: fastIntent === 'image',
           apiKey: clientGeminiKey || undefined,
         }),
@@ -286,12 +366,20 @@ export async function detectAndEnhanceChatMediaIntent(params: {
     }
   }
 
+  const contextBlock =
+    recentSlice.length > 0
+      ? `Recent Conversation Context:\n${recentSlice
+          .map((m) => `${m.role === 'assistant' ? 'Assistant' : 'User'}: ${m.content}`)
+          .join('\n')}\n\nLatest User Message:\n${cleaned}`
+      : cleaned;
+
   // Step 1B: Direct Gemini REST fallback (for static deployments with client Gemini key)
   if (clientGeminiKey) {
     try {
       const sysText = [
-        'Classify the user message in ANY language (English, Urdu, Roman Urdu like "pic bna do", "tasveer banao", "naksha banao") as intent "image", "video", or "chat".',
-        'If intent is "image", translate and expand the idea into a highly detailed, photorealistic/cinematic English image-generation prompt (35-65 words) with realistic lighting, textures, architectural or environmental detail, and crisp focus, plus a 3-6 word shortTitle.',
+        'Classify the Latest User Message together with Recent Conversation Context (in ANY language: English, Urdu, Roman Urdu like "pic bna", "pic bana", "tasveer", "photo bana", "naksha", "draw", "image", "generate") as intent "image", "video", or "chat".',
+        'CRITICAL CONTEXT RULE: If a previous recent message asked for a picture/photo (e.g., "Mujhe aik pic bna k do") and the Latest User Message supplies a subject (e.g., "Aik insan ki moon pr"), combine BOTH into intent "image".',
+        'If intent is "image", translate and expand the combined idea into a highly detailed, photorealistic/cinematic English image-generation prompt (35-65 words) with realistic lighting, textures, architectural or environmental detail, and crisp focus, plus a 3-6 word shortTitle.',
         'Return ONLY JSON: {"intent":"image|video|chat","shortTitle":"...","enhancedPrompt":"..."}',
       ].join(' ');
       const resp = await fetch(
@@ -304,7 +392,8 @@ export async function detectAndEnhanceChatMediaIntent(params: {
           },
           body: JSON.stringify({
             system_instruction: { parts: [{ text: sysText }] },
-            contents: [{ role: 'user', parts: [{ text: cleaned }] }],
+            contents: [{ role: 'user', parts: [{ text: contextBlock }] }],
+            safetySettings: GEMINI_SAFETY_SETTINGS,
             generationConfig: {
               thinkingConfig: { thinkingBudget: 0 },
               responseMimeType: 'application/json',
@@ -346,6 +435,27 @@ export async function detectAndEnhanceChatMediaIntent(params: {
     } catch {
       // Fall back cleanly
     }
+  }
+
+  // Deterministic fallback when Gemini classifier isn't reachable:
+  // If user previously said "Mujhe aik pic bna k do" and now gives a non-greeting subject, combine cleanly
+  if (
+    pendingContext &&
+    fastIntent === 'chat' &&
+    !/^(hi|hello|hey|thanks|thank you|ok|cancel|stop|no|nahi|explain|what is)\b/i.test(cleaned) &&
+    extractSubjectRemainder(cleaned).length >= 3
+  ) {
+    const prevUserImgReq = [...recentSlice]
+      .reverse()
+      .find((m) => m.role === 'user' && IMAGE_CONTEXT_CUE_RX.test(m.content));
+    const combinedRaw = prevUserImgReq ? `${prevUserImgReq.content} ${cleaned}` : cleaned;
+    return {
+      intent: 'image',
+      preEnhanced: {
+        shortTitle: cleaned.slice(0, 48),
+        detailedPrompt: buildSafeArtisticPrompt(combinedRaw),
+      },
+    };
   }
 
   return { intent: fastIntent };
@@ -483,6 +593,10 @@ async function streamFromGroq(params: {
   language?: string;
   userName?: string;
   isLiveVoice?: boolean;
+  responseStyle?: ResponseStyleMode;
+  customInstructions?: string;
+  globalSystemPrompt?: string;
+  chatModel?: string;
   signal?: AbortSignal;
   onChunk: (text: string) => void;
 }): Promise<string> {
@@ -490,6 +604,9 @@ async function streamFromGroq(params: {
     language: params.language,
     userName: params.userName,
     isLiveVoice: params.isLiveVoice,
+    responseStyle: params.responseStyle,
+    customInstructions: params.customInstructions,
+    globalSystemPrompt: params.globalSystemPrompt,
   });
 
   const groqMessages = [
@@ -504,6 +621,15 @@ async function streamFromGroq(params: {
   let { models: candidateModels, fromCache } = await getActiveGroqChatModels(params.apiKey, {
     signal: params.signal,
   });
+  const preferredGroq = params.chatModel?.trim();
+  if (
+    preferredGroq &&
+    preferredGroq !== 'auto' &&
+    !preferredGroq.startsWith('gemini-') &&
+    candidateModels.includes(preferredGroq)
+  ) {
+    candidateModels = [preferredGroq, ...candidateModels.filter((m) => m !== preferredGroq)];
+  }
   let refreshedAfterFailure = !fromCache;
 
   for (let i = 0; i < candidateModels.length; i++) {
@@ -620,6 +746,10 @@ async function streamFromGeminiDirect(params: {
   language?: string;
   userName?: string;
   isLiveVoice?: boolean;
+  responseStyle?: ResponseStyleMode;
+  customInstructions?: string;
+  globalSystemPrompt?: string;
+  chatModel?: string;
   signal?: AbortSignal;
   onChunk: (text: string) => void;
 }): Promise<string> {
@@ -627,6 +757,9 @@ async function streamFromGeminiDirect(params: {
     language: params.language,
     userName: params.userName,
     isLiveVoice: params.isLiveVoice,
+    responseStyle: params.responseStyle,
+    customInstructions: params.customInstructions,
+    globalSystemPrompt: params.globalSystemPrompt,
   });
 
   const contents = params.messages.slice(-10).map((msg) => {
@@ -660,10 +793,19 @@ async function streamFromGeminiDirect(params: {
     };
   });
 
-  const candidates = [
+  const baseCandidates = [
     { model: 'gemini-2.5-flash', thinkingConfig: { thinkingBudget: 0 } },
     { model: 'gemini-3.1-flash-lite', thinkingConfig: { thinkingLevel: 'MINIMAL' } },
+    { model: 'gemini-4-hydrogen', thinkingConfig: { thinkingLevel: 'LOW' } },
   ];
+  const preferredGemini = params.chatModel?.trim();
+  const candidates =
+    preferredGemini && baseCandidates.some((c) => c.model === preferredGemini)
+      ? [
+          baseCandidates.find((c) => c.model === preferredGemini)!,
+          ...baseCandidates.filter((c) => c.model !== preferredGemini),
+        ]
+      : baseCandidates;
 
   let lastErrorMsg = 'Unable to connect to Gemini right now.';
 
@@ -770,6 +912,10 @@ async function streamFromBackendEndpoint(params: {
   messages: OutgoingMessage[];
   language?: string;
   userName?: string;
+  responseStyle?: ResponseStyleMode;
+  customInstructions?: string;
+  globalSystemPrompt?: string;
+  chatModel?: string;
   signal?: AbortSignal;
   onChunk: (text: string) => void;
 }): Promise<{ ok: true; text: string } | { ok: false; shouldFallbackDirect: boolean; error: Error }> {
@@ -782,6 +928,10 @@ async function streamFromBackendEndpoint(params: {
         language: params.language,
         userName: params.userName,
         apiKey: params.apiKey || undefined,
+        responseStyle: params.responseStyle,
+        customInstructions: params.customInstructions,
+        globalSystemPrompt: params.globalSystemPrompt,
+        chatModel: params.chatModel,
       }),
       signal: params.signal,
     });
@@ -899,6 +1049,9 @@ async function analyzeImageViaGeminiRest(params: {
   mimeType: string;
   language?: string;
   userName?: string;
+  responseStyle?: ResponseStyleMode;
+  customInstructions?: string;
+  globalSystemPrompt?: string;
   signal?: AbortSignal;
 }): Promise<string> {
   const cleanBase64 = (
@@ -913,6 +1066,9 @@ async function analyzeImageViaGeminiRest(params: {
     language: params.language,
     userName: params.userName,
     isLiveVoice: false,
+    responseStyle: params.responseStyle,
+    customInstructions: params.customInstructions,
+    globalSystemPrompt: params.globalSystemPrompt,
   });
 
   const visionCandidates: Array<{
@@ -1019,11 +1175,22 @@ export async function streamChatCompletion(params: {
   language?: string;
   userName?: string;
   isLiveVoice?: boolean;
+  responseStyle?: ResponseStyleMode;
+  customInstructions?: string;
+  globalSystemPrompt?: string;
+  chatModel?: string;
   hasBackendApi: boolean;
   hasServerGeminiKey: boolean;
   signal?: AbortSignal;
   onChunk: (text: string) => void;
 }): Promise<string> {
+  const userPrefs = loadUserSettings();
+  const ownerCfg = loadOwnerConfig();
+  const responseStyle = params.responseStyle ?? userPrefs.responseStyle;
+  const customInstructions = params.customInstructions ?? userPrefs.customInstructions;
+  const globalSystemPrompt = params.globalSystemPrompt ?? ownerCfg.globalSystemPrompt;
+  const chatModel = params.chatModel ?? ownerCfg.chatModel;
+
   const recentMessages = params.messages.slice(-10);
   const resolved = resolveActiveProvider(params.hasServerGeminiKey);
   const lastMsg = recentMessages[recentMessages.length - 1];
@@ -1032,7 +1199,7 @@ export async function streamChatCompletion(params: {
     (m) => Boolean(m.attachment?.base64) && m.attachment?.kind !== 'file'
   );
 
-  // When the current message has an uploaded photo/screenshot, bypass Groq completely
+  // When the current message has an uploaded photo/screenshot or live camera frame, bypass Groq completely
   // and call Gemini Vision REST directly with clean inline_data JSON
   if (currentHasImage && lastMsg?.attachment?.base64) {
     const localKey = loadCustomApiKey().trim();
@@ -1051,6 +1218,9 @@ export async function streamChatCompletion(params: {
         mimeType,
         language: params.language,
         userName: params.userName,
+        responseStyle,
+        customInstructions,
+        globalSystemPrompt,
         signal: params.signal,
       });
       params.onChunk(visionText);
@@ -1067,6 +1237,9 @@ export async function streamChatCompletion(params: {
         mimeType,
         language: params.language,
         userName: params.userName,
+        responseStyle,
+        customInstructions,
+        globalSystemPrompt,
       }),
       signal: params.signal,
     });
@@ -1105,6 +1278,10 @@ export async function streamChatCompletion(params: {
         messages: recentMessages,
         language: params.language,
         userName: params.userName,
+        responseStyle,
+        customInstructions,
+        globalSystemPrompt,
+        chatModel,
         signal: params.signal,
         onChunk: params.onChunk,
       });
@@ -1116,6 +1293,10 @@ export async function streamChatCompletion(params: {
           language: params.language,
           userName: params.userName,
           isLiveVoice: params.isLiveVoice,
+          responseStyle,
+          customInstructions,
+          globalSystemPrompt,
+          chatModel,
           signal: params.signal,
           onChunk: params.onChunk,
         });
@@ -1128,6 +1309,10 @@ export async function streamChatCompletion(params: {
       language: params.language,
       userName: params.userName,
       isLiveVoice: params.isLiveVoice,
+      responseStyle,
+      customInstructions,
+      globalSystemPrompt,
+      chatModel,
       signal: params.signal,
       onChunk: params.onChunk,
     });
@@ -1145,6 +1330,10 @@ export async function streamChatCompletion(params: {
       language: params.language,
       userName: params.userName,
       isLiveVoice: params.isLiveVoice,
+      responseStyle,
+      customInstructions,
+      globalSystemPrompt,
+      chatModel,
       signal: params.signal,
       onChunk: params.onChunk,
     });
@@ -1158,6 +1347,10 @@ export async function streamChatCompletion(params: {
       messages: params.messages,
       language: params.language,
       userName: params.userName,
+      responseStyle,
+      customInstructions,
+      globalSystemPrompt,
+      chatModel,
       signal: params.signal,
       onChunk: params.onChunk,
     });
@@ -1173,6 +1366,10 @@ export async function streamChatCompletion(params: {
         language: params.language,
         userName: params.userName,
         isLiveVoice: params.isLiveVoice,
+        responseStyle,
+        customInstructions,
+        globalSystemPrompt,
+        chatModel,
         signal: params.signal,
         onChunk: params.onChunk,
       });
@@ -1189,6 +1386,10 @@ export async function streamChatCompletion(params: {
       language: params.language,
       userName: params.userName,
       isLiveVoice: params.isLiveVoice,
+      responseStyle,
+      customInstructions,
+      globalSystemPrompt,
+      chatModel,
       signal: params.signal,
       onChunk: params.onChunk,
     });
@@ -1250,6 +1451,7 @@ async function runQuickTextCompletion(params: {
           body: JSON.stringify({
             system_instruction: { parts: [{ text: params.systemPrompt }] },
             contents: [{ role: 'user', parts: [{ text: params.userPrompt }] }],
+            safetySettings: GEMINI_SAFETY_SETTINGS,
             generationConfig: { thinkingConfig: { thinkingBudget: 0 } },
           }),
         }
@@ -1368,8 +1570,19 @@ function buildProceduralFallbackSvg(title: string, width: number, height: number
   return svg;
 }
 
-async function blobToCompactDataUrl(blob: Blob, maxWidth = 896): Promise<string | null> {
+// Preserve 100% original crisp HD image resolution without blurry lossy recompression
+async function blobToSharpDataUrl(blob: Blob): Promise<string | null> {
   try {
+    if (blob.size <= 6 * 1024 * 1024) {
+      const rawDataUrl = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(blob);
+      });
+      if (rawDataUrl) return rawDataUrl;
+    }
+
     const objUrl = URL.createObjectURL(blob);
     try {
       const img = await new Promise<HTMLImageElement | null>((resolve) => {
@@ -1382,16 +1595,13 @@ async function blobToCompactDataUrl(blob: Blob, maxWidth = 896): Promise<string 
         return null;
       }
 
-      const scale = Math.min(1, maxWidth / Math.max(img.naturalWidth, img.naturalHeight));
-      const w = Math.max(64, Math.round(img.naturalWidth * scale));
-      const h = Math.max(64, Math.round(img.naturalHeight * scale));
       const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
       const ctx = canvas.getContext('2d');
       if (!ctx) return null;
-      ctx.drawImage(img, 0, 0, w, h);
-      return canvas.toDataURL('image/jpeg', 0.84);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/png');
     } finally {
       URL.revokeObjectURL(objUrl);
     }
@@ -1404,14 +1614,16 @@ async function tryPollinationsImage(params: {
   safePrompt: string;
   width: number;
   height: number;
+  modelName?: string;
   onStatus?: (msg: string) => void;
 }): Promise<{ ok: true; imageUrl: string } | { ok: false; reason: string }> {
+  const model = params.modelName && params.modelName !== 'horde' ? params.modelName : 'flux';
   const seed = Math.floor(Math.random() * 100000);
   const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(
     params.safePrompt
-  )}?model=flux&width=${params.width}&height=${params.height}&enhance=true&nologo=true&seed=${seed}`;
+  )}?model=${encodeURIComponent(model)}&width=${params.width}&height=${params.height}&enhance=true&nologo=true&seed=${seed}`;
 
-  params.onStatus?.(`Generating ${params.width}×${params.height} Ultra-HD Flux image...`);
+  params.onStatus?.(`Generating ${params.width}×${params.height} Ultra-HD ${model} image...`);
 
   try {
     const controller = new AbortController();
@@ -1432,7 +1644,7 @@ async function tryPollinationsImage(params: {
         return { ok: false, reason: 'Primary returned temporary placeholder' };
       }
 
-      const dataUrl = await blobToCompactDataUrl(blob, Math.max(params.width, params.height));
+      const dataUrl = await blobToSharpDataUrl(blob);
       if (dataUrl) {
         return { ok: true, imageUrl: dataUrl };
       }
@@ -1551,13 +1763,13 @@ async function tryAiHordeImage(params: {
       return { ok: false, reason: 'AI Horde finished without an image frame' };
     }
 
-    // Convert R2 image URL to compact JPEG DataURL so saved chats & Canvas export never expire or CORS-taint
+    // Convert R2 image URL to sharp DataURL so saved chats & Canvas export never expire or CORS-taint
     if (imgRaw.startsWith('http')) {
       try {
         const imgResp = await fetch(imgRaw, { mode: 'cors' });
         if (imgResp.ok) {
           const blob = await imgResp.blob();
-          const dataUrl = await blobToCompactDataUrl(blob, 768);
+          const dataUrl = await blobToSharpDataUrl(blob);
           if (dataUrl) return { ok: true, imageUrl: dataUrl };
         }
       } catch {
@@ -1676,18 +1888,32 @@ async function resolveImageWithFallback(params: {
   svgCode?: string;
   provider: 'pollinations' | 'horde' | 'svg';
 }> {
-  // 1. Primary: Pollinations (only when outside 45s cooldown)
+  const configuredImageModel = loadOwnerConfig().imageModel || 'flux';
+
+  if (configuredImageModel === 'horde') {
+    const hordePreferred = await tryAiHordeImage({
+      safePrompt: params.safePrompt,
+      aspectRatio: params.aspectRatio,
+      onStatus: params.onStatus,
+    });
+    if (hordePreferred.ok) {
+      return { imageUrl: hordePreferred.imageUrl, provider: 'horde' };
+    }
+  }
+
+  // 1. Primary: Pollinations (1024x1024 Ultra-HD Flux / Realism / Turbo)
   const pollinationsRes = await tryPollinationsImage({
     safePrompt: params.safePrompt,
     width: params.pollinationsDims.w,
     height: params.pollinationsDims.h,
+    modelName: configuredImageModel,
     onStatus: params.onStatus,
   });
   if (pollinationsRes.ok) {
     return { imageUrl: pollinationsRes.imageUrl, provider: 'pollinations' };
   }
 
-  // 2. Fallback: Free Public AI Horde API (bypasses Pollinations 45s cooldown & refusals)
+  // 2. Fallback: Free Public AI Horde API
   params.onStatus?.(`${pollinationsRes.reason} — switching to Free AI Horde...`);
   const hordeRes = await tryAiHordeImage({
     safePrompt: params.safePrompt,

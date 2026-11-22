@@ -1,90 +1,168 @@
-import { CheckCircle2, Eye, EyeOff, KeyRound, ShieldCheck, Trash2, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  Check,
+  Cpu,
+  Eye,
+  EyeOff,
+  Image as ImageIcon,
+  KeyRound,
+  Lock,
+  Megaphone,
+  RotateCcw,
+  ShieldCheck,
+  Terminal,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { FormEvent, useEffect, useState } from 'react';
 import { AppTheme } from '../themes';
-import { detectApiKeyProvider, loadCustomApiKey, saveCustomApiKey } from '../utils/storage';
+import { OwnerConfig, OwnerImageModel } from '../types';
+import {
+  DEFAULT_OWNER_CONFIG,
+  detectApiKeyProvider,
+  loadCustomApiKey,
+  loadOwnerConfig,
+  saveCustomApiKey,
+  saveOwnerConfig,
+} from '../utils/storage';
 
 interface ApiKeyModalProps {
   isOpen: boolean;
   theme: AppTheme;
   hasServerGeminiKey: boolean;
   hasEnvGeminiKey: boolean;
+  ownerConfig?: OwnerConfig;
+  onUpdateOwnerConfig?: (next: OwnerConfig) => void;
   onSaved: () => void;
   onClose: () => void;
 }
+
+const CHAT_MODEL_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'auto', label: 'Auto Fast Routing (Recommended)' },
+  { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (Instant & Vision)' },
+  { value: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite' },
+  { value: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen' },
+  { value: 'llama-3.1-8b-instant', label: 'Groq Llama 3.1 8B Instant (Requires Groq Key)' },
+  { value: 'llama-3.3-70b-versatile', label: 'Groq Llama 3.3 70B Versatile (Requires Groq Key)' },
+];
+
+const IMAGE_MODEL_OPTIONS: Array<{ value: OwnerImageModel; label: string }> = [
+  { value: 'flux', label: 'Flux Ultra-HD 1024×1024 (Default)' },
+  { value: 'flux-realism', label: 'Flux Realism 1024×1024' },
+  { value: 'turbo', label: 'Turbo Fast 1024×1024' },
+  { value: 'horde', label: 'AI Horde Studio (Backup Engine)' },
+];
 
 export function ApiKeyModal({
   isOpen,
   theme,
   hasServerGeminiKey,
   hasEnvGeminiKey,
+  ownerConfig: externalOwnerConfig,
+  onUpdateOwnerConfig,
   onSaved,
   onClose,
 }: ApiKeyModalProps) {
-  const [inputKey, setInputKey] = useState('');
+  // Always require Owner PIN verification first when opening Owner Settings
+  const [isUnlocked, setIsUnlocked] = useState(false);
+  const [pinInput, setPinInput] = useState('');
+  const [showPin, setShowPin] = useState(false);
+  const [pinError, setPinError] = useState('');
+
+  // Admin dashboard states
+  const [apiKeyInput, setApiKeyInput] = useState('');
   const [showKey, setShowKey] = useState(false);
-  const [errorMsg, setErrorMsg] = useState('');
-  const [savedNotice, setSavedNotice] = useState('');
+  const [chatModel, setChatModel] = useState('auto');
+  const [imageModel, setImageModel] = useState<OwnerImageModel>('flux');
+  const [globalSystemPrompt, setGlobalSystemPrompt] = useState('');
+  const [announcementEnabled, setAnnouncementEnabled] = useState(false);
+  const [announcementText, setAnnouncementText] = useState('');
+  const [maintenanceMode, setMaintenanceMode] = useState(false);
+  const [newOwnerPin, setNewOwnerPin] = useState('');
+  const [statusMessage, setStatusMessage] = useState('');
 
   useEffect(() => {
-    if (isOpen) {
-      setInputKey(loadCustomApiKey());
-      setShowKey(false);
-      setErrorMsg('');
-      setSavedNotice('');
+    if (!isOpen) {
+      setIsUnlocked(false);
+      setPinInput('');
+      setPinError('');
+      return;
     }
-  }, [isOpen]);
+    const cfg = externalOwnerConfig ?? loadOwnerConfig();
+    setApiKeyInput(loadCustomApiKey());
+    setChatModel(cfg.chatModel || 'auto');
+    setImageModel(cfg.imageModel || 'flux');
+    setGlobalSystemPrompt(cfg.globalSystemPrompt || '');
+    setAnnouncementEnabled(Boolean(cfg.announcementEnabled));
+    setAnnouncementText(cfg.announcementText || '');
+    setMaintenanceMode(Boolean(cfg.maintenanceMode));
+    setNewOwnerPin('');
+    setStatusMessage('');
+    setPinError('');
+  }, [isOpen, externalOwnerConfig]);
 
   if (!isOpen) return null;
 
-  const detected = detectApiKeyProvider(inputKey);
-  const storedKey = loadCustomApiKey();
+  const activeConfig = externalOwnerConfig ?? loadOwnerConfig();
+  const expectedPin =
+    activeConfig.ownerPin && activeConfig.ownerPin !== '2026'
+      ? activeConfig.ownerPin
+      : DEFAULT_OWNER_CONFIG.ownerPin;
 
-  const handleSave = (e: FormEvent) => {
+  const handleUnlockSubmit = (e: FormEvent) => {
     e.preventDefault();
-    const trimmed = inputKey.trim();
-    if (!trimmed) {
-      setErrorMsg('Please paste a valid Google Gemini key (AIza...) or Groq key (gsk_...).');
+    const entered = pinInput.trim();
+    if (!entered || entered !== expectedPin) {
+      setPinError('Invalid Password');
       return;
     }
+    setPinError('');
+    setIsUnlocked(true);
+  };
 
-    const provider = detectApiKeyProvider(trimmed);
-    if (provider === 'unknown') {
-      setErrorMsg(
-        'Unrecognized key format. Google Gemini keys start with "AIza..." and free Groq keys start with "gsk_...".'
-      );
-      return;
-    }
+  const detectedProvider = detectApiKeyProvider(apiKeyInput);
+  const hasBuiltInKey = hasServerGeminiKey || hasEnvGeminiKey;
 
-    saveCustomApiKey(trimmed);
-    setErrorMsg('');
-    setSavedNotice(
-      provider === 'groq'
-        ? 'Groq API key saved! Chats will stream using the best active Groq chat model.'
-        : 'Google Gemini API key saved! Ready for fast streaming & vision.'
-    );
+  const handleSaveAll = () => {
+    const trimmedKey = apiKeyInput.trim();
+    saveCustomApiKey(trimmedKey);
+
+    const updatedConfig: OwnerConfig = {
+      chatModel: chatModel || 'auto',
+      imageModel: imageModel || 'flux',
+      globalSystemPrompt: globalSystemPrompt.trim(),
+      announcementEnabled,
+      announcementText: announcementText.trim(),
+      maintenanceMode,
+      ownerPin: newOwnerPin.trim() ? newOwnerPin.trim() : expectedPin,
+    };
+
+    saveOwnerConfig(updatedConfig);
+    onUpdateOwnerConfig?.(updatedConfig);
+
+    setStatusMessage('Owner settings & AI configuration saved successfully!');
     onSaved();
     window.setTimeout(() => {
       onClose();
-    }, 600);
+    }, 550);
   };
 
-  const handleRemove = () => {
+  const handleRemoveCustomKey = () => {
     saveCustomApiKey('');
-    setInputKey('');
-    setErrorMsg('');
-    setSavedNotice('Custom API key removed.');
+    setApiKeyInput('');
     onSaved();
+    setStatusMessage('Custom API key removed. Using built-in engine.');
   };
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm px-4 py-6"
+      className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
       role="dialog"
       aria-modal="true"
-      aria-labelledby="apikey-modal-title"
+      aria-label="Owner Settings"
     >
       <div
-        className="w-full max-w-lg rounded-2xl border p-6 shadow-2xl"
+        className="w-full max-w-xl rounded-2xl border shadow-2xl overflow-hidden flex flex-col max-h-[92dvh]"
         style={{
           backgroundColor: theme.cardBg,
           borderColor: theme.borderColor,
@@ -92,23 +170,32 @@ export function ApiKeyModal({
         }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between gap-3 mb-4">
-          <div className="flex items-center gap-3">
+        <div
+          className="flex items-center justify-between px-5 py-4 border-b"
+          style={{ borderColor: theme.borderColor }}
+        >
+          <div className="flex items-center gap-2.5">
             <div
-              className="w-10 h-10 rounded-xl border flex items-center justify-center shrink-0"
+              className="w-8 h-8 rounded-lg flex items-center justify-center border"
               style={{
                 backgroundColor: theme.subSurfaceBg,
-                borderColor: theme.borderColor,
+                borderColor: `${theme.accentPrimary}44`,
               }}
             >
-              <KeyRound className="w-5 h-5" style={{ color: theme.accentPrimary }} />
+              {isUnlocked ? (
+                <ShieldCheck className="w-4 h-4" style={{ color: theme.accentPrimary }} />
+              ) : (
+                <Lock className="w-4 h-4" style={{ color: theme.accentPrimary }} />
+              )}
             </div>
             <div>
-              <h2 id="apikey-modal-title" className="font-display text-[18px] font-bold">
-                Owner Settings (API Provider)
+              <h2 className="text-[16px] font-bold leading-tight">
+                {isUnlocked ? 'Owner Settings Panel' : 'Owner Authentication'}
               </h2>
-              <p className="text-[12.5px]" style={{ color: theme.textMuted }}>
-                Optional browser override when environment variables are not set
+              <p className="text-[11.5px]" style={{ color: theme.textMuted }}>
+                {isUnlocked
+                  ? 'Manage API keys, active AI models, system prompt & maintenance controls'
+                  : 'Enter Owner Password to access admin controls'}
               </p>
             </div>
           </div>
@@ -116,176 +203,68 @@ export function ApiKeyModal({
           <button
             type="button"
             onClick={onClose}
-            aria-label="Close API Key Settings"
-            className="p-2 rounded-lg transition-colors cursor-pointer"
+            aria-label="Close Owner Settings"
+            className="p-1.5 rounded-lg transition-colors cursor-pointer"
             style={{ color: theme.textMuted }}
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Provider Guide Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mb-4">
-          <div
-            className="rounded-xl border p-3"
-            style={{
-              backgroundColor: theme.subSurfaceBg,
-              borderColor: detected === 'gemini' ? theme.accentSecondary : theme.borderColor,
-            }}
-          >
-            <div className="text-[12.5px] font-bold" style={{ color: theme.accentSecondary }}>
-              Google Gemini Key
-            </div>
-            <div className="text-[11.5px] mt-1" style={{ color: theme.textMuted }}>
-              Starts with <code className="font-mono font-semibold">AIza...</code>
-              <br />
-              Full streaming, study tutor, vision &amp; artwork.
-            </div>
-            <a
-              href="https://aistudio.google.com/apikey"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-block mt-1.5 text-[11px] font-semibold underline"
-              style={{ color: theme.accentSecondary }}
-            >
-              Get free Gemini key
-            </a>
-          </div>
-
-          <div
-            className="rounded-xl border p-3"
-            style={{
-              backgroundColor: theme.subSurfaceBg,
-              borderColor: detected === 'groq' ? theme.accentPrimary : theme.borderColor,
-            }}
-          >
-            <div className="text-[12.5px] font-bold" style={{ color: theme.accentPrimary }}>
-              Free Groq API Key
-            </div>
-            <div className="text-[11.5px] mt-1" style={{ color: theme.textMuted }}>
-              Starts with <code className="font-mono font-semibold">gsk_...</code>
-              <br />
-              Ultra-fast streaming with automatic active model selection.
-            </div>
-            <a
-              href="https://console.groq.com/keys"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-block mt-1.5 text-[11px] font-semibold underline"
-              style={{ color: theme.accentPrimary }}
-            >
-              Get free Groq key
-            </a>
-          </div>
-        </div>
-
-        <form onSubmit={handleSave} className="space-y-3">
-          <div>
-            <label
-              htmlFor="custom-api-key-input"
-              className="block text-[12.5px] font-semibold mb-1.5"
-              style={{ color: theme.textSecondary }}
-            >
-              Paste Your Gemini (AIza...) or Groq (gsk_...) Key
-            </label>
-            <div className="relative flex items-center">
-              <input
-                id="custom-api-key-input"
-                type={showKey ? 'text' : 'password'}
-                value={inputKey}
-                onChange={(e) => {
-                  setInputKey(e.target.value);
-                  setErrorMsg('');
-                  setSavedNotice('');
-                }}
-                placeholder="AIza... or gsk_..."
-                autoComplete="off"
-                spellCheck={false}
-                className="w-full rounded-xl border pl-3.5 pr-11 py-2.5 text-[13.5px] font-mono focus:outline-none"
-                style={{
-                  backgroundColor: theme.inputBg,
-                  borderColor: errorMsg
-                    ? '#ff4d4d'
-                    : detected === 'groq'
-                      ? theme.accentPrimary
-                      : detected === 'gemini'
-                        ? theme.accentSecondary
-                        : theme.borderColor,
-                  color: theme.textPrimary,
-                }}
-              />
-              <button
-                type="button"
-                onClick={() => setShowKey((prev) => !prev)}
-                aria-label={showKey ? 'Hide API Key' : 'Show API Key'}
-                className="absolute right-2.5 p-1.5 rounded-lg cursor-pointer"
-                style={{ color: theme.textMuted }}
-              >
-                {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
-            </div>
-          </div>
-
-          {/* Live Detected Provider Status */}
-          <div className="flex items-center justify-between text-[12px] px-1">
-            <span className="inline-flex items-center gap-1.5" style={{ color: theme.textMuted }}>
-              <ShieldCheck className="w-3.5 h-3.5" style={{ color: theme.accentSecondary }} />
-              <span>Stored only in your browser localStorage</span>
-            </span>
-
-            {detected === 'groq' && (
-              <span className="font-semibold" style={{ color: theme.accentPrimary }}>
-                Detected: Groq (Auto Active Model)
-              </span>
-            )}
-            {detected === 'gemini' && (
-              <span className="font-semibold" style={{ color: theme.accentSecondary }}>
-                Detected: Google Gemini
-              </span>
-            )}
-          </div>
-
-          {(hasServerGeminiKey || hasEnvGeminiKey) && !storedKey && (
+        {!isUnlocked ? (
+          /* Password Verification Gate */
+          <form onSubmit={handleUnlockSubmit} className="p-5 space-y-4">
             <div
-              className="rounded-xl border px-3 py-2 text-[12px]"
+              className="rounded-xl border p-4 space-y-3"
               style={{
                 backgroundColor: theme.subSurfaceBg,
                 borderColor: theme.borderColor,
-                color: theme.textSecondary,
               }}
             >
-              A default environment Gemini key is already active on this host. Adding your own key above overrides it locally.
-            </div>
-          )}
+              <div className="flex items-center gap-2 text-[13px] font-semibold">
+                <KeyRound className="w-4 h-4" style={{ color: theme.accentSecondary }} />
+                <span>Owner Password Required</span>
+              </div>
+              <p className="text-[12px]" style={{ color: theme.textMuted }}>
+                This area controls global AI models, API keys, announcements, and maintenance mode.
+              </p>
 
-          {errorMsg && <p className="text-[12.5px] text-[#ff4d4d] font-medium">{errorMsg}</p>}
-
-          {savedNotice && (
-            <p className="text-[12.5px] text-emerald-400 font-medium inline-flex items-center gap-1.5">
-              <CheckCircle2 className="w-4 h-4" />
-              <span>{savedNotice}</span>
-            </p>
-          )}
-
-          <div className="pt-2 flex flex-wrap items-center justify-between gap-2.5">
-            <div>
-              {storedKey && (
+              <div className="relative flex items-center">
+                <input
+                  type={showPin ? 'text' : 'password'}
+                  autoFocus
+                  value={pinInput}
+                  onChange={(e) => {
+                    setPinInput(e.target.value);
+                    if (pinError) setPinError('');
+                  }}
+                  placeholder="Enter Owner Password..."
+                  className="w-full pl-3.5 pr-10 py-2.5 rounded-xl border text-[14px] focus:outline-none"
+                  style={{
+                    backgroundColor: theme.cardBg,
+                    borderColor: pinError ? '#ff4d4d' : theme.borderColor,
+                    color: theme.textPrimary,
+                  }}
+                />
                 <button
                   type="button"
-                  onClick={handleRemove}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border text-[12.5px] font-medium text-[#ff4d4d] cursor-pointer"
-                  style={{
-                    backgroundColor: theme.subSurfaceBg,
-                    borderColor: theme.borderColor,
-                  }}
+                  onClick={() => setShowPin((p) => !p)}
+                  aria-label={showPin ? 'Hide Password' : 'Show Password'}
+                  className="absolute right-2.5 p-1 rounded cursor-pointer"
+                  style={{ color: theme.textMuted }}
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span>Remove Saved Key</span>
+                  {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
+              </div>
+
+              {pinError && (
+                <p role="alert" className="text-[12.5px] font-semibold text-[#ff6b6b]">
+                  {pinError}
+                </p>
               )}
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center justify-end gap-2">
               <button
                 type="button"
                 onClick={onClose}
@@ -293,24 +272,334 @@ export function ApiKeyModal({
                 style={{
                   backgroundColor: theme.subSurfaceBg,
                   borderColor: theme.borderColor,
-                  color: theme.textPrimary,
+                  color: theme.textSecondary,
                 }}
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="px-5 py-2 rounded-xl font-bold text-[13px] cursor-pointer transition-all hover:brightness-110"
+                className="inline-flex items-center gap-1.5 px-5 py-2 rounded-xl text-[13px] font-bold transition-all hover:brightness-110 cursor-pointer"
                 style={{
                   backgroundImage: theme.sendButtonGradient,
                   color: theme.sendButtonText,
                 }}
               >
-                Save Key
+                <ShieldCheck className="w-4 h-4" />
+                <span>Unlock Admin Panel</span>
               </button>
             </div>
-          </div>
-        </form>
+          </form>
+        ) : (
+          /* Unlocked Owner Dashboard */
+          <>
+            <div className="p-5 overflow-y-auto space-y-4">
+              {/* 1. API Key Section */}
+              <div
+                className="rounded-xl border p-3.5 space-y-2.5"
+                style={{
+                  backgroundColor: theme.subSurfaceBg,
+                  borderColor: theme.borderColor,
+                }}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 text-[12.5px] font-semibold">
+                    <KeyRound className="w-3.5 h-3.5" style={{ color: theme.accentSecondary }} />
+                    <span>Gemini / Groq AI API Key</span>
+                  </div>
+                  <span
+                    className="text-[11px] font-medium"
+                    style={{
+                      color:
+                        detectedProvider === 'gemini' || detectedProvider === 'groq'
+                          ? '#34d399'
+                          : hasBuiltInKey
+                            ? theme.accentSecondary
+                            : theme.textMuted,
+                    }}
+                  >
+                    {detectedProvider === 'gemini'
+                      ? 'Gemini Key Active'
+                      : detectedProvider === 'groq'
+                        ? 'Groq Key Active'
+                        : hasBuiltInKey
+                          ? 'Built-In Engine Active'
+                          : 'Optional Override'}
+                  </span>
+                </div>
+
+                <div className="relative flex items-center">
+                  <input
+                    id="owner-api-key-input"
+                    type={showKey ? 'text' : 'password'}
+                    value={apiKeyInput}
+                    onChange={(e) => setApiKeyInput(e.target.value)}
+                    placeholder="AIza... (Gemini) or gsk_... (Groq)"
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="w-full pl-3.5 pr-10 py-2 rounded-xl border text-[13px] font-mono focus:outline-none"
+                    style={{
+                      backgroundColor: theme.cardBg,
+                      borderColor: theme.borderColor,
+                      color: theme.textPrimary,
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowKey((prev) => !prev)}
+                    aria-label={showKey ? 'Hide API Key' : 'Show API Key'}
+                    className="absolute right-2.5 p-1 rounded cursor-pointer"
+                    style={{ color: theme.textMuted }}
+                  >
+                    {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+
+                {apiKeyInput.trim() && (
+                  <button
+                    type="button"
+                    onClick={handleRemoveCustomKey}
+                    className="inline-flex items-center gap-1 text-[11.5px] font-medium text-[#ff6b6b] hover:underline cursor-pointer"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    <span>Remove Custom Key (Use Built-In)</span>
+                  </button>
+                )}
+              </div>
+
+              {/* 2. Active AI Models */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label
+                    htmlFor="owner-chat-model"
+                    className="flex items-center gap-1.5 text-[12.5px] font-semibold mb-1.5"
+                  >
+                    <Cpu className="w-3.5 h-3.5" style={{ color: theme.accentSecondary }} />
+                    <span>Active Chat Model</span>
+                  </label>
+                  <select
+                    id="owner-chat-model"
+                    value={chatModel}
+                    onChange={(e) => setChatModel(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-xl border text-[12.5px] font-medium focus:outline-none cursor-pointer"
+                    style={{
+                      backgroundColor: theme.subSurfaceBg,
+                      borderColor: theme.borderColor,
+                      color: theme.textPrimary,
+                    }}
+                  >
+                    {CHAT_MODEL_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="owner-image-model"
+                    className="flex items-center gap-1.5 text-[12.5px] font-semibold mb-1.5"
+                  >
+                    <ImageIcon className="w-3.5 h-3.5" style={{ color: theme.accentPrimary }} />
+                    <span>Image Generation Model</span>
+                  </label>
+                  <select
+                    id="owner-image-model"
+                    value={imageModel}
+                    onChange={(e) => setImageModel(e.target.value as OwnerImageModel)}
+                    className="w-full px-3 py-2.5 rounded-xl border text-[12.5px] font-medium focus:outline-none cursor-pointer"
+                    style={{
+                      backgroundColor: theme.subSurfaceBg,
+                      borderColor: theme.borderColor,
+                      color: theme.textPrimary,
+                    }}
+                  >
+                    {IMAGE_MODEL_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* 3. Global System Prompt */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label
+                    htmlFor="owner-system-prompt"
+                    className="flex items-center gap-1.5 text-[12.5px] font-semibold"
+                  >
+                    <Terminal className="w-3.5 h-3.5" style={{ color: theme.accentPrimary }} />
+                    <span>Global System Prompt Override</span>
+                  </label>
+                  {globalSystemPrompt.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => setGlobalSystemPrompt('')}
+                      className="inline-flex items-center gap-1 text-[11px] font-medium hover:underline cursor-pointer"
+                      style={{ color: theme.accentSecondary }}
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>Reset Default</span>
+                    </button>
+                  )}
+                </div>
+                <textarea
+                  id="owner-system-prompt"
+                  rows={3}
+                  value={globalSystemPrompt}
+                  onChange={(e) => setGlobalSystemPrompt(e.target.value)}
+                  placeholder="Optional global instructions appended/applied across all Roosters AI chats (leave blank to use default Roosters AI instructions)..."
+                  className="w-full px-3.5 py-2.5 rounded-xl border text-[12.5px] focus:outline-none resize-y"
+                  style={{
+                    backgroundColor: theme.subSurfaceBg,
+                    borderColor: theme.borderColor,
+                    color: theme.textPrimary,
+                  }}
+                />
+              </div>
+
+              {/* 4. Announcement Banner & Maintenance Mode */}
+              <div
+                className="rounded-xl border p-3.5 space-y-3"
+                style={{
+                  backgroundColor: theme.subSurfaceBg,
+                  borderColor: theme.borderColor,
+                }}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Megaphone className="w-4 h-4 shrink-0" style={{ color: theme.accentSecondary }} />
+                    <div>
+                      <p className="text-[12.5px] font-semibold">Top Announcement Banner</p>
+                      <p className="text-[11px]" style={{ color: theme.textMuted }}>
+                        Display a broadcast bar across the top of the app
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={announcementEnabled}
+                    onClick={() => setAnnouncementEnabled((prev) => !prev)}
+                    className="w-11 h-6 rounded-full p-0.5 transition-colors flex items-center cursor-pointer shrink-0"
+                    style={{
+                      backgroundColor: announcementEnabled ? theme.accentSecondary : '#334155',
+                      justifyContent: announcementEnabled ? 'flex-end' : 'flex-start',
+                    }}
+                  >
+                    <span className="w-5 h-5 rounded-full bg-white shadow" />
+                  </button>
+                </div>
+
+                {announcementEnabled && (
+                  <input
+                    type="text"
+                    value={announcementText}
+                    onChange={(e) => setAnnouncementText(e.target.value)}
+                    placeholder="Enter announcement text (e.g., 'Welcome to Roosters AI v2.0 — Now with Live Camera Vision!')"
+                    className="w-full px-3 py-2 rounded-xl border text-[12.5px] focus:outline-none"
+                    style={{
+                      backgroundColor: theme.cardBg,
+                      borderColor: theme.borderColor,
+                      color: theme.textPrimary,
+                    }}
+                  />
+                )}
+
+                <div
+                  className="pt-2.5 border-t flex items-center justify-between gap-3"
+                  style={{ borderColor: theme.borderColor }}
+                >
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle
+                      className="w-4 h-4 shrink-0"
+                      style={{ color: maintenanceMode ? '#f59e0b' : theme.textMuted }}
+                    />
+                    <div>
+                      <p className="text-[12.5px] font-semibold">Maintenance Mode</p>
+                      <p className="text-[11px]" style={{ color: theme.textMuted }}>
+                        Temporarily pause user chat access with an owner unlock option
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={maintenanceMode}
+                    onClick={() => setMaintenanceMode((prev) => !prev)}
+                    className="w-11 h-6 rounded-full p-0.5 transition-colors flex items-center cursor-pointer shrink-0"
+                    style={{
+                      backgroundColor: maintenanceMode ? '#f59e0b' : '#334155',
+                      justifyContent: maintenanceMode ? 'flex-end' : 'flex-start',
+                    }}
+                  >
+                    <span className="w-5 h-5 rounded-full bg-white shadow" />
+                  </button>
+                </div>
+              </div>
+
+              {/* 5. Update Owner Password */}
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 justify-between">
+                <label htmlFor="owner-new-pin" className="text-[12px] font-medium" style={{ color: theme.textSecondary }}>
+                  Update Owner Password (optional):
+                </label>
+                <input
+                  id="owner-new-pin"
+                  type="password"
+                  value={newOwnerPin}
+                  onChange={(e) => setNewOwnerPin(e.target.value)}
+                  placeholder="Leave blank to keep current password"
+                  className="sm:w-64 px-3 py-1.5 rounded-lg border text-[12.5px] focus:outline-none"
+                  style={{
+                    backgroundColor: theme.subSurfaceBg,
+                    borderColor: theme.borderColor,
+                    color: theme.textPrimary,
+                  }}
+                />
+              </div>
+
+              {statusMessage && (
+                <div className="flex items-center gap-2 text-[12.5px] font-medium text-emerald-400">
+                  <Check className="w-4 h-4" />
+                  <span>{statusMessage}</span>
+                </div>
+              )}
+            </div>
+
+            <div
+              className="px-5 py-3.5 border-t flex items-center justify-end gap-2.5"
+              style={{ borderColor: theme.borderColor }}
+            >
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2 rounded-xl border text-[13px] font-medium cursor-pointer"
+                style={{
+                  backgroundColor: theme.subSurfaceBg,
+                  borderColor: theme.borderColor,
+                  color: theme.textSecondary,
+                }}
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveAll}
+                className="inline-flex items-center gap-1.5 px-5 py-2 rounded-xl text-[13px] font-bold transition-all hover:brightness-110 cursor-pointer"
+                style={{
+                  backgroundImage: theme.sendButtonGradient,
+                  color: theme.sendButtonText,
+                }}
+              >
+                <Check className="w-4 h-4" />
+                <span>Save Owner Settings</span>
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

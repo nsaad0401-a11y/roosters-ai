@@ -25,7 +25,7 @@ export interface MessageAttachment {
   dataUrl: string;
   textContent?: string;
   fileSize?: number;
-  source: 'upload' | 'screen';
+  source: 'upload' | 'screen' | 'camera';
 }
 
 export interface GeneratedArtwork {
@@ -67,6 +67,16 @@ export type VoicePresetId =
   | 'news-anchor'
   | 'cloned';
 
+export type ClonedVoiceLanguage = 'Urdu' | 'English' | 'Hindi' | 'Arabic' | 'Spanish';
+
+export type VoiceAccentToneId =
+  | 'pakistani-south-asian'
+  | 'american'
+  | 'british'
+  | 'natural-friendly'
+  | 'deep-serious'
+  | 'news-anchor';
+
 export interface ClonedVoiceProfile {
   id?: string;
   name: string;
@@ -78,6 +88,8 @@ export interface ClonedVoiceProfile {
   spectralBrightness: number;
   genderHint: 'male' | 'female' | 'neutral';
   timbreLabel: string;
+  language?: ClonedVoiceLanguage;
+  accentTone?: VoiceAccentToneId;
   preferredVoiceURI?: string;
   sampleDataUrl?: string;
 }
@@ -90,11 +102,38 @@ export interface VoiceStudioSettings {
   voiceMessageMode?: boolean;
 }
 
+export type ResponseStyleMode = 'simple' | 'detailed' | 'study';
+export type VoiceGenderChoice = 'default' | 'male' | 'female';
+export type SpeechSpeedChoice = 0.8 | 1.0 | 1.2;
+
+export interface UserAppSettings {
+  responseStyle: ResponseStyleMode;
+  preferredLanguage: string;
+  voiceGender: VoiceGenderChoice;
+  speechSpeed: SpeechSpeedChoice;
+  customInstructions: string;
+}
+
+export type OwnerImageModel = 'flux' | 'flux-realism' | 'turbo' | 'horde';
+
+export interface OwnerConfig {
+  chatModel: string;
+  imageModel: OwnerImageModel;
+  globalSystemPrompt: string;
+  announcementEnabled: boolean;
+  announcementText: string;
+  maintenanceMode: boolean;
+  ownerPin: string;
+}
+
+
 export interface MessageVoiceNote {
   voiceName: string;
   pitch: number;
   rate: number;
   genderHint: 'male' | 'female' | 'neutral';
+  language?: ClonedVoiceLanguage;
+  accentTone?: VoiceAccentToneId;
   preferredVoiceURI?: string;
   durationEstSec: number;
   isUserVoiceMessage?: boolean;

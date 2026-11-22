@@ -1,4 +1,14 @@
-import { ActiveUser, ChatSession, UserAccount } from '../types';
+import {
+  ActiveUser,
+  ChatSession,
+  OwnerConfig,
+  OwnerImageModel,
+  ResponseStyleMode,
+  SpeechSpeedChoice,
+  UserAccount,
+  UserAppSettings,
+  VoiceGenderChoice,
+} from '../types';
 import { DEFAULT_THEME_SETTINGS, ThemeSettings } from '../themes';
 
 const ACCOUNTS_KEY = 'roosters_ai_accounts_v1';
@@ -265,6 +275,34 @@ export async function loadUserChatsFromIndexedDB(
   return null;
 }
 
+export async function clearUserChats(
+  user: Pick<ActiveUser, 'id' | 'email' | 'isGuest'> | string
+): Promise<void> {
+  if (isGuestAccount(user)) {
+    await purgeGuestChatStorage();
+    return;
+  }
+  const userId = typeof user === 'string' ? user : user.id;
+  const scopedKey = typeof user === 'string' ? user : getScopedAccountKey(user);
+  memoryChats.delete(scopedKey);
+  memoryChats.delete(userId);
+  safeRemoveItem(`${CHATS_PREFIX}${scopedKey}`);
+  if (scopedKey !== userId) {
+    safeRemoveItem(`${CHATS_PREFIX}${userId}`);
+  }
+  const db = await openChatsIDB();
+  if (!db) return;
+  try {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).delete(scopedKey);
+    if (scopedKey !== userId) {
+      tx.objectStore(IDB_STORE).delete(userId);
+    }
+  } catch {
+    // Ignore IDB clear errors
+  }
+}
+
 export function saveUserChats(
   user: Pick<ActiveUser, 'id' | 'email' | 'isGuest'> | string,
   sessions: ChatSession[]
@@ -277,13 +315,23 @@ export function saveUserChats(
   const scopedKey = typeof user === 'string' ? user : getScopedAccountKey(user);
   memoryChats.set(scopedKey, sessions);
 
-  // Full backup in IndexedDB (supports larger histories & offline reading)
+  // Full backup in IndexedDB (supports crisp HD DataURLs & offline reading)
   void writeChatsToIDB(scopedKey, sessions.slice(0, 40));
 
   const compactSessions = sessions.slice(0, 20).map((session) => ({
     ...session,
     messages: session.messages.map((msg) => ({
       ...msg,
+      generatedImage:
+        msg.generatedImage &&
+        msg.generatedImage.imageUrl &&
+        msg.generatedImage.imageUrl.startsWith('data:') &&
+        msg.generatedImage.imageUrl.length > 220000
+          ? {
+              ...msg.generatedImage,
+              imageUrl: '',
+            }
+          : msg.generatedImage,
       attachment: msg.attachment
         ? {
             ...msg.attachment,
@@ -378,15 +426,51 @@ function getProfileStorageKey(profile: import('../types').ClonedVoiceProfile): s
   return profile.id || String(profile.createdAt);
 }
 
+function normalizeClonedLanguage(
+  lang?: string
+): import('../types').ClonedVoiceLanguage {
+  if (
+    lang === 'Urdu' ||
+    lang === 'English' ||
+    lang === 'Hindi' ||
+    lang === 'Arabic' ||
+    lang === 'Spanish'
+  ) {
+    return lang;
+  }
+  return 'English';
+}
+
+function normalizeAccentTone(
+  accent?: string
+): import('../types').VoiceAccentToneId {
+  if (
+    accent === 'pakistani-south-asian' ||
+    accent === 'american' ||
+    accent === 'british' ||
+    accent === 'natural-friendly' ||
+    accent === 'deep-serious' ||
+    accent === 'news-anchor'
+  ) {
+    return accent;
+  }
+  return 'natural-friendly';
+}
+
 function hydrateProfileSample(
   profile: import('../types').ClonedVoiceProfile
 ): import('../types').ClonedVoiceProfile {
-  if (profile.sampleDataUrl) {
-    memorySampleAudioMap.set(getProfileStorageKey(profile), profile.sampleDataUrl);
-    return profile;
+  const normalized: import('../types').ClonedVoiceProfile = {
+    ...profile,
+    language: normalizeClonedLanguage(profile.language),
+    accentTone: normalizeAccentTone(profile.accentTone),
+  };
+  if (normalized.sampleDataUrl) {
+    memorySampleAudioMap.set(getProfileStorageKey(normalized), normalized.sampleDataUrl);
+    return normalized;
   }
-  const cached = memorySampleAudioMap.get(getProfileStorageKey(profile));
-  return cached ? { ...profile, sampleDataUrl: cached } : profile;
+  const cached = memorySampleAudioMap.get(getProfileStorageKey(normalized));
+  return cached ? { ...normalized, sampleDataUrl: cached } : normalized;
 }
 
 export function loadVoiceSettings(): import('../types').VoiceStudioSettings {
@@ -426,14 +510,14 @@ function compactClonedProfileForStorage(
   return {
     ...profile,
     sampleDataUrl:
-      profile.sampleDataUrl && profile.sampleDataUrl.length < 450_000
+      profile.sampleDataUrl && profile.sampleDataUrl.length < 350_000
         ? profile.sampleDataUrl
         : undefined,
   };
 }
 
 export function saveVoiceSettings(settings: import('../types').VoiceStudioSettings): void {
-  const hydratedSaved = (settings.savedProfiles ?? []).slice(0, 6).map(hydrateProfileSample);
+  const hydratedSaved = (settings.savedProfiles ?? []).slice(0, 8).map(hydrateProfileSample);
   const hydratedCloned = settings.clonedProfile
     ? hydrateProfileSample(settings.clonedProfile)
     : null;
@@ -455,5 +539,112 @@ export function saveVoiceSettings(settings: import('../types').VoiceStudioSettin
   };
   safeSetItem(VOICE_SETTINGS_KEY, JSON.stringify(compactForLocalStorage));
 }
+
+const USER_SETTINGS_KEY = 'roosters_ai_user_settings_v1';
+
+export const DEFAULT_USER_SETTINGS: UserAppSettings = {
+  responseStyle: 'simple',
+  preferredLanguage: 'Auto-Detect',
+  voiceGender: 'default',
+  speechSpeed: 1.0,
+  customInstructions: '',
+};
+
+let memoryUserSettings: UserAppSettings = { ...DEFAULT_USER_SETTINGS };
+
+export function loadUserSettings(): UserAppSettings {
+  const raw = safeGetItem(USER_SETTINGS_KEY);
+  if (!raw) return memoryUserSettings;
+  try {
+    const parsed = JSON.parse(raw) as Partial<UserAppSettings>;
+    const style: ResponseStyleMode =
+      parsed.responseStyle === 'detailed' || parsed.responseStyle === 'study'
+        ? parsed.responseStyle
+        : 'simple';
+    const voiceGender: VoiceGenderChoice =
+      parsed.voiceGender === 'male' || parsed.voiceGender === 'female'
+        ? parsed.voiceGender
+        : 'default';
+    const speechSpeed: SpeechSpeedChoice =
+      parsed.speechSpeed === 0.8 || parsed.speechSpeed === 1.2 ? parsed.speechSpeed : 1.0;
+
+    const merged: UserAppSettings = {
+      responseStyle: style,
+      preferredLanguage:
+        typeof parsed.preferredLanguage === 'string' && parsed.preferredLanguage.trim()
+          ? parsed.preferredLanguage.trim()
+          : 'Auto-Detect',
+      voiceGender,
+      speechSpeed,
+      customInstructions:
+        typeof parsed.customInstructions === 'string' ? parsed.customInstructions : '',
+    };
+    memoryUserSettings = merged;
+    return merged;
+  } catch {
+    return memoryUserSettings;
+  }
+}
+
+export function saveUserSettings(settings: UserAppSettings): void {
+  memoryUserSettings = settings;
+  safeSetItem(USER_SETTINGS_KEY, JSON.stringify(settings));
+}
+
+const OWNER_CONFIG_KEY = 'roosters_ai_owner_config_v1';
+
+export const DEFAULT_OWNER_CONFIG: OwnerConfig = {
+  chatModel: 'auto',
+  imageModel: 'flux',
+  globalSystemPrompt: '',
+  announcementEnabled: false,
+  announcementText: '',
+  maintenanceMode: false,
+  ownerPin: 'sadd1+2=3',
+};
+
+let memoryOwnerConfig: OwnerConfig = { ...DEFAULT_OWNER_CONFIG };
+
+export function loadOwnerConfig(): OwnerConfig {
+  const raw = safeGetItem(OWNER_CONFIG_KEY);
+  if (!raw) return memoryOwnerConfig;
+  try {
+    const parsed = JSON.parse(raw) as Partial<OwnerConfig>;
+    const imgModel: OwnerImageModel =
+      parsed.imageModel === 'flux-realism' ||
+      parsed.imageModel === 'turbo' ||
+      parsed.imageModel === 'horde'
+        ? parsed.imageModel
+        : 'flux';
+
+    const rawPin = typeof parsed.ownerPin === 'string' ? parsed.ownerPin.trim() : '';
+    const resolvedPin = !rawPin || rawPin === '2026' ? 'sadd1+2=3' : rawPin;
+
+    const merged: OwnerConfig = {
+      chatModel:
+        typeof parsed.chatModel === 'string' && parsed.chatModel.trim()
+          ? parsed.chatModel.trim()
+          : 'auto',
+      imageModel: imgModel,
+      globalSystemPrompt:
+        typeof parsed.globalSystemPrompt === 'string' ? parsed.globalSystemPrompt : '',
+      announcementEnabled: Boolean(parsed.announcementEnabled),
+      announcementText:
+        typeof parsed.announcementText === 'string' ? parsed.announcementText : '',
+      maintenanceMode: Boolean(parsed.maintenanceMode),
+      ownerPin: resolvedPin,
+    };
+    memoryOwnerConfig = merged;
+    return merged;
+  } catch {
+    return memoryOwnerConfig;
+  }
+}
+
+export function saveOwnerConfig(config: OwnerConfig): void {
+  memoryOwnerConfig = config;
+  safeSetItem(OWNER_CONFIG_KEY, JSON.stringify(config));
+}
+
 
 

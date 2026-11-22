@@ -1,12 +1,15 @@
 import {
   CheckCircle2,
   Dna,
+  Globe,
   Loader2,
   Mic,
   Pause,
   Play,
+  Plus,
   Send,
   Sliders,
+  Sparkles,
   Square,
   Trash2,
   Upload,
@@ -15,14 +18,30 @@ import {
 } from 'lucide-react';
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from 'react';
 import { AppTheme } from '../themes';
-import { ClonedVoiceProfile, VoicePresetId, VoiceStudioSettings } from '../types';
+import {
+  ClonedVoiceLanguage,
+  ClonedVoiceProfile,
+  VoiceAccentToneId,
+  VoicePresetId,
+  VoiceStudioSettings,
+} from '../types';
 import {
   analyzeVoiceAudioBlob,
+  cancelVoicePlayback,
+  CLONED_VOICE_LANGUAGES,
   estimateFramePitchHz,
   estimateSpeechDurationSec,
+  getAccentToneMeta,
   getAvailableSpeechVoices,
+  getSamplePreviewText,
+  normalizeClonedVoiceLanguage,
+  SAFE_PITCH_MAX,
+  SAFE_PITCH_MIN,
+  SAFE_RATE_MAX,
+  SAFE_RATE_MIN,
   speakWithVoiceProfile,
   unlockSpeechSynthesis,
+  VOICE_ACCENT_TONES,
   VOICE_PRESETS,
 } from '../utils/voiceEngine';
 import { VoiceNotePlayer } from './VoiceNotePlayer';
@@ -48,6 +67,15 @@ export function VoiceCloneModal({
   onSendVoiceMessageToChat,
   onClose,
 }: VoiceCloneModalProps) {
+  const activeCloned = settings.clonedProfile;
+  const [draftName, setDraftName] = useState<string>('');
+  const [draftLanguage, setDraftLanguage] = useState<ClonedVoiceLanguage>(() =>
+    normalizeClonedVoiceLanguage(activeCloned?.language ?? language)
+  );
+  const [draftAccent, setDraftAccent] = useState<VoiceAccentToneId>(
+    () => activeCloned?.accentTone ?? 'natural-friendly'
+  );
+
   const [isRecording, setIsRecording] = useState(false);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [micLevel, setMicLevel] = useState(0);
@@ -110,7 +138,7 @@ export function VoiceCloneModal({
       setIsRecording(false);
       setIsStudioPlaying(false);
       setIsStudioPaused(false);
-      window.speechSynthesis?.cancel();
+      cancelVoicePlayback();
       if (sampleAudioRef.current) {
         sampleAudioRef.current.pause();
         sampleAudioRef.current = null;
@@ -119,8 +147,14 @@ export function VoiceCloneModal({
       return;
     }
 
+    const activeProf = settings.clonedProfile;
+    setDraftLanguage(normalizeClonedVoiceLanguage(activeProf?.language ?? language));
+    setDraftAccent(activeProf?.accentTone ?? 'natural-friendly');
+
     const refreshVoices = () => {
-      setAvailableVoices(getAvailableSpeechVoices(language));
+      const targetLang = activeProf?.language ?? normalizeClonedVoiceLanguage(language);
+      const targetAccent = activeProf?.accentTone ?? 'natural-friendly';
+      setAvailableVoices(getAvailableSpeechVoices(targetLang, targetAccent));
     };
     refreshVoices();
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
@@ -133,11 +167,17 @@ export function VoiceCloneModal({
         window.speechSynthesis.onvoiceschanged = null;
       }
     };
-  }, [isOpen, language]);
+  }, [isOpen, language, settings.clonedProfile]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setAvailableVoices(getAvailableSpeechVoices(draftLanguage, draftAccent));
+  }, [isOpen, draftLanguage, draftAccent]);
 
   if (!isOpen) return null;
 
-  const savedProfiles = settings.savedProfiles ?? (settings.clonedProfile ? [settings.clonedProfile] : []);
+  const savedProfiles =
+    settings.savedProfiles ?? (settings.clonedProfile ? [settings.clonedProfile] : []);
   const cloned = settings.clonedProfile;
   const isSampleVoiceActive = settings.activeVoiceId === 'cloned' && Boolean(cloned);
 
@@ -154,6 +194,29 @@ export function VoiceCloneModal({
     });
   };
 
+  const handleLanguageSelect = (nextLang: ClonedVoiceLanguage) => {
+    setDraftLanguage(nextLang);
+    if (cloned) {
+      updateClonedProfileFields({
+        language: nextLang,
+        preferredVoiceURI: undefined,
+      });
+      setStatusMessage(`Voice language updated to ${nextLang}.`);
+    }
+  };
+
+  const handleAccentSelect = (nextAccent: VoiceAccentToneId) => {
+    setDraftAccent(nextAccent);
+    const meta = getAccentToneMeta(nextAccent);
+    if (cloned) {
+      updateClonedProfileFields({
+        accentTone: nextAccent,
+        preferredVoiceURI: undefined,
+      });
+      setStatusMessage(`Accent & Tone (Lahja) set to ${meta.label}.`);
+    }
+  };
+
   const processRecordedOrUploadedAudio = async (
     blob: Blob,
     durationSec: number,
@@ -161,10 +224,10 @@ export function VoiceCloneModal({
   ) => {
     setIsAnalyzing(true);
     setErrorMessage('');
-    setStatusMessage('Analyzing vocal pitch (Hz), tone brightness, and speaking speed...');
+    setStatusMessage('Calibrating natural vocal pitch (Hz), clarity, and accent match...');
 
     const nextIndex = savedProfiles.length + 1;
-    const defaultName = `Sample Voice ${nextIndex}`;
+    const customName = draftName.trim() || `Custom Voice ${nextIndex}`;
 
     try {
       const profile: ClonedVoiceProfile = await analyzeVoiceAudioBlob(blob, {
@@ -172,11 +235,12 @@ export function VoiceCloneModal({
         liveMedianHz: liveMetrics?.medianHz ?? null,
         liveBrightness: liveMetrics?.brightness ?? null,
         liveRate: liveMetrics?.rate ?? null,
-        profileName: defaultName,
-        language,
+        profileName: customName,
+        language: draftLanguage,
+        accentTone: draftAccent,
       });
 
-      const nextSaved = [profile, ...savedProfiles].slice(0, 6);
+      const nextSaved = [profile, ...savedProfiles].slice(0, 8);
       const nextSettings: VoiceStudioSettings = {
         ...settings,
         activeVoiceId: 'cloned',
@@ -185,18 +249,26 @@ export function VoiceCloneModal({
         autoSpeakReplies: settings.autoSpeakReplies ?? true,
       };
       onUpdate(nextSettings);
+      setDraftName('');
       setStatusMessage(
-        `${profile.name} calibrated & activated (${profile.fundamentalHz} Hz · Pitch ${profile.pitch} · Speed ${profile.rate}x).`
+        `"${profile.name}" saved & activated (${profile.language} · ${getAccentToneMeta(profile.accentTone).shortLabel} · ${profile.fundamentalHz} Hz).`
       );
 
       unlockSpeechSynthesis();
+      const previewLine = getSamplePreviewText(
+        draftLanguage,
+        draftAccent,
+        profile.name
+      );
       speakWithVoiceProfile({
-        text: `Hello! ${profile.name} is now calibrated and active at ${profile.fundamentalHz} hertz.`,
-        language,
+        text: previewLine,
+        language: draftLanguage,
         voiceSettings: nextSettings,
       });
     } catch {
-      setErrorMessage('Could not analyze audio sample. Please try recording again or uploading a WAV/MP3 clip.');
+      setErrorMessage(
+        'Could not process this audio sample. Please record cleanly for 5–10s or upload a WAV/MP3 clip.'
+      );
       setStatusMessage('');
     } finally {
       setIsAnalyzing(false);
@@ -214,13 +286,16 @@ export function VoiceCloneModal({
       !navigator.mediaDevices.getUserMedia
     ) {
       setErrorMessage(
-        'Direct microphone recording is unavailable in this browser. Upload an audio clip below instead!'
+        'Direct microphone recording is unavailable in this browser. Upload a short audio clip below instead!'
       );
       return;
     }
 
+    cancelVoicePlayback();
     setErrorMessage('');
-    setStatusMessage('Speak naturally for 5–10 seconds (measuring real vocal Hz, brightness & speed)...');
+    setStatusMessage(
+      'Speak clearly for 5–10 seconds (noise suppression enabled for crisp natural cloning)...'
+    );
     setElapsedSec(0);
     setLiveHz(null);
     setLiveSpeed(1.0);
@@ -231,7 +306,13 @@ export function VoiceCloneModal({
     liveEnergyAvgRef.current = 0.02;
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
       micStreamRef.current = stream;
       const meterStartedAt = Date.now();
 
@@ -268,7 +349,6 @@ export function VoiceCloneModal({
           const avgMag = total / freqData.length / 255;
           setMicLevel(Math.min(1, avgMag * 2.4));
 
-          // Syllable energy burst cadence estimation for live speaking speed
           liveEnergyAvgRef.current = liveEnergyAvgRef.current * 0.94 + avgMag * 0.06;
           const burstThreshold = Math.max(0.028, liveEnergyAvgRef.current * 1.25);
           if (!liveSpeedAboveRef.current && avgMag > burstThreshold) {
@@ -280,13 +360,16 @@ export function VoiceCloneModal({
           const elapsedSecNow = Math.max(0.8, (Date.now() - meterStartedAt) / 1000);
           const peaksPerSec = liveSpeedPeaksRef.current / elapsedSecNow;
           const estimatedSpeed = Math.max(
-            0.78,
-            Math.min(1.28, Number((0.86 + (peaksPerSec / 6.5) * 0.3).toFixed(2)))
+            SAFE_RATE_MIN,
+            Math.min(SAFE_RATE_MAX, Number((0.92 + (peaksPerSec / 6.5) * 0.18).toFixed(2)))
           );
           setLiveSpeed(estimatedSpeed);
 
           if (lowEnergy + highEnergy > 40) {
-            const brightRatio = Math.min(0.95, Math.max(0.1, highEnergy / (lowEnergy + highEnergy + 1)));
+            const brightRatio = Math.min(
+              0.95,
+              Math.max(0.1, highEnergy / (lowEnergy + highEnergy + 1))
+            );
             liveBrightnessSamplesRef.current.push(brightRatio);
             setLiveBrightnessPct(Math.round(brightRatio * 100));
           }
@@ -308,7 +391,9 @@ export function VoiceCloneModal({
           ? 'audio/webm;codecs=opus'
           : canCheckType && MediaRecorder.isTypeSupported('audio/webm')
             ? 'audio/webm'
-            : '';
+            : canCheckType && MediaRecorder.isTypeSupported('audio/mp4')
+              ? 'audio/mp4'
+              : '';
       const recorder = preferredMime
         ? new MediaRecorder(stream, { mimeType: preferredMime })
         : new MediaRecorder(stream);
@@ -333,8 +418,8 @@ export function VoiceCloneModal({
         const measuredLiveRate =
           liveSpeedPeaksRef.current > 0
             ? Math.max(
-                0.78,
-                Math.min(1.28, Number((0.86 + (measuredPeaksPerSec / 6.5) * 0.3).toFixed(2)))
+                SAFE_RATE_MIN,
+                Math.min(SAFE_RATE_MAX, Number((0.92 + (measuredPeaksPerSec / 6.5) * 0.18).toFixed(2)))
               )
             : null;
 
@@ -343,7 +428,9 @@ export function VoiceCloneModal({
 
         const blob = new Blob(chunksRef.current, { type: recorder.mimeType || 'audio/webm' });
         if (blob.size < 200) {
-          setErrorMessage('Recording was too quiet or empty. Please speak clearly for 5–10s and try again.');
+          setErrorMessage(
+            'Recording was too quiet or empty. Please speak clearly for 5–10 seconds and try again.'
+          );
           setStatusMessage('');
           return;
         }
@@ -355,7 +442,7 @@ export function VoiceCloneModal({
       };
 
       mediaRecorderRef.current = recorder;
-      recorder.start();
+      recorder.start(250);
       setIsRecording(true);
 
       timerIntervalRef.current = window.setInterval(() => {
@@ -388,7 +475,7 @@ export function VoiceCloneModal({
 
   const handleToggleActiveSampleVoice = () => {
     if (!cloned) {
-      setErrorMessage('Please record or upload a voice sample first to activate your Sample Voice.');
+      setErrorMessage('Please record or upload a voice sample first to activate your Cloned Voice.');
       return;
     }
     const nextId: VoicePresetId = isSampleVoiceActive ? 'default' : 'cloned';
@@ -398,22 +485,50 @@ export function VoiceCloneModal({
     });
     setStatusMessage(
       nextId === 'cloned'
-        ? `Active Voice ON: ${cloned.name}`
+        ? `Active Voice ON: ${cloned.name} (${cloned.language || draftLanguage})`
         : 'Active Voice switched back to Default Roosters AI.'
     );
   };
 
   const handleSelectSavedProfile = (profile: ClonedVoiceProfile) => {
-    onUpdate({
+    const profLang = normalizeClonedVoiceLanguage(profile.language);
+    const profAccent = profile.accentTone ?? 'natural-friendly';
+    setDraftLanguage(profLang);
+    setDraftAccent(profAccent);
+
+    const nextSettings: VoiceStudioSettings = {
       ...settings,
       activeVoiceId: 'cloned',
       clonedProfile: profile,
-    });
+    };
+    onUpdate(nextSettings);
+    setStatusMessage(
+      `Switched to "${profile.name}" (${profLang} · ${getAccentToneMeta(profAccent).shortLabel}).`
+    );
+
     unlockSpeechSynthesis();
     speakWithVoiceProfile({
-      text: `Switched to ${profile.name}.`,
-      language,
-      voiceSettings: { ...settings, activeVoiceId: 'cloned', clonedProfile: profile },
+      text: getSamplePreviewText(profLang, profAccent, profile.name),
+      language: profLang,
+      voiceSettings: nextSettings,
+    });
+  };
+
+  const handlePreviewClonedVoice = () => {
+    if (!cloned) return;
+    const profLang = normalizeClonedVoiceLanguage(cloned.language ?? draftLanguage);
+    const profAccent = cloned.accentTone ?? draftAccent;
+    const nextSettings: VoiceStudioSettings = {
+      ...settings,
+      activeVoiceId: 'cloned',
+      clonedProfile: { ...cloned, language: profLang, accentTone: profAccent },
+    };
+    onUpdate(nextSettings);
+    unlockSpeechSynthesis();
+    speakWithVoiceProfile({
+      text: getSamplePreviewText(profLang, profAccent, cloned.name),
+      language: profLang,
+      voiceSettings: nextSettings,
     });
   };
 
@@ -425,12 +540,16 @@ export function VoiceCloneModal({
     const preset = VOICE_PRESETS.find((p) => p.id === id);
     const previewText =
       id === 'cloned' && cloned
-        ? `Hello! Testing ${cloned.name} at pitch ${cloned.pitch} and speed ${cloned.rate}.`
+        ? getSamplePreviewText(
+            normalizeClonedVoiceLanguage(cloned.language ?? draftLanguage),
+            cloned.accentTone ?? draftAccent,
+            cloned.name
+          )
         : preset?.previewLine || 'Roosters AI voice activated.';
     unlockSpeechSynthesis();
     speakWithVoiceProfile({
       text: previewText,
-      language,
+      language: id === 'cloned' && cloned ? cloned.language || draftLanguage : language,
       voiceSettings: { ...settings, activeVoiceId: id },
     });
   };
@@ -467,7 +586,7 @@ export function VoiceCloneModal({
       clonedProfile: nextCloned,
       savedProfiles: remaining,
     });
-    setStatusMessage(`${target.name} removed.`);
+    setStatusMessage(`"${target.name}" removed.`);
   };
 
   const handleSpeakTextInClonedVoice = (e?: FormEvent) => {
@@ -480,13 +599,21 @@ export function VoiceCloneModal({
     setIsStudioPaused(false);
     setIsStudioPlaying(true);
 
-    const activeOrSampleSettings: VoiceStudioSettings = cloned
-      ? { ...settings, activeVoiceId: 'cloned', clonedProfile: cloned }
+    const targetProfile = cloned
+      ? {
+          ...cloned,
+          language: normalizeClonedVoiceLanguage(cloned.language ?? draftLanguage),
+          accentTone: cloned.accentTone ?? draftAccent,
+        }
+      : null;
+
+    const activeOrSampleSettings: VoiceStudioSettings = targetProfile
+      ? { ...settings, activeVoiceId: 'cloned', clonedProfile: targetProfile }
       : settings;
 
     speakWithVoiceProfile({
       text,
-      language,
+      language: targetProfile?.language ?? draftLanguage,
       voiceSettings: activeOrSampleSettings,
       onEnd: () => {
         setIsStudioPlaying(false);
@@ -505,7 +632,7 @@ export function VoiceCloneModal({
       try {
         window.speechSynthesis?.pause();
       } catch {
-        window.speechSynthesis?.cancel();
+        cancelVoicePlayback();
       }
       setIsStudioPlaying(false);
       setIsStudioPaused(true);
@@ -528,7 +655,7 @@ export function VoiceCloneModal({
       : settings;
     speakWithVoiceProfile({
       text: lastSpokenText,
-      language,
+      language: cloned?.language ?? draftLanguage,
       voiceSettings: activeOrSampleSettings,
       onEnd: () => {
         setIsStudioPlaying(false);
@@ -542,6 +669,7 @@ export function VoiceCloneModal({
   };
 
   const activeVoiceName = cloned ? cloned.name : 'Default Roosters AI';
+  const currentAccentMeta = getAccentToneMeta(draftAccent);
 
   return (
     <div
@@ -575,13 +703,12 @@ export function VoiceCloneModal({
                 Voice Clone Studio
               </h2>
               <p className="text-[12px]" style={{ color: theme.textMuted }}>
-                Record your 5–10s sample voice, calibrate pitch &amp; speed, and speak any text in it
+                Clean natural voice cloning with 5 languages, Lahja accents &amp; multi-profile saving
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2 ml-auto">
-            {/* Active Voice Toggle Switch inside Voice Clone Studio */}
             <button
               type="button"
               role="switch"
@@ -618,30 +745,109 @@ export function VoiceCloneModal({
           </div>
         </div>
 
-        {/* Section 1: 5-to-10 Second Sample Voice Recorder & Uploader */}
+        {/* Section 1: Create & Calibrate Cloned Voice */}
         <div
-          className="rounded-xl border p-4 mb-4"
+          className="rounded-xl border p-4 mb-4 space-y-3.5"
           style={{
             backgroundColor: theme.subSurfaceBg,
             borderColor: isSampleVoiceActive ? theme.accentPrimary : theme.borderColor,
           }}
         >
-          <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h3 className="text-[14.5px] font-bold" style={{ color: theme.accentPrimary }}>
-                1. Sample Voice Recording (5–10 Seconds)
+                1. Clone &amp; Calibrate Your Voice (5–10 Seconds)
               </h3>
               <p className="text-[12px] mt-0.5" style={{ color: theme.textMuted }}>
-                Record 5–10s of natural speech or upload an audio clip to calibrate Hz, brightness &amp; pace.
+                Pick language &amp; accent (Lahja), name your voice, then record or upload a clear sample.
               </p>
             </div>
+          </div>
+
+          {/* Counted 5-Language Selector + Accent & Tone (Lahja) Selector side-by-side */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label
+                htmlFor="voice-clone-language"
+                className="flex items-center gap-1.5 text-[12px] font-semibold mb-1.5"
+                style={{ color: theme.textPrimary }}
+              >
+                <Globe className="w-3.5 h-3.5" style={{ color: theme.accentSecondary }} />
+                <span>Language (5 Supported)</span>
+              </label>
+              <select
+                id="voice-clone-language"
+                value={draftLanguage}
+                onChange={(e) => handleLanguageSelect(e.target.value as ClonedVoiceLanguage)}
+                className="w-full rounded-xl border px-3 py-2 text-[13px] font-medium focus:outline-none cursor-pointer"
+                style={{
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.borderColor,
+                  color: theme.textPrimary,
+                }}
+              >
+                {CLONED_VOICE_LANGUAGES.map((lang) => (
+                  <option key={lang.code} value={lang.code}>
+                    {lang.label} ({lang.native})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label
+                htmlFor="voice-clone-accent"
+                className="flex items-center gap-1.5 text-[12px] font-semibold mb-1.5"
+                style={{ color: theme.textPrimary }}
+              >
+                <Sparkles className="w-3.5 h-3.5" style={{ color: theme.accentPrimary }} />
+                <span>Accent &amp; Tone (Lahja)</span>
+              </label>
+              <select
+                id="voice-clone-accent"
+                value={draftAccent}
+                onChange={(e) => handleAccentSelect(e.target.value as VoiceAccentToneId)}
+                className="w-full rounded-xl border px-3 py-2 text-[13px] font-medium focus:outline-none cursor-pointer"
+                style={{
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.borderColor,
+                  color: theme.textPrimary,
+                }}
+              >
+                {VOICE_ACCENT_TONES.map((accent) => (
+                  <option key={accent.id} value={accent.id}>
+                    {accent.label}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-[11px]" style={{ color: theme.textMuted }}>
+                {currentAccentMeta.lahjaNote}
+              </p>
+            </div>
+          </div>
+
+          {/* New Voice Name Input + Record / Upload Buttons */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+            <input
+              type="text"
+              value={draftName}
+              onChange={(e) => setDraftName(e.target.value)}
+              placeholder={`Name new voice (e.g., Custom Voice ${savedProfiles.length + 1})`}
+              aria-label="New Custom Voice Name"
+              className="flex-1 rounded-xl border px-3 py-2 text-[13px] focus:outline-none"
+              style={{
+                backgroundColor: theme.cardBg,
+                borderColor: theme.borderColor,
+                color: theme.textPrimary,
+              }}
+            />
 
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={handleToggle5to10SecRecord}
                 disabled={isAnalyzing}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-[12.5px] cursor-pointer transition-all"
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl font-bold text-[12.5px] cursor-pointer transition-all"
                 style={{
                   backgroundImage: isRecording
                     ? 'linear-gradient(135deg, #ef4444, #dc2626)'
@@ -663,8 +869,8 @@ export function VoiceCloneModal({
                   </>
                 ) : (
                   <>
-                    <Mic className="w-4 h-4" />
-                    <span>Record Sample (5–10s)</span>
+                    {savedProfiles.length > 0 ? <Plus className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                    <span>{savedProfiles.length > 0 ? 'Record New (5–10s)' : 'Record Sample (5–10s)'}</span>
                   </>
                 )}
               </button>
@@ -696,16 +902,16 @@ export function VoiceCloneModal({
           {/* Real-time Web Audio API Pitch & Brightness Meter during Recording */}
           {isRecording && (
             <div
-              className="mb-3 rounded-xl border p-3 space-y-2"
+              className="rounded-xl border p-3 space-y-2"
               style={{ backgroundColor: theme.cardBg, borderColor: theme.accentSecondary }}
             >
               <div className="flex flex-wrap items-center justify-between gap-2 text-[12px]">
                 <span className="font-semibold" style={{ color: theme.accentSecondary }}>
-                  Analyzing Vocal Telemetry...
+                  Capturing Clean Studio Voice Telemetry...
                 </span>
                 <div className="flex flex-wrap items-center gap-3 tabular-nums" style={{ color: theme.textSecondary }}>
                   <span>Pitch: <strong>{liveHz ? `${liveHz} Hz` : 'listening...'}</strong></span>
-                  <span>Brightness: <strong>{liveBrightnessPct}%</strong></span>
+                  <span>Clarity: <strong>{liveBrightnessPct}%</strong></span>
                   <span>Speed: <strong>{liveSpeed.toFixed(2)}x</strong></span>
                 </div>
               </div>
@@ -722,105 +928,128 @@ export function VoiceCloneModal({
           )}
 
           {statusMessage && (
-            <p className="text-[12.5px] text-emerald-400 font-medium mb-2">{statusMessage}</p>
+            <p className="text-[12.5px] text-emerald-400 font-medium">{statusMessage}</p>
           )}
           {errorMessage && (
-            <p className="text-[12.5px] text-[#ff4d4d] font-medium mb-2">{errorMessage}</p>
+            <p className="text-[12.5px] text-[#ff4d4d] font-medium">{errorMessage}</p>
           )}
 
-          {/* Saved Profiles Switcher if multiple */}
-          {savedProfiles.length > 1 && (
-            <div className="mb-3 flex flex-wrap items-center gap-1.5">
-              <span className="text-[11.5px] mr-1" style={{ color: theme.textMuted }}>
-                Saved Samples:
-              </span>
-              {savedProfiles.map((p) => {
-                const isSelected = cloned && (p.id ? p.id === cloned.id : p.createdAt === cloned.createdAt);
-                return (
-                  <button
-                    key={p.id || p.createdAt}
-                    type="button"
-                    onClick={() => handleSelectSavedProfile(p)}
-                    className="px-2.5 py-1 rounded-lg border text-[11.5px] font-semibold cursor-pointer"
-                    style={{
-                      backgroundColor: isSelected ? `${theme.accentPrimary}20` : theme.cardBg,
-                      borderColor: isSelected ? theme.accentPrimary : theme.borderColor,
-                      color: isSelected ? theme.accentPrimary : theme.textSecondary,
-                    }}
-                  >
-                    {p.name}
-                  </button>
-                );
-              })}
+          {/* Saved Custom Cloned Voices List (clean multi-voice switcher) */}
+          {savedProfiles.length > 0 && (
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[11.5px]" style={{ color: theme.textMuted }}>
+                <span className="font-semibold">
+                  Saved Custom Voices ({savedProfiles.length}/8)
+                </span>
+                <span>Click any voice to switch &amp; preview</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {savedProfiles.map((p) => {
+                  const isSelected =
+                    cloned && (p.id ? p.id === cloned.id : p.createdAt === cloned.createdAt);
+                  const profLang = normalizeClonedVoiceLanguage(p.language);
+                  const profAccent = getAccentToneMeta(p.accentTone);
+                  return (
+                    <div
+                      key={p.id || p.createdAt}
+                      className="rounded-xl border px-3 py-2 flex items-center justify-between gap-2 transition-colors"
+                      style={{
+                        backgroundColor: isSelected ? `${theme.accentPrimary}16` : theme.cardBg,
+                        borderColor: isSelected ? theme.accentPrimary : theme.borderColor,
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => handleSelectSavedProfile(p)}
+                        className="flex-1 min-w-0 text-left cursor-pointer"
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className="text-[12.5px] font-bold truncate"
+                            style={{ color: isSelected ? theme.accentPrimary : theme.textPrimary }}
+                          >
+                            {p.name}
+                          </span>
+                          {isSelected && (
+                            <CheckCircle2
+                              className="w-3.5 h-3.5 shrink-0"
+                              style={{ color: theme.accentPrimary }}
+                            />
+                          )}
+                        </div>
+                        <div className="text-[11px] truncate" style={{ color: theme.textMuted }}>
+                          {profLang} · {profAccent.shortLabel} · {p.fundamentalHz} Hz
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteClonedVoice(p)}
+                        aria-label={`Delete ${p.name}`}
+                        title={`Delete ${p.name}`}
+                        className="p-1.5 rounded-lg hover:text-[#ff4d4d] cursor-pointer shrink-0"
+                        style={{ color: theme.textMuted }}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 
-          {/* Calibration & Fine-Tuning Card */}
+          {/* Active Cloned Voice Fine-Tuning & Preview Card */}
           {cloned && (
             <div
-              className="mt-2 rounded-xl border p-3.5 space-y-3"
+              className="rounded-xl border p-3.5 space-y-3"
               style={{
                 backgroundColor: theme.cardBg,
                 borderColor: isSampleVoiceActive ? theme.accentPrimary : theme.borderColor,
               }}
             >
-              {/* Name + Delete + Specs */}
+              {/* Rename Inline + Specs */}
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 flex-1 min-w-[180px]">
+                <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[200px]">
                   <input
                     type="text"
                     value={cloned.name}
                     onChange={(e) => updateClonedProfileFields({ name: e.target.value })}
-                    aria-label="Sample Voice Profile Name"
-                    placeholder="Sample Voice 1"
+                    aria-label="Active Voice Profile Name"
+                    placeholder="Custom Voice Name"
                     className="px-2.5 py-1 rounded-lg border text-[13.5px] font-bold bg-transparent focus:outline-none w-44 sm:w-52"
                     style={{ borderColor: theme.borderColor, color: theme.textPrimary }}
                   />
                   <span className="text-[11.5px] tabular-nums" style={{ color: theme.textMuted }}>
-                    {cloned.fundamentalHz} Hz · {Math.round(cloned.spectralBrightness * 100)}% bright ·{' '}
-                    {cloned.timbreLabel}
+                    {cloned.fundamentalHz} Hz · {cloned.timbreLabel}
                   </span>
                 </div>
-
-                <button
-                  type="button"
-                  onClick={() => handleDeleteClonedVoice(cloned)}
-                  aria-label="Remove Cloned Voice"
-                  className="p-1.5 rounded-lg border hover:text-[#ff4d4d] cursor-pointer"
-                  style={{
-                    backgroundColor: theme.subSurfaceBg,
-                    borderColor: theme.borderColor,
-                    color: theme.textMuted,
-                  }}
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
               </div>
 
-              {/* Pitch (0.5 - 1.8) & Speed (0.7 - 1.4) Calibration Sliders */}
+              {/* Natural Distortion-Free Calibration Sliders */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                 <div>
                   <div className="flex items-center justify-between text-[12px] mb-1">
                     <span className="flex items-center gap-1 font-medium" style={{ color: theme.textSecondary }}>
                       <Sliders className="w-3 h-3" style={{ color: theme.accentPrimary }} />
-                      Pitch Calibration
+                      Natural Pitch
                     </span>
                     <span className="tabular-nums font-bold" style={{ color: theme.accentPrimary }}>
-                      {cloned.pitch.toFixed(2)}
+                      {Math.max(SAFE_PITCH_MIN, Math.min(SAFE_PITCH_MAX, cloned.pitch)).toFixed(2)}
                     </span>
                   </div>
                   <input
                     type="range"
-                    min={0.5}
-                    max={1.8}
-                    step={0.02}
-                    value={cloned.pitch}
+                    min={SAFE_PITCH_MIN}
+                    max={SAFE_PITCH_MAX}
+                    step={0.01}
+                    value={Math.max(SAFE_PITCH_MIN, Math.min(SAFE_PITCH_MAX, cloned.pitch))}
                     onChange={(e) => updateClonedProfileFields({ pitch: Number(e.target.value) })}
                     className="w-full accent-[#ffd700] cursor-pointer"
                   />
                   <div className="flex justify-between text-[10px]" style={{ color: theme.textMuted }}>
-                    <span>0.5 (Deep)</span>
-                    <span>1.8 (Bright)</span>
+                    <span>{SAFE_PITCH_MIN} (Warm Deep)</span>
+                    <span>{SAFE_PITCH_MAX} (Bright Clear)</span>
                   </div>
                 </div>
 
@@ -828,32 +1057,32 @@ export function VoiceCloneModal({
                   <div className="flex items-center justify-between text-[12px] mb-1">
                     <span className="flex items-center gap-1 font-medium" style={{ color: theme.textSecondary }}>
                       <Sliders className="w-3 h-3" style={{ color: theme.accentSecondary }} />
-                      Speed Calibration
+                      Speaking Pace
                     </span>
                     <span className="tabular-nums font-bold" style={{ color: theme.accentSecondary }}>
-                      {cloned.rate.toFixed(2)}x
+                      {Math.max(SAFE_RATE_MIN, Math.min(SAFE_RATE_MAX, cloned.rate)).toFixed(2)}x
                     </span>
                   </div>
                   <input
                     type="range"
-                    min={0.7}
-                    max={1.4}
-                    step={0.02}
-                    value={cloned.rate}
+                    min={SAFE_RATE_MIN}
+                    max={SAFE_RATE_MAX}
+                    step={0.01}
+                    value={Math.max(SAFE_RATE_MIN, Math.min(SAFE_RATE_MAX, cloned.rate))}
                     onChange={(e) => updateClonedProfileFields({ rate: Number(e.target.value) })}
                     className="w-full accent-[#00d4ff] cursor-pointer"
                   />
                   <div className="flex justify-between text-[10px]" style={{ color: theme.textMuted }}>
-                    <span>0.7x (Calm)</span>
-                    <span>1.4x (Fast)</span>
+                    <span>{SAFE_RATE_MIN}x (Calm)</span>
+                    <span>{SAFE_RATE_MAX}x (Brisk)</span>
                   </div>
                 </div>
               </div>
 
-              {/* Closest Neural Voice Match */}
+              {/* Language-Matched Neural Voice Option */}
               {availableVoices.length > 0 && (
                 <div className="flex flex-wrap items-center gap-2 text-[12px]">
-                  <span style={{ color: theme.textMuted }}>Closest Neural Voice:</span>
+                  <span style={{ color: theme.textMuted }}>Speaker Engine ({draftLanguage}):</span>
                   <select
                     value={cloned.preferredVoiceURI || ''}
                     onChange={(e) =>
@@ -866,8 +1095,10 @@ export function VoiceCloneModal({
                       color: theme.textPrimary,
                     }}
                   >
-                    <option value="">Auto-Match ({cloned.genderHint} timbre)</option>
-                    {availableVoices.slice(0, 25).map((v) => (
+                    <option value="">
+                      Auto-Match ({draftLanguage} · {currentAccentMeta.shortLabel})
+                    </option>
+                    {availableVoices.slice(0, 20).map((v) => (
                       <option key={v.voiceURI} value={v.voiceURI}>
                         {v.name} ({v.lang})
                       </option>
@@ -876,7 +1107,7 @@ export function VoiceCloneModal({
                 </div>
               )}
 
-              {/* Side-by-Side Comparison: Recorded Sample vs Calibrated Voice */}
+              {/* Side-by-Side Comparison: Recorded Sample vs Calibrated Accent Voice */}
               <div className="pt-1 space-y-2.5">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   {cloned.sampleDataUrl ? (
@@ -912,7 +1143,7 @@ export function VoiceCloneModal({
 
                   <button
                     type="button"
-                    onClick={() => handleSelectPreset('cloned')}
+                    onClick={handlePreviewClonedVoice}
                     className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl font-bold text-[12px] cursor-pointer transition-all hover:brightness-110"
                     style={{
                       backgroundImage: theme.sendButtonGradient,
@@ -920,11 +1151,10 @@ export function VoiceCloneModal({
                     }}
                   >
                     <Volume2 className="w-3.5 h-3.5 shrink-0" />
-                    <span>2. Preview Calibrated Voice</span>
+                    <span>2. Preview ({draftLanguage} · {currentAccentMeta.shortLabel})</span>
                   </button>
                 </div>
 
-                {/* Auto-Speak AI Replies Switch */}
                 <label className="inline-flex items-center gap-2 text-[12px] cursor-pointer select-none">
                   <input
                     type="checkbox"
@@ -934,7 +1164,9 @@ export function VoiceCloneModal({
                     }
                     className="accent-[#00d4ff] w-4 h-4 rounded cursor-pointer"
                   />
-                  <span style={{ color: theme.textSecondary }}>Auto-speak new Roosters AI replies in this Sample Voice</span>
+                  <span style={{ color: theme.textSecondary }}>
+                    Auto-speak new AI replies &amp; Live Talk in this cloned voice
+                  </span>
                 </label>
               </div>
             </div>
@@ -950,10 +1182,10 @@ export function VoiceCloneModal({
           }}
         >
           <h3 className="text-[14px] font-bold mb-1" style={{ color: theme.accentSecondary }}>
-            2. Speak Any New Text in {cloned ? cloned.name : 'Your Sample Voice'}
+            2. Speak Text in {cloned ? cloned.name : 'Your Cloned Voice'} ({draftLanguage} · {currentAccentMeta.shortLabel})
           </h3>
           <p className="text-[12px] mb-2.5" style={{ color: theme.textMuted }}>
-            Type anything in any language to hear it spoken immediately in your calibrated voice profile.
+            Type a message to hear it cleanly in your chosen language &amp; Lahja or send as a Chat Voice Note.
           </p>
 
           <form onSubmit={handleSpeakTextInClonedVoice} className="space-y-2.5">
@@ -962,7 +1194,7 @@ export function VoiceCloneModal({
               dir="auto"
               value={speakText}
               onChange={(e) => setSpeakText(e.target.value)}
-              placeholder="Type a sentence to speak in your saved sample voice..."
+              placeholder={`Type text in ${draftLanguage} (or Roman Urdu / English) to speak clearly...`}
               className="w-full rounded-xl border p-3 text-[13.5px] focus:outline-none resize-none"
               style={{
                 backgroundColor: theme.cardBg,
@@ -993,7 +1225,11 @@ export function VoiceCloneModal({
                     const text = speakText.trim();
                     if (!text) return;
                     unlockSpeechSynthesis();
-                    onSendVoiceMessageToChat(text, cloned);
+                    onSendVoiceMessageToChat(text, {
+                      ...cloned,
+                      language: draftLanguage,
+                      accentTone: draftAccent,
+                    });
                     setSpeakText('');
                     onClose();
                   }}

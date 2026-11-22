@@ -146,23 +146,53 @@ function formatGeminiError(err: unknown): { status: number; message: string; cod
   };
 }
 
-// Concise, direct system prompt for fast responses matching the user's language
+// Concise, direct system prompt with configurable style, custom/global instructions, anti-refusal & Roman Urdu script matching
 function buildStudyTutorInstruction(options: {
   language?: string;
   userName?: string;
   isLiveVoice?: boolean;
+  responseStyle?: 'simple' | 'detailed' | 'study';
+  customInstructions?: string;
+  globalSystemPrompt?: string;
 }) {
-  const { language, userName, isLiveVoice } = options;
+  const {
+    language,
+    userName,
+    isLiveVoice,
+    responseStyle = 'simple',
+    customInstructions,
+    globalSystemPrompt,
+  } = options;
+
   const langRule =
     !language || language === 'Auto-Detect'
-      ? "Match the user's latest message language naturally (such as English, Urdu, or Roman Urdu)."
-      : `Reply fluently in ${language}.`;
+      ? "CRITICAL LANGUAGE & SCRIPT RULE: Match the user's exact language and script. If the user writes in Roman Urdu (Urdu written with English letters like 'kya haal hai', 'mujhe samjhao', 'aik insan moon pr'), you MUST reply in natural Roman Urdu using English letters — NEVER switch to Arabic/Urdu script unless the user explicitly asks for Urdu script or writes in Urdu script."
+      : language === 'Roman Urdu'
+        ? 'CRITICAL LANGUAGE & SCRIPT RULE: Reply fluently in natural Roman Urdu using English/Latin letters only (do NOT use Arabic/Urdu script).'
+        : `Reply fluently in ${language}.`;
 
-  const baseInstruction =
-    "You are Roosters AI, a helpful and polite AI assistant created by SandSoft. By default, always give clear, simple, direct, and concise answers in plain conversational language (matching the user's language, such as English, Urdu, or Roman Urdu). Do NOT add long headings, bulleted study notes, or practice questions unless the user explicitly asks for 'study notes', 'notes', 'questions', or a detailed explanation.";
+  const styleRule =
+    responseStyle === 'study'
+      ? 'Use Study & Exam Mode: explain clearly with structured headings, concise study notes, real-world examples, and 2–3 helpful practice questions at the end when teaching a concept.'
+      : responseStyle === 'detailed'
+        ? 'Use Detailed Mode: provide thorough, comprehensive, well-structured explanations with clear step-by-step examples.'
+        : "By default, always give clear, simple, direct, and concise answers in plain conversational language. Do NOT add long headings, bulleted study notes, or practice questions unless the user explicitly asks for 'study notes', 'notes', 'questions', or a detailed explanation.";
+
+  const baseInstruction = [
+    'You are Roosters AI, a helpful, polite educational, technical, and creative AI assistant created by SandSoft.',
+    'Always answer normal questions, coding queries, educational topics, creative prompts, and Roman Urdu messages directly and helpfully without unnecessary refusals.',
+    styleRule,
+  ].join(' ');
 
   const multimodalCore =
-    'You have full permission and ability to view, read, and analyze any photo, screenshot, or document uploaded by the user, including handwritten notes and images.';
+    'You have full permission and ability to view, read, and analyze any photo, screenshot, live camera frame, or document uploaded by the user, including handwritten notes and images.';
+
+  const globalExtra = globalSystemPrompt?.trim()
+    ? `Global Owner Guidance: ${globalSystemPrompt.trim()}`
+    : '';
+  const userExtra = customInstructions?.trim()
+    ? `User Custom Preferences: ${customInstructions.trim()}`
+    : '';
 
   if (isLiveVoice) {
     return [
@@ -171,6 +201,8 @@ function buildStudyTutorInstruction(options: {
       multimodalCore,
       'Speak naturally in 2–4 concise, clear sentences without markdown symbols or code fences unless asked.',
       langRule,
+      globalExtra,
+      userExtra,
     ]
       .filter(Boolean)
       .join(' ');
@@ -180,10 +212,12 @@ function buildStudyTutorInstruction(options: {
     baseInstruction,
     userName ? `You are assisting ${userName}.` : '',
     multimodalCore,
-    'Roosters AI has full built-in HD image and video creation capabilities. NEVER say "I cannot create images", "I cannot generate pictures", or refuse to create images in English, Urdu, or Roman Urdu. If the user asks for an image, picture, photo, portrait, logo, or floor plan/design (e.g., "pic bna do", "tasveer banao", "naksha banao"), reply ONLY with [CREATE_IMAGE: <detailed, photorealistic English prompt>].',
+    'Roosters AI has full built-in HD image and video creation capabilities. NEVER say "I cannot create images", "I cannot generate pictures", or refuse to create images in English, Urdu, or Roman Urdu. If the user asks for an image, picture, photo, portrait, logo, or floor plan/design (e.g., "pic bna do", "tasveer banao", "naksha banao", or gives a follow-up subject right after asking for a pic), reply ONLY with [CREATE_IMAGE: <detailed, photorealistic English prompt>].',
     'Format code in fenced markdown blocks with language tags only when code is requested or relevant.',
     'NEVER generate ASCII art or text-character drawings when asked for images, photos, portraits, or videos.',
     langRule,
+    globalExtra,
+    userExtra,
   ]
     .filter(Boolean)
     .join(' ');
@@ -263,14 +297,24 @@ async function streamWithFallback(
     contents: ReturnType<typeof buildContents>;
     systemInstruction: string;
     apiKey?: string;
+    preferredModel?: string;
   }
 ) {
   const ai = getAiClient(params.apiKey);
   let lastErr: unknown = null;
   let succeeded = false;
 
-  for (let i = 0; i < FAST_CHAT_MODELS.length; i++) {
-    const candidate = FAST_CHAT_MODELS[i];
+  const preferred = params.preferredModel?.trim();
+  const orderedCandidates: ModelCandidate[] =
+    preferred && FAST_CHAT_MODELS.some((m) => m.model === preferred)
+      ? [
+          FAST_CHAT_MODELS.find((m) => m.model === preferred)!,
+          ...FAST_CHAT_MODELS.filter((m) => m.model !== preferred),
+        ]
+      : FAST_CHAT_MODELS;
+
+  for (let i = 0; i < orderedCandidates.length; i++) {
+    const candidate = orderedCandidates[i];
     let emittedAnyChunk = false;
 
     try {
@@ -300,7 +344,7 @@ async function streamWithFallback(
       break;
     } catch (err) {
       lastErr = err;
-      if (!emittedAnyChunk && isRetryableOrFallbackError(err) && i < FAST_CHAT_MODELS.length - 1) {
+      if (!emittedAnyChunk && isRetryableOrFallbackError(err) && i < orderedCandidates.length - 1) {
         await sleep(150);
         continue;
       }
@@ -357,11 +401,24 @@ async function startServer() {
   // Real-Time Streaming Multimodal Chat Endpoint (SSE)
   app.post('/api/chat', async (req, res) => {
     try {
-      const { messages, language, userName, apiKey } = req.body as {
+      const {
+        messages,
+        language,
+        userName,
+        apiKey,
+        responseStyle,
+        customInstructions,
+        globalSystemPrompt,
+        chatModel,
+      } = req.body as {
         messages: IncomingHistoryItem[];
         language?: string;
         userName?: string;
         apiKey?: string;
+        responseStyle?: 'simple' | 'detailed' | 'study';
+        customInstructions?: string;
+        globalSystemPrompt?: string;
+        chatModel?: string;
       };
 
       if (!Array.isArray(messages) || messages.length === 0) {
@@ -383,8 +440,16 @@ async function startServer() {
 
       await streamWithFallback(res, {
         contents: buildContents(messages),
-        systemInstruction: buildStudyTutorInstruction({ language, userName, isLiveVoice: false }),
+        systemInstruction: buildStudyTutorInstruction({
+          language,
+          userName,
+          isLiveVoice: false,
+          responseStyle,
+          customInstructions,
+          globalSystemPrompt,
+        }),
         apiKey,
+        preferredModel: chatModel,
       });
     } catch (err) {
       const formatted = formatGeminiError(err);
@@ -394,7 +459,7 @@ async function startServer() {
         );
         res.end();
       } else {
-      res.status(formatted.status).json({ error: formatted.message, code: formatted.code });
+        res.status(formatted.status).json({ error: formatted.message, code: formatted.code });
       }
     }
   });
@@ -402,13 +467,26 @@ async function startServer() {
   // Direct Gemini 2.5 Flash REST Vision Endpoint (bypasses Groq completely, returns exact REST error if failed)
   app.post('/api/vision', async (req, res) => {
     try {
-      const { prompt, base64Data, mimeType, language, userName, apiKey } = req.body as {
+      const {
+        prompt,
+        base64Data,
+        mimeType,
+        language,
+        userName,
+        apiKey,
+        responseStyle,
+        customInstructions,
+        globalSystemPrompt,
+      } = req.body as {
         prompt?: string;
         base64Data?: string;
         mimeType?: string;
         language?: string;
         userName?: string;
         apiKey?: string;
+        responseStyle?: 'simple' | 'detailed' | 'study';
+        customInstructions?: string;
+        globalSystemPrompt?: string;
       };
 
       const resolvedKey = (apiKey || getServerDefaultGeminiKey()).trim();
@@ -424,7 +502,14 @@ async function startServer() {
         return;
       }
 
-      const systemText = buildStudyTutorInstruction({ language, userName, isLiveVoice: false });
+      const systemText = buildStudyTutorInstruction({
+        language,
+        userName,
+        isLiveVoice: false,
+        responseStyle,
+        customInstructions,
+        globalSystemPrompt,
+      });
       const userPromptText = (prompt || '').trim() || 'Describe and analyze this image in detail.';
       const imageMime = mimeType || 'image/jpeg';
 
@@ -542,11 +627,24 @@ async function startServer() {
   // Streaming SSE Live Talk Endpoint so first sentence speaks immediately
   app.post('/api/chat-live-stream', async (req, res) => {
     try {
-      const { messages, language, userName, apiKey } = req.body as {
+      const {
+        messages,
+        language,
+        userName,
+        apiKey,
+        responseStyle,
+        customInstructions,
+        globalSystemPrompt,
+        chatModel,
+      } = req.body as {
         messages: IncomingHistoryItem[];
         language?: string;
         userName?: string;
         apiKey?: string;
+        responseStyle?: 'simple' | 'detailed' | 'study';
+        customInstructions?: string;
+        globalSystemPrompt?: string;
+        chatModel?: string;
       };
 
       if (!Array.isArray(messages) || messages.length === 0) {
@@ -568,8 +666,16 @@ async function startServer() {
 
       await streamWithFallback(res, {
         contents: buildContents(messages),
-        systemInstruction: buildStudyTutorInstruction({ language, userName, isLiveVoice: true }),
+        systemInstruction: buildStudyTutorInstruction({
+          language,
+          userName,
+          isLiveVoice: true,
+          responseStyle,
+          customInstructions,
+          globalSystemPrompt,
+        }),
         apiKey,
+        preferredModel: chatModel,
       });
     } catch (err) {
       const formatted = formatGeminiError(err);
@@ -587,11 +693,22 @@ async function startServer() {
   // Non-streaming Live Talk endpoint kept for compatibility
   app.post('/api/chat-live', async (req, res) => {
     try {
-      const { messages, language, userName, apiKey } = req.body as {
+      const {
+        messages,
+        language,
+        userName,
+        apiKey,
+        responseStyle,
+        customInstructions,
+        globalSystemPrompt,
+      } = req.body as {
         messages: IncomingHistoryItem[];
         language?: string;
         userName?: string;
         apiKey?: string;
+        responseStyle?: 'simple' | 'detailed' | 'study';
+        customInstructions?: string;
+        globalSystemPrompt?: string;
       };
 
       if (!Array.isArray(messages) || messages.length === 0) {
@@ -600,7 +717,14 @@ async function startServer() {
       }
 
       const ai = getAiClient(apiKey);
-      const systemInstruction = buildStudyTutorInstruction({ language, userName, isLiveVoice: true });
+      const systemInstruction = buildStudyTutorInstruction({
+        language,
+        userName,
+        isLiveVoice: true,
+        responseStyle,
+        customInstructions,
+        globalSystemPrompt,
+      });
       const contents = buildContents(messages);
 
       let lastErr: unknown = null;
@@ -640,11 +764,12 @@ async function startServer() {
     }
   });
 
-  // Step 1: Gemini Multilingual Image/Design Intent Detector & Professional Prompt Enhancer
+  // Step 1: Gemini Multilingual & Context-Aware Image/Design Intent Detector + Prompt Enhancer
   app.post('/api/detect-image-intent', async (req, res) => {
     try {
-      const { text, forceImage, apiKey } = req.body as {
+      const { text, recentMessages, forceImage, apiKey } = req.body as {
         text: string;
+        recentMessages?: Array<{ role?: string; content?: string }>;
         forceImage?: boolean;
         apiKey?: string;
       };
@@ -655,23 +780,40 @@ async function startServer() {
         return;
       }
 
+      const contextLines = Array.isArray(recentMessages)
+        ? recentMessages
+            .slice(-4)
+            .map((m) => {
+              const roleLabel = m.role === 'assistant' ? 'Assistant' : 'User';
+              return `${roleLabel}: ${(m.content || '').trim().slice(0, 220)}`;
+            })
+            .filter(Boolean)
+        : [];
+
+      const detectorInput =
+        contextLines.length > 0
+          ? `Recent Conversation Context:\n${contextLines.join('\n')}\n\nLatest User Message:\n${cleaned}`
+          : cleaned;
+
       const ai = getAiClient(apiKey);
       const enhancerSystemInstruction = forceImage
         ? [
             'You are a world-class AI visual prompt engineer.',
-            'Understand ANY language (English, Urdu, Roman Urdu like "ghar ka naksha", "pic bna do", "tasveer banao", Hindi, Arabic, etc.).',
-            'Set intent to "image". Translate and expand the user idea into a highly detailed, professional, family-friendly English image-generation prompt (35 to 65 words).',
+            'Understand ANY language (English, Urdu, Roman Urdu like "ghar ka naksha", "pic bna do", "tasveer banao", "aik insan ki moon pr", Hindi, Arabic, etc.).',
+            'If Recent Conversation Context is provided, combine any relevant visual subject from the context with the Latest User Message.',
+            'Set intent to "image". Translate and expand the combined idea into a highly detailed, professional, family-friendly English image-generation prompt (35 to 65 words).',
             'Add realistic natural or studio lighting, sharp focus, authentic textures, architectural or environmental details, camera perspective, and photorealistic/cinematic quality.',
             'Strip command words like "pic bna do", "tasveer banao", "naksha banao", "generate image", "draw me". Never include unsafe, explicit, or violent terms.',
           ].join(' ')
         : [
-            'You are an intent classifier and professional AI image-prompt engineer.',
-            'Analyze the user message in ANY language (especially English, Urdu script, and Roman Urdu such as "pic bna do", "tasveer banao", "naksha banao", "photo bana dy", "design bna do", "ghar ka naksha", "logo banao").',
+            'You are a context-aware intent classifier and professional AI image-prompt engineer.',
+            'Analyze the Latest User Message together with Recent Conversation Context (in ANY language, especially English, Urdu script, and Roman Urdu such as "pic bna", "pic bana", "tasveer", "photo bana", "naksha", "draw", "image", "generate").',
+            'CRITICAL MULTI-TURN CONTEXT RULE: If a previous recent message asked for a picture/photo/drawing (e.g., "Mujhe aik pic bna k do" or "tasveer banao") OR the assistant asked what image to create, and the Latest User Message describes a subject or scene (e.g., "Aik insan ki moon pr", "ek cat", "modern house"), COMBINE both messages into ONE unified image request and classify intent as "image"!',
             'Classify intent:',
             '- "video": if the user asks to create/generate/make a video, reel, clip, or animation.',
-            '- "image": if the user asks to create, generate, draw, paint, sketch, design, show, or make a picture, photo, portrait, wallpaper, logo, poster, illustration, architecture/house design, or map/floor-plan (naksha/naqsha).',
-            '- "chat": if the user is asking a normal question, greeting, translation, math, explanation, or asking for HTML/CSS/JS/Python code/tutorials (e.g., "how to make an image slider in HTML").',
-            'If intent is "image": translate and expand the user idea into a highly detailed, professional, family-friendly English image-generation prompt (35 to 65 words) with realistic lighting, rich textures, architectural or environmental details, sharp focus, and photorealistic/cinematic style. Also provide a short 3-6 word English shortTitle.',
+            '- "image": if the user asks to create, generate, draw, paint, sketch, design, show, or make a picture, photo, portrait, wallpaper, logo, poster, illustration, architecture/house design, or map/floor-plan (naksha/naqsha) — OR is answering a follow-up subject for a pending image request.',
+            '- "chat": if the user is asking a normal question, greeting, translation, math, explanation, or asking for HTML/CSS/JS/Python code/tutorials.',
+            'If intent is "image": translate and expand the combined user idea into a highly detailed, professional, family-friendly English image-generation prompt (35 to 65 words) with realistic lighting, rich textures, architectural or environmental details, sharp focus, and photorealistic/cinematic style. Also provide a short 3-6 word English shortTitle.',
             'If intent is "chat" or "video", set enhancedPrompt to "" and shortTitle to "".',
           ].join(' ');
 
@@ -681,7 +823,7 @@ async function startServer() {
         try {
           const response = await ai.models.generateContent({
             model: candidate.model,
-            contents: cleaned,
+            contents: detectorInput,
             config: {
               systemInstruction: enhancerSystemInstruction,
               thinkingConfig: candidate.thinkingConfig,

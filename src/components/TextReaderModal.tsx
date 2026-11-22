@@ -1,9 +1,10 @@
 import { BookOpen, Pause, Play, Square, Volume2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { getBcp47ForLanguage, WORLD_LANGUAGES } from '../constants';
+import { WORLD_LANGUAGES } from '../constants';
 import { AppTheme } from '../themes';
-import { VoiceStudioSettings } from '../types';
+import { SpeechSpeedChoice, VoiceGenderChoice, VoiceStudioSettings } from '../types';
 import {
+  cancelVoicePlayback,
   getResolvedVoiceParameters,
   isSpeechSynthesisSupported,
   speakWithVoiceProfile,
@@ -14,6 +15,8 @@ interface TextReaderModalProps {
   initialLanguage: string;
   theme: AppTheme;
   voiceSettings: VoiceStudioSettings;
+  defaultSpeechSpeed?: SpeechSpeedChoice;
+  voiceGender?: VoiceGenderChoice;
   onClose: () => void;
 }
 
@@ -21,7 +24,7 @@ const SAMPLE_STUDY_TEXT = `Welcome to the Roosters AI Study Text Reader. Paste a
 
 Photosynthesis is the biological process by which green plants, algae, and certain bacteria convert light energy into chemical energy. In the first stage, called the light-dependent reactions, chlorophyll absorbs sunlight to split water molecules and release oxygen. In the second stage, known as the Calvin cycle, carbon dioxide is transformed into glucose, fueling growth across the entire ecosystem.`;
 
-const SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2];
+const SPEEDS = [0.8, 1, 1.2, 1.5, 1.75];
 
 function splitIntoChunks(text: string): string[] {
   const sentences = text
@@ -39,11 +42,13 @@ export function TextReaderModal({
   initialLanguage,
   theme,
   voiceSettings,
+  defaultSpeechSpeed = 1,
+  voiceGender,
   onClose,
 }: TextReaderModalProps) {
   const [text, setText] = useState('');
   const [language, setLanguage] = useState(initialLanguage === 'Auto-Detect' ? 'English' : initialLanguage);
-  const [speed, setSpeed] = useState<number>(1);
+  const [speed, setSpeed] = useState<number>(defaultSpeechSpeed);
   const [readerState, setReaderState] = useState<'idle' | 'playing' | 'paused'>('idle');
   const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
   const [totalChunks, setTotalChunks] = useState(0);
@@ -60,18 +65,20 @@ export function TextReaderModal({
   useEffect(() => {
     if (isOpen) {
       setLanguage(initialLanguage === 'Auto-Detect' ? 'English' : initialLanguage);
+      setSpeed(defaultSpeechSpeed);
+      speedRef.current = defaultSpeechSpeed;
     } else {
       activeRunRef.current += 1;
-      window.speechSynthesis?.cancel();
+      cancelVoicePlayback();
       setReaderState('idle');
       setCurrentChunkIndex(0);
     }
-  }, [isOpen, initialLanguage]);
+  }, [isOpen, initialLanguage, defaultSpeechSpeed]);
 
   useEffect(() => {
     return () => {
       activeRunRef.current += 1;
-      window.speechSynthesis?.cancel();
+      cancelVoicePlayback();
     };
   }, []);
 
@@ -91,6 +98,7 @@ export function TextReaderModal({
       text: chunks[index],
       language,
       voiceSettings,
+      voiceGender,
       speedMultiplier: speedRef.current,
       cancelPrevious: false,
       onEnd: () => {
@@ -125,7 +133,7 @@ export function TextReaderModal({
       return;
     }
 
-    window.speechSynthesis.cancel();
+    cancelVoicePlayback();
     const chunks = splitIntoChunks(trimmed);
     chunksRef.current = chunks;
     setTotalChunks(chunks.length);
@@ -142,7 +150,7 @@ export function TextReaderModal({
 
   const handleStop = () => {
     activeRunRef.current += 1;
-    window.speechSynthesis?.cancel();
+    cancelVoicePlayback();
     setReaderState('idle');
     setCurrentChunkIndex(0);
   };
@@ -153,7 +161,7 @@ export function TextReaderModal({
     // If actively playing, restart current sentence smoothly at the new speed
     if (readerState === 'playing') {
       const resumeIdx = currentChunkIndex;
-      window.speechSynthesis.cancel();
+      cancelVoicePlayback();
       const runId = ++activeRunRef.current;
       speakChunkAt(resumeIdx, runId);
     }
@@ -193,7 +201,11 @@ export function TextReaderModal({
                 Study Text Reader
               </h2>
               <p className="text-[12.5px]" style={{ color: theme.textMuted }}>
-                Voice: <span style={{ color: theme.accentSecondary }}>{getResolvedVoiceParameters(voiceSettings).label}</span> · Paste notes or chapters to listen aloud
+                Voice:{' '}
+                <span style={{ color: theme.accentSecondary }}>
+                  {getResolvedVoiceParameters(voiceSettings, voiceGender).label}
+                </span>{' '}
+                · Paste notes or chapters to listen aloud
               </p>
             </div>
           </div>

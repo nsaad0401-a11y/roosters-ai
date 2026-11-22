@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   AudioLines,
   BookOpen,
   Camera,
@@ -11,8 +12,10 @@ import {
   FileText,
   Film,
   Globe,
+  ImagePlus,
   Loader2,
   LogOut,
+  Megaphone,
   Mic,
   MicOff,
   Monitor,
@@ -22,6 +25,8 @@ import {
   PanelLeft,
   Plus,
   Send,
+  Settings,
+  ShieldCheck,
   Square,
   Trash2,
   User,
@@ -33,7 +38,7 @@ import {
 import { ChangeEvent, ClipboardEvent, CSSProperties, KeyboardEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { QUICK_PROMPTS, ROOSTERS_LOGO_SRC, WORLD_LANGUAGES } from '../constants';
 import { useOnlineStatus } from '../hooks/usePWAInstall';
-import { APP_THEMES, AppTheme, ThemeSettings } from '../themes';
+import { APP_THEMES, AppTheme, ThemeId, ThemeSettings } from '../themes';
 import {
   ActiveUser,
   ChatMessage,
@@ -41,6 +46,8 @@ import {
   ClonedVoiceProfile,
   MessageAttachment,
   MessageVoiceNote,
+  OwnerConfig,
+  UserAppSettings,
   VoiceStudioSettings,
 } from '../types';
 import {
@@ -54,15 +61,21 @@ import {
   streamChatCompletion,
 } from '../utils/aiClient';
 import {
+  clearUserChats,
+  loadOwnerConfig,
   loadThemeSettings,
   loadUserChats,
   loadUserChatsFromIndexedDB,
+  loadUserSettings,
   loadVoiceSettings,
+  saveOwnerConfig,
   saveThemeSettings,
   saveUserChats,
+  saveUserSettings,
   saveVoiceSettings,
 } from '../utils/storage';
 import {
+  cancelVoicePlayback,
   estimateSpeechDurationSec,
   getResolvedVoiceParameters,
   isSpeechSynthesisSupported,
@@ -70,6 +83,7 @@ import {
   unlockSpeechSynthesis,
 } from '../utils/voiceEngine';
 import { ApiKeyModal } from './ApiKeyModal';
+import { CameraCaptureModal } from './CameraCaptureModal';
 import { GeneratedArtworkCard } from './GeneratedArtworkCard';
 import { GeneratedVideoCard } from './GeneratedVideoCard';
 import { ImageCreateModal } from './ImageCreateModal';
@@ -80,6 +94,7 @@ import { MarkdownRenderer } from './MarkdownRenderer';
 import { InstallAppModal, PWAInstallButton } from './PWAInstallButton';
 import { TextReaderModal } from './TextReaderModal';
 import { ThemeWallpaperModal } from './ThemeWallpaperModal';
+import { UserSettingsModal } from './UserSettingsModal';
 import { VideoCreateModal } from './VideoCreateModal';
 import { VoiceCloneModal } from './VoiceCloneModal';
 import { VoiceNotePlayer } from './VoiceNotePlayer';
@@ -93,7 +108,10 @@ function createId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function fileToAttachment(file: File, source: 'upload' | 'screen'): Promise<MessageAttachment> {
+function fileToAttachment(
+  file: File,
+  source: 'upload' | 'screen' | 'camera'
+): Promise<MessageAttachment> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -456,7 +474,11 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   );
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [selectedLanguage, setSelectedLanguage] = useState<string>('Auto-Detect');
+  const [userSettings, setUserSettings] = useState<UserAppSettings>(() => loadUserSettings());
+  const [ownerConfig, setOwnerConfig] = useState<OwnerConfig>(() => loadOwnerConfig());
+  const [selectedLanguage, setSelectedLanguage] = useState<string>(
+    () => loadUserSettings().preferredLanguage || 'Auto-Detect'
+  );
   const [inputValue, setInputValue] = useState('');
   const [pendingAttachment, setPendingAttachment] = useState<MessageAttachment | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -470,7 +492,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const [themeSettings, setThemeSettings] = useState<ThemeSettings>(() => loadThemeSettings());
   const [isThemeModalOpen, setIsThemeModalOpen] = useState(false);
 
-  // Modals: Create Image, Create Video, Voice Clone, Live Talk, Text Reader, API Key Settings, Legal Pages
+  // Modals: Create Image, Create Video, Voice Clone, Live Talk, Text Reader, User Settings, Owner Settings, Legal Pages
   const [isImageModalOpen, setIsImageModalOpen] = useState(false);
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [isVideoModalOpen, setIsVideoModalOpen] = useState(false);
@@ -479,8 +501,10 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const [voiceSettings, setVoiceSettings] = useState<VoiceStudioSettings>(() => loadVoiceSettings());
   const [isLiveTalkOpen, setIsLiveTalkOpen] = useState(false);
   const [isTextReaderOpen, setIsTextReaderOpen] = useState(false);
+  const [isUserSettingsOpen, setIsUserSettingsOpen] = useState(false);
   const [isApiKeyModalOpen, setIsApiKeyModalOpen] = useState(false);
   const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);
+  const [isCameraModalOpen, setIsCameraModalOpen] = useState(false);
   const [isToolsMenuOpen, setIsToolsMenuOpen] = useState(false);
   const [legalPage, setLegalPage] = useState<LegalPageId | null>(null);
 
@@ -502,7 +526,11 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const cameraFileInputRef = useRef<HTMLInputElement | null>(null);
   const studyFileInputRef = useRef<HTMLInputElement | null>(null);
+  const lastDarkThemeIdRef = useRef<ThemeId>(
+    themeSettings.themeId !== 'clean-light' ? themeSettings.themeId : 'gold-cyan'
+  );
   const toolsMenuRef = useRef<HTMLDivElement | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -558,6 +586,9 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   }, [isToolsMenuOpen]);
 
   const handleUpdateThemeSettings = (next: ThemeSettings) => {
+    if (next.themeId !== 'clean-light') {
+      lastDarkThemeIdRef.current = next.themeId;
+    }
     setThemeSettings(next);
     saveThemeSettings(next);
     if (typeof document !== 'undefined') {
@@ -565,9 +596,50 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     }
   };
 
+  const handleToggleLightDarkMode = (isLight: boolean) => {
+    const targetThemeId: ThemeId = isLight
+      ? 'clean-light'
+      : lastDarkThemeIdRef.current && lastDarkThemeIdRef.current !== 'clean-light'
+        ? lastDarkThemeIdRef.current
+        : 'gold-cyan';
+    handleUpdateThemeSettings({
+      ...themeSettings,
+      themeId: targetThemeId,
+    });
+  };
+
   const handleUpdateVoiceSettings = (next: VoiceStudioSettings) => {
     setVoiceSettings(next);
     saveVoiceSettings(next);
+  };
+
+  const handleSaveUserSettings = (next: UserAppSettings) => {
+    setUserSettings(next);
+    saveUserSettings(next);
+    setSelectedLanguage(next.preferredLanguage || 'Auto-Detect');
+  };
+
+  const handleLanguageChange = (langCode: string) => {
+    setSelectedLanguage(langCode);
+    const updated = { ...userSettings, preferredLanguage: langCode };
+    setUserSettings(updated);
+    saveUserSettings(updated);
+  };
+
+  const handleUpdateOwnerConfig = (next: OwnerConfig) => {
+    setOwnerConfig(next);
+    saveOwnerConfig(next);
+  };
+
+  const handleClearAllHistory = async () => {
+    abortControllerRef.current?.abort();
+    stopAudioPlayback();
+    setIsStreaming(false);
+    setSessions([]);
+    setActiveSessionId(null);
+    setMessages([]);
+    setPendingAttachment(null);
+    await clearUserChats(user);
   };
 
   // Hydrate larger or offline-backed chats from IndexedDB for logged-in accounts only
@@ -696,7 +768,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         audioRef.current.pause();
         audioRef.current = null;
       }
-      window.speechSynthesis?.cancel();
+      cancelVoicePlayback();
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         mediaRecorderRef.current.stop();
       }
@@ -712,11 +784,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       audioRef.current.currentTime = 0;
       audioRef.current = null;
     }
-    try {
-      window.speechSynthesis?.cancel();
-    } catch {
-      // Ignore speechSynthesis cancel errors
-    }
+    cancelVoicePlayback();
     setTtsPlayingId(null);
     setTtsPausedId(null);
   };
@@ -803,10 +871,12 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     const useSample = Boolean(profileOverride) || (voiceSettings.activeVoiceId === 'cloned' && Boolean(profile));
     if (useSample && profile) {
       return {
-        voiceName: profile.name || 'Sample Voice 1',
+        voiceName: profile.name || 'Custom Voice 1',
         pitch: profile.pitch,
         rate: profile.rate,
         genderHint: profile.genderHint,
+        language: profile.language,
+        accentTone: profile.accentTone,
         preferredVoiceURI: profile.preferredVoiceURI,
         durationEstSec: estimateSpeechDurationSec(spokenText, profile.rate),
         isUserVoiceMessage,
@@ -819,6 +889,8 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         pitch: resolved.pitch,
         rate: resolved.rate,
         genderHint: resolved.genderHint,
+        language: resolved.language,
+        accentTone: resolved.accentTone,
         preferredVoiceURI: resolved.preferredVoiceURI,
         durationEstSec: estimateSpeechDurationSec(spokenText, resolved.rate),
         isUserVoiceMessage: true,
@@ -880,9 +952,10 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       unlockSpeechSynthesis();
     }
 
-    // Step 1: Gemini Multilingual Intent & Prompt Enhancer (English, Urdu, Roman Urdu like "pic bna do", "tasveer banao", "naksha banao")
+    // Step 1: Context-aware Gemini Multilingual Intent & Prompt Enhancer (English, Urdu, Roman Urdu)
     const detectedMedia = await detectAndEnhanceChatMediaIntent({
       text: textToSend,
+      recentMessages: messages.slice(-4).map((m) => ({ role: m.role, content: m.content })),
       hasAttachment: Boolean(attachmentToSend),
       hasBackendApi,
       hasServerGeminiKey,
@@ -948,12 +1021,16 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       setTtsPlayingId(queued.assistantId);
       speakWithVoiceProfile({
         text: queued.text,
-        language: selectedLanguage,
+        language: queued.voiceNote.language || selectedLanguage,
         voiceSettings,
+        voiceGender: userSettings.voiceGender,
+        speedMultiplier: userSettings.speechSpeed,
         overrideParams: {
           pitch: queued.voiceNote.pitch,
           rate: queued.voiceNote.rate,
           genderHint: queued.voiceNote.genderHint,
+          language: queued.voiceNote.language,
+          accentTone: queued.voiceNote.accentTone,
           preferredVoiceURI: queued.voiceNote.preferredVoiceURI,
         },
         onEnd: () => setTtsPlayingId((curr) => (curr === queued.assistantId ? null : curr)),
@@ -967,12 +1044,16 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       setTtsPlayingId(userMsgId);
       speakWithVoiceProfile({
         text: cleanTextForSpeech(finalUserText),
-        language: selectedLanguage,
+        language: userVoiceNote.language || selectedLanguage,
         voiceSettings,
+        voiceGender: userSettings.voiceGender,
+        speedMultiplier: userSettings.speechSpeed,
         overrideParams: {
           pitch: userVoiceNote.pitch,
           rate: userVoiceNote.rate,
           genderHint: userVoiceNote.genderHint,
+          language: userVoiceNote.language,
+          accentTone: userVoiceNote.accentTone,
           preferredVoiceURI: userVoiceNote.preferredVoiceURI,
         },
         onEnd: () => {
@@ -1061,6 +1142,10 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         language: selectedLanguage,
         userName: user.fullName,
         isLiveVoice: false,
+        responseStyle: userSettings.responseStyle,
+        customInstructions: userSettings.customInstructions,
+        globalSystemPrompt: ownerConfig.globalSystemPrompt,
+        chatModel: ownerConfig.chatModel,
         hasBackendApi,
         hasServerGeminiKey,
         signal: controller.signal,
@@ -1205,6 +1290,35 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     } catch {
       setNotice('Could not read the selected image.');
     }
+  };
+
+  const handleCameraFileCaptureChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const attachment = await fileToAttachment(file, 'camera');
+      attachment.kind = 'image';
+      setPendingAttachment(attachment);
+      setNotice('');
+    } catch {
+      setNotice('Could not read the captured camera photo.');
+    }
+  };
+
+  const handleOpenCameraCapture = () => {
+    const isMobile =
+      typeof navigator !== 'undefined' &&
+      (/android|iphone|ipad|ipod|mobile/i.test(navigator.userAgent) ||
+        (typeof window !== 'undefined' &&
+          Boolean(window.matchMedia?.('(pointer: coarse)').matches) &&
+          window.innerWidth < 900));
+
+    if (isMobile) {
+      cameraFileInputRef.current?.click();
+      return;
+    }
+    setIsCameraModalOpen(true);
   };
 
   const handleStudyFileUploadChange = async (e: ChangeEvent<HTMLInputElement>) => {
@@ -1644,6 +1758,8 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
           pitch: msg.voiceNote.pitch,
           rate: msg.voiceNote.rate,
           genderHint: msg.voiceNote.genderHint,
+          language: msg.voiceNote.language,
+          accentTone: msg.voiceNote.accentTone,
           preferredVoiceURI: msg.voiceNote.preferredVoiceURI,
         }
       : undefined;
@@ -1660,8 +1776,13 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
 
     speakWithVoiceProfile({
       text: spoken,
-      language: selectedLanguage,
+      language:
+        msg.voiceNote?.language ||
+        (voiceSettings.activeVoiceId === 'cloned' ? voiceSettings.clonedProfile?.language : undefined) ||
+        selectedLanguage,
       voiceSettings,
+      voiceGender: userSettings.voiceGender,
+      speedMultiplier: userSettings.speechSpeed,
       overrideParams,
       onEnd: () => {
         setTtsPlayingId((curr) => (curr === msg.id ? null : curr));
@@ -1819,6 +1940,22 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         color: theme.textPrimary,
       }}
     >
+      {/* Top Announcement Banner (Owner Controlled) */}
+      {ownerConfig.announcementEnabled && ownerConfig.announcementText.trim() && (
+        <div
+          role="status"
+          className="shrink-0 px-3 py-1.5 text-center text-[12px] font-semibold border-b flex items-center justify-center gap-2"
+          style={{
+            background: `linear-gradient(90deg, ${theme.accentSecondary}22, ${theme.accentPrimary}22)`,
+            borderColor: `${theme.accentSecondary}55`,
+            color: theme.textPrimary,
+          }}
+        >
+          <Megaphone className="w-3.5 h-3.5 shrink-0" style={{ color: theme.accentPrimary }} />
+          <span className="truncate">{ownerConfig.announcementText}</span>
+        </div>
+      )}
+
       {/* Top Header */}
       <header
         className="shrink-0 relative z-30 border-b backdrop-blur-md px-2.5 sm:px-4 lg:px-6 py-2 sm:py-3"
@@ -1960,6 +2097,25 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
               <span>Live Talk</span>
             </button>
 
+            {/* Quick Mobile Settings Gear Button (< lg screens) */}
+            <button
+              type="button"
+              onClick={() => {
+                setIsToolsMenuOpen(false);
+                setIsUserSettingsOpen(true);
+              }}
+              title="Settings"
+              aria-label="Open Settings"
+              className="lg:hidden p-1.5 rounded-lg border transition-colors shrink-0 cursor-pointer"
+              style={{
+                backgroundColor: theme.cardBg,
+                borderColor: theme.borderColor,
+                color: theme.accentSecondary,
+              }}
+            >
+              <Settings className="w-4 h-4" />
+            </button>
+
             {/* Mobile Collapsible "Tools ▾" Menu (< lg screens) */}
             <div ref={toolsMenuRef} className="relative lg:hidden">
               <button
@@ -2020,7 +2176,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                       aria-label="World Languages"
                       value={selectedLanguage}
                       onChange={(e) => {
-                        setSelectedLanguage(e.target.value);
+                        handleLanguageChange(e.target.value);
                         setIsToolsMenuOpen(false);
                       }}
                       className="w-full pl-8 pr-6 py-2 rounded-xl border text-[12.5px] font-medium focus:outline-none cursor-pointer appearance-none"
@@ -2044,6 +2200,22 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
 
                   {/* Action Grid */}
                   <div className="grid grid-cols-1 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsToolsMenuOpen(false);
+                        setIsUserSettingsOpen(true);
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl border text-[12.5px] font-medium text-left cursor-pointer"
+                      style={{
+                        backgroundColor: theme.subSurfaceBg,
+                        borderColor: theme.borderColor,
+                        color: theme.textPrimary,
+                      }}
+                    >
+                      <Settings className="w-4 h-4 shrink-0" style={{ color: theme.accentSecondary }} />
+                      <span>Settings</span>
+                    </button>
                     <button
                       type="button"
                       disabled={!isOnline}
@@ -2221,7 +2393,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                 <select
                   aria-label="World Languages"
                   value={selectedLanguage}
-                  onChange={(e) => setSelectedLanguage(e.target.value)}
+                  onChange={(e) => handleLanguageChange(e.target.value)}
                   className="pl-8 pr-6 py-1.5 rounded-lg border text-[12.5px] font-medium focus:outline-none cursor-pointer appearance-none"
                   style={{
                     backgroundColor: theme.cardBg,
@@ -2240,6 +2412,23 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                   ))}
                 </select>
               </div>
+
+              {/* User Settings Button (Gear Icon) */}
+              <button
+                type="button"
+                onClick={() => setIsUserSettingsOpen(true)}
+                title="AI & Voice Settings"
+                aria-label="Settings"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[12.5px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                style={{
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.borderColor,
+                  color: theme.textPrimary,
+                }}
+              >
+                <Settings className="w-3.5 h-3.5" style={{ color: theme.accentSecondary }} />
+                <span>Settings</span>
+              </button>
 
               {/* Theme & Wallpaper Button */}
               <button
@@ -2519,7 +2708,48 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         )}
 
         {/* Chat Workspace with Theme + Wallpaper */}
-        <main className="flex-1 flex flex-col min-w-0 min-h-0" style={wallpaperStyle}>
+        <main className="flex-1 flex flex-col min-w-0 min-h-0 relative" style={wallpaperStyle}>
+          {ownerConfig.maintenanceMode && (
+            <div
+              role="alert"
+              className="absolute inset-0 z-40 backdrop-blur-md flex items-center justify-center p-6 text-center"
+              style={{ backgroundColor: 'rgba(7, 9, 14, 0.88)' }}
+            >
+              <div
+                className="max-w-md w-full rounded-2xl border p-6 shadow-2xl space-y-4"
+                style={{
+                  backgroundColor: theme.cardBg,
+                  borderColor: '#f59e0b66',
+                  color: theme.textPrimary,
+                }}
+              >
+                <div className="w-12 h-12 rounded-xl bg-amber-500/15 border border-amber-500/40 flex items-center justify-center mx-auto">
+                  <AlertTriangle className="w-6 h-6 text-amber-400" />
+                </div>
+                <div>
+                  <h2 className="font-display text-[19px] font-bold">
+                    Scheduled Maintenance Mode
+                  </h2>
+                  <p className="text-[13px] mt-1.5 leading-relaxed" style={{ color: theme.textSecondary }}>
+                    Roosters AI by SandSoft is temporarily undergoing maintenance and upgrades. Please check back shortly!
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsApiKeyModalOpen(true)}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl border text-[12.5px] font-semibold cursor-pointer"
+                  style={{
+                    backgroundColor: theme.subSurfaceBg,
+                    borderColor: theme.borderColor,
+                    color: theme.accentPrimary,
+                  }}
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>Owner Access</span>
+                </button>
+              </div>
+            </div>
+          )}
           {/* Top-of-Chat Active Voice Toggle Strip */}
           <div
             className="shrink-0 border-b px-3 sm:px-6 py-1.5 flex flex-wrap items-center justify-between gap-2 text-[12px]"
@@ -2884,7 +3114,9 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                             ? `Study/Code File Ready (${Math.max(1, Math.round((pendingAttachment.fileSize ?? 0) / 1024))} KB)`
                             : pendingAttachment.source === 'screen'
                               ? 'Screen Capture Ready'
-                              : 'Image Ready for Vision'}
+                              : pendingAttachment.source === 'camera'
+                                ? 'Camera Photo Ready for Vision'
+                                : 'Image Ready for Vision'}
                         </p>
                       </div>
                       <button
@@ -2908,12 +3140,20 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                         borderColor: theme.borderColor,
                       }}
                     >
-                      {/* Hidden File Inputs: Image + Study/Code File */}
+                      {/* Hidden File Inputs: Gallery Image, Mobile Camera Capture & Study/Code File */}
                       <input
                         ref={fileInputRef}
                         type="file"
                         accept="image/*"
                         onChange={handleImageUploadChange}
+                        className="hidden"
+                      />
+                      <input
+                        ref={cameraFileInputRef}
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        onChange={handleCameraFileCaptureChange}
                         className="hidden"
                       />
                       <input
@@ -2924,17 +3164,33 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                         className="hidden"
                       />
 
-                      {/* Image Upload Button */}
+                      {/* Gallery / File Image Attachment Button */}
                       <button
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
-                        title="Upload Image for Vision Analysis"
-                        aria-label="Upload Image"
+                        title="Attach Image from Gallery or Files"
+                        aria-label="Attach Image"
                         className="p-2 sm:p-2.5 rounded-xl border transition-colors shrink-0 cursor-pointer"
                         style={{
                           backgroundColor: theme.subSurfaceBg,
                           borderColor: theme.borderColor,
                           color: theme.textPrimary,
+                        }}
+                      >
+                        <ImagePlus className="w-4 h-4" />
+                      </button>
+
+                      {/* Direct Camera Photo Capture Button */}
+                      <button
+                        type="button"
+                        onClick={handleOpenCameraCapture}
+                        title="Take Photo with Camera"
+                        aria-label="Take Photo with Camera"
+                        className="p-2 sm:p-2.5 rounded-xl border transition-colors shrink-0 cursor-pointer"
+                        style={{
+                          backgroundColor: theme.subSurfaceBg,
+                          borderColor: theme.borderColor,
+                          color: theme.accentSecondary,
                         }}
                       >
                         <Camera className="w-4 h-4" />
@@ -3136,6 +3392,8 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         hasBackendApi={hasBackendApi}
         hasServerGeminiKey={hasServerGeminiKey}
         voiceSettings={voiceSettings}
+        userSettings={userSettings}
+        ownerConfig={ownerConfig}
         onClose={handleCloseLiveTalk}
       />
 
@@ -3144,7 +3402,32 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         initialLanguage={selectedLanguage}
         theme={theme}
         voiceSettings={voiceSettings}
+        defaultSpeechSpeed={userSettings.speechSpeed}
+        voiceGender={userSettings.voiceGender}
         onClose={() => setIsTextReaderOpen(false)}
+      />
+
+      <UserSettingsModal
+        isOpen={isUserSettingsOpen}
+        theme={theme}
+        isLightMode={themeSettings.themeId === 'clean-light'}
+        onToggleThemeMode={handleToggleLightDarkMode}
+        settings={userSettings}
+        isGuest={user.isGuest}
+        onSave={handleSaveUserSettings}
+        onClearAllHistory={handleClearAllHistory}
+        onClose={() => setIsUserSettingsOpen(false)}
+      />
+
+      <CameraCaptureModal
+        isOpen={isCameraModalOpen}
+        theme={theme}
+        onCapture={(attachment) => {
+          setPendingAttachment(attachment);
+          setNotice('');
+        }}
+        onFallbackUpload={() => fileInputRef.current?.click()}
+        onClose={() => setIsCameraModalOpen(false)}
       />
 
       <ApiKeyModal
@@ -3152,6 +3435,8 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         theme={theme}
         hasServerGeminiKey={hasServerGeminiKey}
         hasEnvGeminiKey={hasEnvKey}
+        ownerConfig={ownerConfig}
+        onUpdateOwnerConfig={handleUpdateOwnerConfig}
         onSaved={() => {
           setNotice('');
         }}
