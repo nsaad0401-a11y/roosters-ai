@@ -1,6 +1,5 @@
 import { BookOpen, Pause, Play, Square, Volume2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { WORLD_LANGUAGES } from '../constants';
 import { AppTheme } from '../themes';
 import { SpeechSpeedChoice, VoiceGenderChoice, VoiceStudioSettings } from '../types';
 import {
@@ -9,6 +8,7 @@ import {
   isSpeechSynthesisSupported,
   speakWithVoiceProfile,
 } from '../utils/voiceEngine';
+import { SearchableLanguageSelect } from './SearchableLanguageSelect';
 
 interface TextReaderModalProps {
   isOpen: boolean;
@@ -47,7 +47,7 @@ export function TextReaderModal({
   onClose,
 }: TextReaderModalProps) {
   const [text, setText] = useState('');
-  const [language, setLanguage] = useState(initialLanguage === 'Auto-Detect' ? 'English' : initialLanguage);
+  const [language, setLanguage] = useState(initialLanguage || 'Auto-Detect');
   const [speed, setSpeed] = useState<number>(defaultSpeechSpeed);
   const [readerState, setReaderState] = useState<'idle' | 'playing' | 'paused'>('idle');
   const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
@@ -64,7 +64,7 @@ export function TextReaderModal({
 
   useEffect(() => {
     if (isOpen) {
-      setLanguage(initialLanguage === 'Auto-Detect' ? 'English' : initialLanguage);
+      setLanguage(initialLanguage || 'Auto-Detect');
       setSpeed(defaultSpeechSpeed);
       speedRef.current = defaultSpeechSpeed;
     } else {
@@ -345,24 +345,19 @@ export function TextReaderModal({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* Language Selector */}
-            <select
-              aria-label="Reader Language"
-              value={language}
-              onChange={(e) => setLanguage(e.target.value)}
-              className="px-2.5 py-1.5 rounded-lg border text-[12px] font-medium cursor-pointer"
-              style={{
-                backgroundColor: theme.subSurfaceBg,
-                borderColor: theme.borderColor,
-                color: theme.textPrimary,
-              }}
-            >
-              {WORLD_LANGUAGES.filter((l) => l.code !== 'Auto-Detect').map((lang) => (
-                <option key={lang.code} value={lang.code}>
-                  {lang.label}
-                </option>
-              ))}
-            </select>
+            {/* Searchable All-World Language Selector */}
+            <div className="min-w-[170px] max-w-[240px]">
+              <SearchableLanguageSelect
+                value={language}
+                onChange={setLanguage}
+                theme={theme}
+                includeAutoDetect={true}
+                compact
+                align="right"
+                dropDirection="up"
+                ariaLabel="Reader Language"
+              />
+            </div>
 
             {/* Speed Selector */}
             <div

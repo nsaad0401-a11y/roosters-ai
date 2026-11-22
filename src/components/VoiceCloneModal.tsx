@@ -28,7 +28,6 @@ import {
 import {
   analyzeVoiceAudioBlob,
   cancelVoicePlayback,
-  CLONED_VOICE_LANGUAGES,
   estimateFramePitchHz,
   estimateSpeechDurationSec,
   getAccentToneMeta,
@@ -44,6 +43,7 @@ import {
   VOICE_ACCENT_TONES,
   VOICE_PRESETS,
 } from '../utils/voiceEngine';
+import { SearchableLanguageSelect } from './SearchableLanguageSelect';
 import { VoiceNotePlayer } from './VoiceNotePlayer';
 
 interface VoiceCloneModalProps {
@@ -703,7 +703,7 @@ export function VoiceCloneModal({
                 Voice Clone Studio
               </h2>
               <p className="text-[12px]" style={{ color: theme.textMuted }}>
-                Clean natural voice cloning with 5 languages, Lahja accents &amp; multi-profile saving
+                Natural voice cloning across 100+ world languages, regional accents &amp; multi-profile saving
               </p>
             </div>
           </div>
@@ -764,7 +764,7 @@ export function VoiceCloneModal({
             </div>
           </div>
 
-          {/* Counted 5-Language Selector + Accent & Tone (Lahja) Selector side-by-side */}
+          {/* Searchable 100+ World Language Selector + Accent & Tone (Lahja) Selector */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label
@@ -773,25 +773,16 @@ export function VoiceCloneModal({
                 style={{ color: theme.textPrimary }}
               >
                 <Globe className="w-3.5 h-3.5" style={{ color: theme.accentSecondary }} />
-                <span>Language (5 Supported)</span>
+                <span>Language (100+ World Languages)</span>
               </label>
-              <select
+              <SearchableLanguageSelect
                 id="voice-clone-language"
                 value={draftLanguage}
-                onChange={(e) => handleLanguageSelect(e.target.value as ClonedVoiceLanguage)}
-                className="w-full rounded-xl border px-3 py-2 text-[13px] font-medium focus:outline-none cursor-pointer"
-                style={{
-                  backgroundColor: theme.cardBg,
-                  borderColor: theme.borderColor,
-                  color: theme.textPrimary,
-                }}
-              >
-                {CLONED_VOICE_LANGUAGES.map((lang) => (
-                  <option key={lang.code} value={lang.code}>
-                    {lang.label} ({lang.native})
-                  </option>
-                ))}
-              </select>
+                onChange={(nextLang) => handleLanguageSelect(nextLang as ClonedVoiceLanguage)}
+                theme={theme}
+                includeAutoDetect={false}
+                ariaLabel="Select Voice Clone Language"
+              />
             </div>
 
             <div>

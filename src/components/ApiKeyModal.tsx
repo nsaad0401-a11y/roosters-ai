@@ -47,14 +47,8 @@ const CHAT_MODEL_OPTIONS: Array<{ value: string; label: string }> = [
 ];
 
 const IMAGE_MODEL_OPTIONS: Array<{ value: OwnerImageModel; label: string }> = [
-  { value: 'nano-banana', label: 'Nano Banana Auto HD (2.1 / 3.1 / 2.5 — Recommended)' },
-  { value: 'gemini-nano-banana-2.1', label: 'Gemini Nano Banana 2.1 (2K HD & Photo Edit)' },
-  { value: 'gemini-3.1-flash-image', label: 'Gemini 3.1 Flash Image (Fast HD & Editing)' },
-  { value: 'gemini-2.5-flash-image', label: 'Gemini 2.5 Flash Image (Compatible Fallback)' },
-  { value: 'flux', label: 'Flux Ultra-HD 1024×1024 (Fallback Engine)' },
-  { value: 'flux-realism', label: 'Flux Realism 1024×1024' },
-  { value: 'turbo', label: 'Turbo Fast 1024×1024' },
-  { value: 'horde', label: 'AI Horde Studio (Backup Engine)' },
+  { value: 'gemini-2.5-flash-image', label: 'Nano Banana — gemini-2.5-flash-image (Default)' },
+  { value: 'gemini-3.1-flash-image-preview', label: 'Nano Banana Preview — gemini-3.1-flash-image-preview' },
 ];
 
 export function ApiKeyModal({
@@ -77,7 +71,7 @@ export function ApiKeyModal({
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [showKey, setShowKey] = useState(false);
   const [chatModel, setChatModel] = useState('auto');
-  const [imageModel, setImageModel] = useState<OwnerImageModel>('nano-banana');
+  const [imageModel, setImageModel] = useState<OwnerImageModel>('gemini-2.5-flash-image');
   const [globalSystemPrompt, setGlobalSystemPrompt] = useState('');
   const [announcementEnabled, setAnnouncementEnabled] = useState(false);
   const [announcementText, setAnnouncementText] = useState('');
@@ -95,7 +89,7 @@ export function ApiKeyModal({
     const cfg = externalOwnerConfig ?? loadOwnerConfig();
     setApiKeyInput(loadCustomApiKey());
     setChatModel(cfg.chatModel || 'auto');
-    setImageModel(cfg.imageModel || 'nano-banana');
+    setImageModel(cfg.imageModel || 'gemini-2.5-flash-image');
     setGlobalSystemPrompt(cfg.globalSystemPrompt || '');
     setAnnouncementEnabled(Boolean(cfg.announcementEnabled));
     setAnnouncementText(cfg.announcementText || '');
@@ -133,7 +127,7 @@ export function ApiKeyModal({
 
     const updatedConfig: OwnerConfig = {
       chatModel: chatModel || 'auto',
-      imageModel: imageModel || 'nano-banana',
+      imageModel: imageModel || 'gemini-2.5-flash-image',
       globalSystemPrompt: globalSystemPrompt.trim(),
       announcementEnabled,
       announcementText: announcementText.trim(),
@@ -425,6 +419,9 @@ export function ApiKeyModal({
                       </option>
                     ))}
                   </select>
+                  <p className="mt-1 text-[10.5px]" style={{ color: theme.textMuted }}>
+                    Paid Gemini keys use Nano Banana natively; free keys auto-switch to 1024×1024 Flux HD.
+                  </p>
                 </div>
               </div>
 

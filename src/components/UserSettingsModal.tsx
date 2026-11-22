@@ -11,7 +11,6 @@ import {
   X,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { WORLD_LANGUAGES } from '../constants';
 import { AppTheme } from '../themes';
 import {
   ResponseStyleMode,
@@ -19,6 +18,7 @@ import {
   UserAppSettings,
   VoiceGenderChoice,
 } from '../types';
+import { SearchableLanguageSelect } from './SearchableLanguageSelect';
 
 interface UserSettingsModalProps {
   isOpen: boolean;
@@ -31,8 +31,6 @@ interface UserSettingsModalProps {
   onClearAllHistory: () => Promise<void> | void;
   onClose: () => void;
 }
-
-const QUICK_LANGUAGES = ['Auto-Detect', 'Roman Urdu', 'Urdu', 'English'];
 
 export function UserSettingsModal({
   isOpen,
@@ -67,8 +65,6 @@ export function UserSettingsModal({
   }, [isOpen, settings]);
 
   if (!isOpen) return null;
-
-  const extraLanguages = WORLD_LANGUAGES.filter((l) => !QUICK_LANGUAGES.includes(l.code));
 
   const handleSave = () => {
     onSave({
@@ -248,29 +244,16 @@ export function UserSettingsModal({
               style={{ color: theme.textPrimary }}
             >
               <Globe className="w-3.5 h-3.5" style={{ color: theme.accentSecondary }} />
-              <span>Preferred Language</span>
+              <span>Preferred Language (100+ World Languages)</span>
             </label>
-            <select
+            <SearchableLanguageSelect
               id="user-settings-language"
               value={preferredLanguage}
-              onChange={(e) => setPreferredLanguage(e.target.value)}
-              className="w-full px-3.5 py-2.5 rounded-xl border text-[13px] font-medium focus:outline-none cursor-pointer"
-              style={{
-                backgroundColor: theme.subSurfaceBg,
-                borderColor: theme.borderColor,
-                color: theme.textPrimary,
-              }}
-            >
-              <option value="Auto-Detect">Auto-Detect (Match my message)</option>
-              <option value="Roman Urdu">Roman Urdu (English letters)</option>
-              <option value="Urdu">Urdu (اردو)</option>
-              <option value="English">English</option>
-              {extraLanguages.map((lang) => (
-                <option key={lang.code} value={lang.code}>
-                  {lang.label} ({lang.native})
-                </option>
-              ))}
-            </select>
+              onChange={setPreferredLanguage}
+              theme={theme}
+              includeAutoDetect={true}
+              ariaLabel="Preferred Language"
+            />
           </div>
 
           {/* 3. Voice Settings (Gender + Speed) */}

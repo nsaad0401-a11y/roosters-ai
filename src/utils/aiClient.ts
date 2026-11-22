@@ -127,10 +127,12 @@ export function buildClientStudyTutorInstruction(options: {
 
   const langRule =
     !language || language === 'Auto-Detect'
-      ? "CRITICAL LANGUAGE & SCRIPT RULE: Match the user's exact language and script. If the user writes in Roman Urdu (Urdu written with English letters like 'kya haal hai', 'mujhe samjhao', 'aik insan moon pr'), you MUST reply in natural Roman Urdu using English letters — NEVER switch to Arabic/Urdu script unless the user explicitly asks for Urdu script or writes in Urdu script."
+      ? "CRITICAL UNIVERSAL LANGUAGE & SCRIPT RULE: Automatically detect the user's exact language and script across all world languages (100+ languages including English, Urdu, Roman Urdu, Hindi, Roman Hindi, Arabic, Punjabi, Pashto, Sindhi, Persian, Bengali, Spanish, French, German, Turkish, Chinese, Japanese, Korean, Russian, etc.). ALWAYS reply fluently in that exact same language and script. If the user writes in Roman Urdu ('kya haal hai', 'mujhe samjhao', 'aik insan moon pr') or Roman Hindi, reply in natural Romanized script with English letters — NEVER switch to Arabic/Urdu/Devanagari script unless asked."
       : language === 'Roman Urdu'
         ? 'CRITICAL LANGUAGE & SCRIPT RULE: Reply fluently in natural Roman Urdu using English/Latin letters only (do NOT use Arabic/Urdu script).'
-        : `Reply fluently in ${language}.`;
+        : language === 'Roman Hindi'
+          ? 'CRITICAL LANGUAGE & SCRIPT RULE: Reply fluently in natural Roman Hindi (Hinglish) using English/Latin letters only.'
+          : `CRITICAL LANGUAGE RULE: Reply fluently, politely, and naturally in ${language}.`;
 
   const styleRule =
     responseStyle === 'study'
@@ -409,10 +411,7 @@ export async function detectAndEnhanceChatMediaIntent(params: {
             intent: resolvedIntent,
             preEnhanced: {
               shortTitle: (data.shortTitle || cleaned).slice(0, 56),
-              detailedPrompt:
-                resolvedIntent === 'image_edit'
-                  ? data.enhancedPrompt.trim()
-                  : buildSafeArtisticPrompt(data.enhancedPrompt.trim()),
+              detailedPrompt: sanitizeShortSafePrompt(data.enhancedPrompt.trim(), 24),
             },
           };
         }
@@ -439,11 +438,11 @@ export async function detectAndEnhanceChatMediaIntent(params: {
   if (clientGeminiKey) {
     try {
       const sysText = [
-        'Classify the Latest User Message with Session State and Recent Conversation Context (English, Urdu, Roman Urdu) as intent "image_edit", "image", "video", or "chat".',
+        'Classify the Latest User Message with Session State and Recent Conversation Context in ANY world language (100+ languages) as intent "image_edit", "image", "video", or "chat".',
         '- Choose "image_edit" when USER_ATTACHED_PHOTO=true and user wants to edit/transform/restore/make 3D figurine/change background/outfit, OR when PREVIOUS_GENERATED_IMAGE_EXISTS_IN_CHAT=true and user asks a follow-up visual refinement ("now make it night time").',
         '- Choose "image" when user asks to create a new picture/photo/naksha (including follow-ups after "Mujhe aik pic bna k do").',
         '- Choose "chat" for questions, vision Q&A on an attached photo, or coding help.',
-        'If "image" or "image_edit", return an English enhancedPrompt + 3-6 word shortTitle.',
+        'If "image" or "image_edit", return a clean, safe, family-friendly English enhancedPrompt STRICTLY under 25 words including sharp photography descriptors ("ultra-sharp focus, crisp details, 8k resolution, DSLR 85mm lens, natural lighting") + 3-6 word shortTitle.',
         'Return ONLY JSON: {"intent":"image_edit|image|video|chat","shortTitle":"...","enhancedPrompt":"..."}',
       ].join(' ');
       const resp = await fetch(
@@ -1118,6 +1117,7 @@ async function analyzeImageViaGeminiRest(params: {
   mimeType: string;
   language?: string;
   userName?: string;
+  isLiveVoice?: boolean;
   responseStyle?: ResponseStyleMode;
   customInstructions?: string;
   globalSystemPrompt?: string;
@@ -1134,7 +1134,7 @@ async function analyzeImageViaGeminiRest(params: {
   const systemText = buildClientStudyTutorInstruction({
     language: params.language,
     userName: params.userName,
-    isLiveVoice: false,
+    isLiveVoice: Boolean(params.isLiveVoice),
     responseStyle: params.responseStyle,
     customInstructions: params.customInstructions,
     globalSystemPrompt: params.globalSystemPrompt,
@@ -1287,6 +1287,7 @@ export async function streamChatCompletion(params: {
         mimeType,
         language: params.language,
         userName: params.userName,
+        isLiveVoice: params.isLiveVoice,
         responseStyle,
         customInstructions,
         globalSystemPrompt,
@@ -1306,6 +1307,7 @@ export async function streamChatCompletion(params: {
         mimeType,
         language: params.language,
         userName: params.userName,
+        isLiveVoice: params.isLiveVoice,
         responseStyle,
         customInstructions,
         globalSystemPrompt,
@@ -1570,13 +1572,30 @@ const RISKY_WORD_REPLACEMENTS: Array<[RegExp, string]> = [
 const BARE_HUMAN_SUBJECT_RX =
   /^(a\s+|an\s+|the\s+)?(human|person|people|man|men|woman|women|boy|girl|kid|child|portrait|face|human being|insaan|aadmi|larka|larki)$/i;
 
+export function sanitizeShortSafePrompt(rawInput: string, maxWords = 24): string {
+  let text = (rawInput || '')
+    .replace(/["'`\n\r]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  for (const [rx, safeReplacement] of RISKY_WORD_REPLACEMENTS) {
+    text = text.replace(rx, safeReplacement);
+  }
+
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length > maxWords) {
+    text = words.slice(0, maxWords).join(' ').replace(/[,.;:-]+$/, '').trim();
+  }
+  return text || 'photorealistic serene scenery, golden hour lighting, sharp HD detail';
+}
+
 export function buildSafeArtisticPrompt(rawInput: string): string {
   let text = rawInput
     .replace(
       /\b(create|generate|make|draw|paint|sketch|render|show|please|kindly|me|mujy|mujhe|a|an|ek|aik|pic|pics|picture|tasveer|tasweer|tasvir|taswir|photo|foto|image|img|banao|bnao|bna\s*do|bna\s*dy|bna\s*de|bana\s*do|bana\s*dy|bana\s*de|banado|bnado|dikhao|chahiye|khincho|kar\s*do|kr\s*do)\b/gi,
       ' '
     )
-    .replace(/\b(naksha|naqsha)\b/gi, 'modern architectural floor plan and elevation design')
+    .replace(/\b(naksha|naqsha)\b/gi, 'modern architectural floor plan design')
     .replace(/\bof\b/gi, ' ')
     .replace(/[^\p{L}\p{N}\s,.-]/gu, ' ')
     .replace(/\s+/g, ' ')
@@ -1589,55 +1608,35 @@ export function buildSafeArtisticPrompt(rawInput: string): string {
   if (!text || BARE_HUMAN_SUBJECT_RX.test(text)) {
     const noun = text.toLowerCase();
     if (noun.includes('woman') || noun.includes('girl') || noun.includes('larki')) {
-      return 'Photorealistic portrait of a friendly smiling woman wearing stylish modern attire in a sunlit studio, natural soft lighting, shallow depth of field, sharp focus, ultra-detailed 8k photography';
+      return 'Photorealistic portrait of a friendly smiling woman in modern studio, warm natural lighting, sharp HD focus';
     }
     if (noun.includes('man') || noun.includes('boy') || noun.includes('larka')) {
-      return 'Photorealistic portrait of a friendly smiling young man wearing stylish modern attire in a sunlit studio, natural soft lighting, shallow depth of field, sharp focus, ultra-detailed 8k photography';
+      return 'Photorealistic portrait of a friendly smiling young man in modern studio, warm natural lighting, sharp HD focus';
     }
-    return 'Photorealistic portrait of a friendly smiling person wearing modern casual attire in a sunlit contemporary studio, natural golden hour lighting, sharp focus, ultra-detailed 8k photography';
+    return 'Photorealistic portrait of a friendly smiling person in sunlit contemporary studio, warm golden hour lighting, sharp HD';
   }
 
-  // If already a rich, detailed prompt (e.g., from Gemini Prompt Enhancer), preserve its photographic/architectural realism intact
   const wordCount = text.split(/\s+/).length;
   if (wordCount >= 12) {
-    return `${text}, sharp focus, ultra-HD 8k detail`;
+    return sanitizeShortSafePrompt(text, 24);
   }
 
-  // If the prompt mentions a human/person briefly without scene context, frame it photorealistically
   const hasHumanNoun = /\b(human|person|people|man|woman|boy|girl|child|student|teacher|doctor|astronaut|face|portrait)\b/i.test(
     text
   );
   if (hasHumanNoun && wordCount <= 6) {
-    return `Photorealistic studio portrait of a friendly ${text} in stylish modern attire, warm natural sunlight, crisp textures, shallow depth of field, ultra-detailed 8k`;
+    return sanitizeShortSafePrompt(
+      `Photorealistic studio portrait of a friendly ${text}, warm natural sunlight, sharp HD focus`,
+      24
+    );
   }
 
-  return `${text}, photorealistic ultra-detailed 8k resolution, natural cinematic lighting, crisp textures, sharp focus`;
+  return sanitizeShortSafePrompt(
+    `${text}, photorealistic natural lighting, crisp HD focus`,
+    24
+  );
 }
 
-function buildProceduralFallbackSvg(title: string, width: number, height: number): string {
-  const safeTitle = title.replace(/[<>&"']/g, '').slice(0, 48) || 'Roosters AI Artwork';
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
-    <defs>
-      <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stop-color="#0b132b"/>
-        <stop offset="50%" stop-color="#1c2541"/>
-        <stop offset="100%" stop-color="#0f2942"/>
-      </linearGradient>
-      <radialGradient id="sun" cx="50%" cy="38%" r="42%">
-        <stop offset="0%" stop-color="#ffd700" stop-opacity="0.75"/>
-        <stop offset="55%" stop-color="#00d4ff" stop-opacity="0.28"/>
-        <stop offset="100%" stop-color="#0b132b" stop-opacity="0"/>
-      </radialGradient>
-    </defs>
-    <rect width="100%" height="100%" fill="url(#bg)"/>
-    <rect width="100%" height="100%" fill="url(#sun)"/>
-    <circle cx="${Math.round(width * 0.5)}" cy="${Math.round(height * 0.38)}" r="${Math.round(Math.min(width, height) * 0.16)}" fill="#ffd700" fill-opacity="0.18" stroke="#ffd700" stroke-opacity="0.55" stroke-width="2"/>
-    <path d="M0 ${Math.round(height * 0.72)} Q ${Math.round(width * 0.25)} ${Math.round(height * 0.58)} ${Math.round(width * 0.52)} ${Math.round(height * 0.7)} T ${width} ${Math.round(height * 0.66)} L ${width} ${height} L 0 ${height} Z" fill="#07090e" fill-opacity="0.68"/>
-    <path d="M0 ${Math.round(height * 0.8)} Q ${Math.round(width * 0.35)} ${Math.round(height * 0.68)} ${Math.round(width * 0.68)} ${Math.round(height * 0.8)} T ${width} ${Math.round(height * 0.76)} L ${width} ${height} L 0 ${height} Z" fill="#050608" fill-opacity="0.88"/>
-    <text x="50%" y="${Math.round(height * 0.9)}" text-anchor="middle" fill="#ffd700" font-family="sans-serif" font-size="${Math.round(width * 0.03)}" font-weight="700">${safeTitle}</text>
-  </svg>`;
-  return svg;
-}
 
 // Preserve 100% original crisp HD image resolution without blurry lossy recompression
 async function blobToSharpDataUrl(blob: Blob): Promise<string | null> {
@@ -1679,182 +1678,6 @@ async function blobToSharpDataUrl(blob: Blob): Promise<string | null> {
   }
 }
 
-async function tryPollinationsImage(params: {
-  safePrompt: string;
-  width: number;
-  height: number;
-  modelName?: string;
-  onStatus?: (msg: string) => void;
-}): Promise<{ ok: true; imageUrl: string } | { ok: false; reason: string }> {
-  const model = params.modelName && params.modelName !== 'horde' ? params.modelName : 'flux';
-  const seed = Math.floor(Math.random() * 100000);
-  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(
-    params.safePrompt
-  )}?model=${encodeURIComponent(model)}&width=${params.width}&height=${params.height}&enhance=true&nologo=true&seed=${seed}`;
-
-  params.onStatus?.(`Generating ${params.width}×${params.height} Ultra-HD ${model} image...`);
-
-  try {
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 32000);
-    try {
-      const resp = await fetch(url, { mode: 'cors', signal: controller.signal });
-      if (!resp.ok) {
-        return { ok: false, reason: `Primary returned status ${resp.status}` };
-      }
-
-      const contentType = (resp.headers.get('content-type') || '').toLowerCase();
-      if (!contentType.startsWith('image/')) {
-        return { ok: false, reason: 'Primary returned non-image response' };
-      }
-
-      const blob = await resp.blob();
-      if (blob.size < 9000) {
-        return { ok: false, reason: 'Primary returned temporary placeholder' };
-      }
-
-      const dataUrl = await blobToSharpDataUrl(blob);
-      if (dataUrl) {
-        return { ok: true, imageUrl: dataUrl };
-      }
-      return { ok: true, imageUrl: url };
-    } finally {
-      window.clearTimeout(timeoutId);
-    }
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      return { ok: false, reason: 'Primary Flux server timed out' };
-    }
-    // Even if CORS blob verification fails, direct URL can still render cleanly in <img>
-    return { ok: true, imageUrl: url };
-  }
-}
-
-function getHordeDimensions(aspectRatio: '1:1' | '16:9' | '4:3'): { w: number; h: number } {
-  // Anonymous AI Horde fast queue dimensions (multiples of 64, max ~512-640px for zero kudos)
-  if (aspectRatio === '16:9') return { w: 640, h: 384 };
-  if (aspectRatio === '4:3') return { w: 576, h: 448 };
-  return { w: 512, h: 512 };
-}
-
-async function tryAiHordeImage(params: {
-  safePrompt: string;
-  aspectRatio: '1:1' | '16:9' | '4:3';
-  onStatus?: (msg: string) => void;
-}): Promise<{ ok: true; imageUrl: string } | { ok: false; reason: string }> {
-  const dims = getHordeDimensions(params.aspectRatio);
-  params.onStatus?.('Routing to Free AI Horde Studio (bypassing 45s limit)...');
-
-  try {
-    const submitResp = await fetch('https://stablehorde.net/api/v2/generate/async', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        apikey: '0000000000',
-        'Client-Agent': 'RoostersAI:2.0:sandsoft',
-      },
-      body: JSON.stringify({
-        prompt: `${params.safePrompt} ### nsfw, nude, violence, gore, watermark, blurry, text, deformed`,
-        params: {
-          sampler_name: 'k_euler_a',
-          cfg_scale: 7,
-          steps: 20,
-          width: dims.w,
-          height: dims.h,
-          n: 1,
-        },
-        nsfw: false,
-        censor_nsfw: true,
-        trusted_workers: false,
-        slow_workers: true,
-        r2: true,
-      }),
-    });
-
-    if (!submitResp.ok) {
-      return { ok: false, reason: `AI Horde queue busy (${submitResp.status})` };
-    }
-
-    const submitData = (await submitResp.json()) as { id?: string; message?: string };
-    const jobId = submitData.id;
-    if (!jobId) {
-      return { ok: false, reason: submitData.message || 'AI Horde did not return a job ID' };
-    }
-
-    const startedAt = Date.now();
-    const maxWaitMs = 55_000;
-
-    while (Date.now() - startedAt < maxWaitMs) {
-      await new Promise((r) => setTimeout(r, 2200));
-
-      const checkResp = await fetch(`https://stablehorde.net/api/v2/generate/check/${jobId}`, {
-        headers: { 'Client-Agent': 'RoostersAI:2.0:sandsoft' },
-      });
-      if (!checkResp.ok) continue;
-
-      const checkData = (await checkResp.json()) as {
-        done?: boolean;
-        faulted?: boolean;
-        queue_position?: number;
-        wait_time?: number;
-        processing?: number;
-      };
-
-      if (checkData.faulted) {
-        return { ok: false, reason: 'AI Horde worker faulted' };
-      }
-
-      if (checkData.done) {
-        break;
-      }
-
-      const waitHint = checkData.wait_time ? `~${checkData.wait_time}s` : 'rendering';
-      const queueHint =
-        typeof checkData.queue_position === 'number' && checkData.queue_position > 0
-          ? `Queue #${checkData.queue_position}, `
-          : '';
-      params.onStatus?.(`Free AI Horde generating (${queueHint}${waitHint})...`);
-    }
-
-    const statusResp = await fetch(`https://stablehorde.net/api/v2/generate/status/${jobId}`, {
-      headers: { 'Client-Agent': 'RoostersAI:2.0:sandsoft' },
-    });
-    if (!statusResp.ok) {
-      return { ok: false, reason: 'Could not retrieve AI Horde image result' };
-    }
-
-    const statusData = (await statusResp.json()) as {
-      done?: boolean;
-      generations?: Array<{ img?: string; censored?: boolean }>;
-    };
-    const imgRaw = statusData.generations?.[0]?.img;
-    if (!imgRaw) {
-      return { ok: false, reason: 'AI Horde finished without an image frame' };
-    }
-
-    // Convert R2 image URL to sharp DataURL so saved chats & Canvas export never expire or CORS-taint
-    if (imgRaw.startsWith('http')) {
-      try {
-        const imgResp = await fetch(imgRaw, { mode: 'cors' });
-        if (imgResp.ok) {
-          const blob = await imgResp.blob();
-          const dataUrl = await blobToSharpDataUrl(blob);
-          if (dataUrl) return { ok: true, imageUrl: dataUrl };
-        }
-      } catch {
-        // Fall back to direct R2 URL if CORS conversion fails
-      }
-      return { ok: true, imageUrl: imgRaw };
-    }
-
-    // Base64 fallback (rare when r2=true)
-    const dataSrc = imgRaw.startsWith('data:') ? imgRaw : `data:image/webp;base64,${imgRaw}`;
-    return { ok: true, imageUrl: dataSrc };
-  } catch {
-    return { ok: false, reason: 'AI Horde network connection failed' };
-  }
-}
-
 export async function translatePromptToDetailedEnglish(params: {
   rawPrompt: string;
   hasBackendApi: boolean;
@@ -1884,7 +1707,7 @@ export async function translatePromptToDetailedEnglish(params: {
         if (data.enhancedPrompt && data.enhancedPrompt.trim().length > 4) {
           return {
             shortTitle: (data.shortTitle || cleaned).slice(0, 56),
-            detailedPrompt: buildSafeArtisticPrompt(data.enhancedPrompt.trim()),
+            detailedPrompt: sanitizeShortSafePrompt(data.enhancedPrompt.trim(), 24),
           };
         }
       }
@@ -1896,15 +1719,14 @@ export async function translatePromptToDetailedEnglish(params: {
   const translated = await runQuickTextCompletion({
     systemPrompt: [
       'You are an expert, family-friendly AI visual prompt engineer.',
-      'Convert ANY user request from ANY language (English, Urdu, Roman Urdu like "pic bna do", "tasveer banao", "naksha banao", Hindi, Arabic, Spanish, etc.) into a highly detailed, professional English image-generation prompt (35-65 words).',
-      'Include realistic studio or natural lighting, authentic textures, architectural or environmental details, camera depth, and photorealistic/cinematic style.',
+      'Convert ANY user request from ANY world language (100+ languages including English, Urdu, Roman Urdu, Hindi, Arabic, Punjabi, Pashto, Sindhi, Spanish, French, German, Turkish, Chinese, Japanese, Korean, Russian, etc.) into a clean, safe, family-friendly English prompt STRICTLY under 25 words including sharp photography descriptors such as "ultra-sharp focus, crisp details, 8k resolution, DSLR 85mm lens, natural lighting".',
       'Strip command words like "pic bna do", "tasveer banao", "naksha banao", "generate image", "draw me". Never include unsafe, explicit, or violent terms.',
-      'Return ONLY JSON: {"title":"short 3-6 word title","detailedPrompt":"detailed photorealistic English prompt"}',
+      'Return ONLY JSON: {"title":"short 3-6 word title","detailedPrompt":"clean English prompt under 25 words"}',
     ].join(' '),
     userPrompt: cleaned,
     hasBackendApi: params.hasBackendApi,
     hasServerGeminiKey: params.hasServerGeminiKey,
-    maxTokens: 260,
+    maxTokens: 200,
   });
 
   if (translated) {
@@ -1919,7 +1741,7 @@ export async function translatePromptToDetailedEnglish(params: {
         if (parsed.detailedPrompt && parsed.detailedPrompt.trim().length > 4) {
           return {
             shortTitle: (parsed.title || cleaned).slice(0, 56),
-            detailedPrompt: buildSafeArtisticPrompt(parsed.detailedPrompt.trim()),
+            detailedPrompt: sanitizeShortSafePrompt(parsed.detailedPrompt.trim(), 24),
           };
         }
       }
@@ -1943,12 +1765,12 @@ export async function translatePromptToDetailedEnglish(params: {
   };
 }
 
-const NANO_BANANA_MODELS = new Set([
-  'nano-banana',
-  'gemini-nano-banana-2.1',
-  'gemini-3.1-flash-image',
-  'gemini-2.5-flash-image',
-]);
+function resolveOfficialNanoModelId(preferred?: string): 'gemini-2.5-flash-image' | 'gemini-3.1-flash-image-preview' {
+  if (preferred === 'gemini-3.1-flash-image-preview') {
+    return 'gemini-3.1-flash-image-preview';
+  }
+  return 'gemini-2.5-flash-image';
+}
 
 async function extractBase64AndMimeFromUrl(
   imageUrlOrDataUrl: string,
@@ -2020,6 +1842,7 @@ async function tryNanoBananaApi(params: {
   | {
       ok: true;
       imageUrl: string;
+      provider: 'nano-banana' | 'pollinations';
       modelUsed: string;
       title: string;
       detailedPrompt: string;
@@ -2032,19 +1855,17 @@ async function tryNanoBananaApi(params: {
   const localKey = loadCustomApiKey().trim();
   const envGeminiKey = getEnvGeminiKey();
   const clientGeminiKey = localKey.startsWith('AIza') ? localKey : envGeminiKey;
-
-  const modelBadge =
-    params.preferredModel && params.preferredModel !== 'nano-banana'
-      ? params.preferredModel
-      : 'Nano Banana HD';
+  const officialModelId = resolveOfficialNanoModelId(
+    params.preferredModel || loadOwnerConfig().imageModel
+  );
 
   params.onStatus?.(
     params.mode === 'edit'
-      ? `Editing photo seamlessly with ${modelBadge} (preserving identity)...`
-      : `Generating uncompressed ${params.resolution || '1K'} HD image with ${modelBadge}...`
+      ? `Editing photo with Nano Banana (${officialModelId})...`
+      : `Generating ${params.resolution || '1K'} HD image with Nano Banana (${officialModelId})...`
   );
 
-  // 1. Primary: Express Server /api/nano-banana (uses @google/genai SDK cleanly)
+  // 1. Primary: Express Server /api/nano-banana (Dual-Engine: Nano Banana -> Flux HD on 429)
   if (params.hasBackendApi || params.hasServerGeminiKey) {
     try {
       const resp = await fetch('/api/nano-banana', {
@@ -2057,10 +1878,7 @@ async function tryNanoBananaApi(params: {
           aspectRatio: params.aspectRatio,
           resolution: params.resolution || '1K',
           mode: params.mode,
-          preferredModel:
-            params.preferredModel && params.preferredModel !== 'nano-banana'
-              ? params.preferredModel
-              : undefined,
+          preferredModel: officialModelId,
           previousEditContext: params.previousEditContext,
           skipEnhance: params.skipEnhance,
           apiKey: clientGeminiKey || undefined,
@@ -2070,6 +1888,7 @@ async function tryNanoBananaApi(params: {
       if (contentType.includes('application/json')) {
         const data = (await resp.json()) as {
           imageUrl?: string;
+          provider?: 'nano-banana' | 'pollinations';
           modelUsed?: string;
           title?: string;
           detailedPrompt?: string;
@@ -2082,7 +1901,8 @@ async function tryNanoBananaApi(params: {
           return {
             ok: true,
             imageUrl: data.imageUrl,
-            modelUsed: data.modelUsed || 'gemini-nano-banana-2.1',
+            provider: data.provider === 'pollinations' ? 'pollinations' : 'nano-banana',
+            modelUsed: data.modelUsed || officialModelId,
             title: data.title || params.prompt.slice(0, 52),
             detailedPrompt: data.detailedPrompt || params.prompt,
             assistantText: data.assistantText,
@@ -2090,10 +1910,16 @@ async function tryNanoBananaApi(params: {
             height: data.height || 1024,
           };
         }
-        if (data.error) {
-          return { ok: false, reason: data.error };
-        }
+        return {
+          ok: false,
+          reason: data.error || `Gemini API (${officialModelId}) returned HTTP ${resp.status}`,
+        };
       }
+      const rawText = await resp.text().catch(() => '');
+      return {
+        ok: false,
+        reason: rawText.trim() || `Nano Banana endpoint returned HTTP ${resp.status}`,
+      };
     } catch (err) {
       return {
         ok: false,
@@ -2102,226 +1928,206 @@ async function tryNanoBananaApi(params: {
     }
   }
 
-  // 2. Direct Gemini REST fallback (static deployments with client key)
+  // 2. Direct Gemini REST API (when running as static bundle without Express backend)
   if (clientGeminiKey) {
-    const fallbackSequence = [
-      ...(params.preferredModel && params.preferredModel !== 'nano-banana'
-        ? [params.preferredModel]
-        : []),
-      'gemini-3.1-flash-image',
-      'gemini-nano-banana-2.1',
-      'gemini-3.1-flash-lite-image',
-      'gemini-2.5-flash-image',
-    ].filter((m, idx, arr) => arr.indexOf(m) === idx);
+    try {
+      // Translate Roman Urdu / short prompts into detailed English using gemini-2.5-flash when not pre-enhanced
+      let promptToSend = params.prompt.trim();
+      let shortTitle = promptToSend.slice(0, 52);
 
-    const parts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [];
-    if (params.sourceImageBase64) {
-      parts.push({
-        inlineData: {
-          data: params.sourceImageBase64,
-          mimeType: params.sourceMimeType || 'image/png',
-        },
-      });
-    }
-    const finalText =
-      params.mode === 'edit'
-        ? `${params.prompt} Keep the original subject face, identity, and proportions consistent. Render sharp high-definition clarity.`
-        : params.prompt;
-    parts.push({ text: finalText });
-
-    let lastReason = 'Nano Banana image model unavailable';
-    for (const modelId of fallbackSequence) {
-      try {
-        const resp = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-            modelId
-          )}:generateContent`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-goog-api-key': clientGeminiKey,
-            },
-            body: JSON.stringify({
-              contents: [{ role: 'user', parts }],
-              safetySettings: GEMINI_SAFETY_SETTINGS,
-              generationConfig: {
-                responseModalities: ['TEXT', 'IMAGE'],
-                imageConfig:
-                  modelId === 'gemini-nano-banana-2.1'
-                    ? { aspectRatio: params.aspectRatio, imageSize: params.resolution || '1K' }
-                    : { aspectRatio: params.aspectRatio },
+      if (!params.skipEnhance) {
+        try {
+          const enhResp = await fetch(
+            'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': clientGeminiKey,
               },
-            }),
-          }
-        );
-
-        if (!resp.ok) {
-          lastReason = extractReadableApiError(await resp.text(), resp.status);
-          continue;
-        }
-
-        const json = (await resp.json()) as {
-          candidates?: Array<{
-            content?: {
-              parts?: Array<{
-                text?: string;
-                inlineData?: { data?: string; mimeType?: string };
-              }>;
+              body: JSON.stringify({
+                system_instruction: {
+                  parts: [
+                    {
+                      text:
+                        params.mode === 'edit'
+                          ? 'Translate ANY photo edit request from ANY world language into a clean, safe, family-friendly English editing instruction STRICTLY under 25 words. Keep subject identity consistent. Return ONLY JSON: {"shortTitle":"3-6 words","enhancedPrompt":"clean English edit instruction under 25 words"}'
+                          : 'Translate ANY image request from ANY world language into a clean, safe, family-friendly English prompt STRICTLY under 25 words including sharp photography descriptors ("ultra-sharp focus, crisp details, 8k resolution, DSLR 85mm lens, natural lighting"). Return ONLY JSON: {"shortTitle":"3-6 words","enhancedPrompt":"clean English image prompt under 25 words"}',
+                    },
+                  ],
+                },
+                contents: [{ role: 'user', parts: [{ text: promptToSend }] }],
+                safetySettings: GEMINI_SAFETY_SETTINGS,
+                generationConfig: {
+                  responseMimeType: 'application/json',
+                  thinkingConfig: { thinkingBudget: 0 },
+                },
+              }),
+            }
+          );
+          if (enhResp.ok) {
+            const enhJson = (await enhResp.json()) as {
+              candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
             };
-          }>;
-        };
-
-        let imgData = '';
-        let imgMime = 'image/png';
-        let assistantText = '';
-        for (const p of json.candidates?.[0]?.content?.parts ?? []) {
-          if (p.inlineData?.data && !imgData) {
-            imgData = p.inlineData.data;
-            imgMime = p.inlineData.mimeType || 'image/png';
-          } else if (p.text) {
-            assistantText += `${p.text}\n`;
+            const rawJsonText = enhJson.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            if (rawJsonText) {
+              const parsed = JSON.parse(rawJsonText.trim()) as {
+                shortTitle?: string;
+                enhancedPrompt?: string;
+              };
+              if (parsed.enhancedPrompt?.trim()) promptToSend = parsed.enhancedPrompt.trim();
+              if (parsed.shortTitle?.trim()) shortTitle = parsed.shortTitle.trim().slice(0, 56);
+            }
           }
+        } catch {
+          // Proceed with original prompt so primary image call still executes cleanly
         }
+      }
 
-        if (imgData) {
-          const w = params.aspectRatio === '16:9' ? 1376 : params.aspectRatio === '4:3' ? 1200 : 1024;
-          const h = params.aspectRatio === '16:9' ? 768 : params.aspectRatio === '4:3' ? 896 : 1024;
+      promptToSend = sanitizeShortSafePrompt(promptToSend, 24);
+
+      const finalText =
+        params.mode === 'edit'
+          ? `${promptToSend}. Keep original subject identity consistent, crisp HD clarity.`
+          : promptToSend;
+
+      const parts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [];
+      if (params.sourceImageBase64) {
+        parts.push({
+          inlineData: {
+            data: params.sourceImageBase64,
+            mimeType: params.sourceMimeType || 'image/png',
+          },
+        });
+      }
+      parts.push({ text: finalText });
+
+      const resp = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+          officialModelId
+        )}:generateContent`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': clientGeminiKey,
+          },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts }],
+            safetySettings: GEMINI_SAFETY_SETTINGS,
+            generationConfig: {
+              responseModalities: ['IMAGE', 'TEXT'],
+              imageConfig:
+                officialModelId === 'gemini-3.1-flash-image-preview' && params.resolution === '2K'
+                  ? { aspectRatio: params.aspectRatio, imageSize: '2K' }
+                  : { aspectRatio: params.aspectRatio },
+            },
+          }),
+        }
+      );
+
+      if (!resp.ok) {
+        const errBody = await resp.text();
+        const errLower = errBody.toLowerCase();
+        const isQuota429 =
+          resp.status === 429 ||
+          errLower.includes('resource_exhausted') ||
+          errLower.includes('limit: 0') ||
+          errLower.includes('free_tier') ||
+          errLower.includes('exceeded your current quota');
+
+        if (isQuota429) {
+          const cleanShortPrompt = sanitizeShortSafePrompt(promptToSend, 24);
+          const w = params.aspectRatio === '16:9' ? 1280 : params.aspectRatio === '4:3' ? 1024 : 1024;
+          const h = params.aspectRatio === '16:9' ? 720 : params.aspectRatio === '4:3' ? 768 : 1024;
+          const randomSeed = Math.floor(Math.random() * 1000000);
+          const fluxUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(
+            cleanShortPrompt
+          )}?width=${w}&height=${h}&model=flux&nologo=true&safe=true&seed=${randomSeed}`;
           return {
             ok: true,
-            imageUrl: `data:${imgMime};base64,${imgData}`,
-            modelUsed: modelId,
-            title: params.prompt.slice(0, 52),
-            detailedPrompt: finalText,
-            assistantText: assistantText.trim(),
+            imageUrl: fluxUrl,
+            provider: 'pollinations',
+            modelUsed: 'flux',
+            title: shortTitle,
+            detailedPrompt: cleanShortPrompt,
             width: w,
             height: h,
           };
         }
-      } catch (err) {
-        lastReason = err instanceof Error ? err.message : lastReason;
+
+        return {
+          ok: false,
+          reason: `Gemini API (${officialModelId}, HTTP ${resp.status}): ${extractReadableApiError(errBody, resp.status)}`,
+        };
       }
-    }
-    return { ok: false, reason: lastReason };
-  }
 
-  return { ok: false, reason: 'Nano Banana requires a configured Gemini API key.' };
-}
-
-async function resolveImageWithFallback(params: {
-  rawPrompt?: string;
-  safePrompt: string;
-  aspectRatio: '1:1' | '16:9' | '4:3';
-  resolution?: '1K' | '2K';
-  pollinationsDims: { w: number; h: number };
-  title: string;
-  language?: string;
-  hasBackendApi: boolean;
-  hasServerGeminiKey: boolean;
-  onStatus?: (msg: string) => void;
-}): Promise<{
-  imageUrl?: string;
-  svgCode?: string;
-  provider: 'nano-banana' | 'pollinations' | 'horde' | 'svg';
-  modelUsed?: string;
-  width?: number;
-  height?: number;
-}> {
-  const configuredImageModel = loadOwnerConfig().imageModel || 'nano-banana';
-
-  // 1. Primary: Google Nano Banana Native Image Generation (when configured — now default)
-  if (NANO_BANANA_MODELS.has(configuredImageModel)) {
-    const nanoRes = await tryNanoBananaApi({
-      prompt: params.safePrompt,
-      aspectRatio: params.aspectRatio,
-      resolution: params.resolution || '1K',
-      mode: 'generate',
-      preferredModel: configuredImageModel,
-      skipEnhance: true,
-      hasBackendApi: params.hasBackendApi,
-      hasServerGeminiKey: params.hasServerGeminiKey,
-      onStatus: params.onStatus,
-    });
-    if (nanoRes.ok) {
-      return {
-        imageUrl: nanoRes.imageUrl,
-        provider: 'nano-banana',
-        modelUsed: nanoRes.modelUsed,
-        width: nanoRes.width,
-        height: nanoRes.height,
+      const json = (await resp.json()) as {
+        promptFeedback?: { blockReason?: string };
+        candidates?: Array<{
+          finishReason?: string;
+          content?: {
+            parts?: Array<{
+              text?: string;
+              inlineData?: { data?: string; mimeType?: string };
+            }>;
+          };
+        }>;
       };
-    }
-    params.onStatus?.(`${nanoRes.reason} — switching to Flux 1024×1024 Ultra-HD...`);
-  }
 
-  if (configuredImageModel === 'horde') {
-    const hordePreferred = await tryAiHordeImage({
-      safePrompt: params.safePrompt,
-      aspectRatio: params.aspectRatio,
-      onStatus: params.onStatus,
-    });
-    if (hordePreferred.ok) {
-      return { imageUrl: hordePreferred.imageUrl, provider: 'horde' };
-    }
-  }
+      if (json.promptFeedback?.blockReason) {
+        return {
+          ok: false,
+          reason: `Gemini API (${officialModelId}) blocked prompt: ${json.promptFeedback.blockReason}`,
+        };
+      }
 
-  // 2. Fallback / Flux engine: Pollinations (1024x1024 Ultra-HD Flux / Realism / Turbo)
-  const fluxModelChoice = NANO_BANANA_MODELS.has(configuredImageModel) ? 'flux' : configuredImageModel;
-  const pollinationsRes = await tryPollinationsImage({
-    safePrompt: params.safePrompt,
-    width: params.pollinationsDims.w,
-    height: params.pollinationsDims.h,
-    modelName: fluxModelChoice,
-    onStatus: params.onStatus,
-  });
-  if (pollinationsRes.ok) {
-    return { imageUrl: pollinationsRes.imageUrl, provider: 'pollinations' };
-  }
-
-  // 3. Fallback: Free Public AI Horde API
-  params.onStatus?.(`${pollinationsRes.reason} — switching to Free AI Horde...`);
-  const hordeRes = await tryAiHordeImage({
-    safePrompt: params.safePrompt,
-    aspectRatio: params.aspectRatio,
-    onStatus: params.onStatus,
-  });
-  if (hordeRes.ok) {
-    return { imageUrl: hordeRes.imageUrl, provider: 'horde' };
-  }
-
-  // 4. Optional backend Gemini SVG fallback if server is running
-  if (params.hasBackendApi) {
-    try {
-      const resolved = resolveActiveProvider(params.hasServerGeminiKey);
-      const resp = await fetch('/api/generate-image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: params.safePrompt,
-          aspectRatio: params.aspectRatio,
-          language: params.language,
-          apiKey: resolved.provider === 'gemini' ? resolved.apiKey || undefined : undefined,
-        }),
-      });
-      if (resp.ok) {
-        const data = (await resp.json()) as { svgCode?: string };
-        if (data.svgCode) {
-          return { svgCode: data.svgCode, provider: 'svg' };
+      let imgData = '';
+      let imgMime = 'image/png';
+      let assistantText = '';
+      for (const part of json.candidates?.[0]?.content?.parts ?? []) {
+        if (part.inlineData?.data && !imgData) {
+          imgData = part.inlineData.data;
+          imgMime = part.inlineData.mimeType || 'image/png';
+        } else if (part.text) {
+          assistantText += `${part.text}\n`;
         }
       }
-    } catch {
-      // Fall through to local artistic SVG fallback
+
+      if (!imgData) {
+        const finishReason = json.candidates?.[0]?.finishReason;
+        return {
+          ok: false,
+          reason:
+            assistantText.trim() ||
+            `Gemini API (${officialModelId}) returned no image data${finishReason ? ` (finishReason: ${finishReason})` : ''}.`,
+        };
+      }
+
+      const w = params.aspectRatio === '16:9' ? 1376 : params.aspectRatio === '4:3' ? 1200 : 1024;
+      const h = params.aspectRatio === '16:9' ? 768 : params.aspectRatio === '4:3' ? 896 : 1024;
+      return {
+        ok: true,
+        imageUrl: `data:${imgMime};base64,${imgData}`,
+        provider: 'nano-banana',
+        modelUsed: officialModelId,
+        title: shortTitle,
+        detailedPrompt: finalText,
+        assistantText: assistantText.trim(),
+        width: w,
+        height: h,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: err instanceof Error ? err.message : `Gemini API (${officialModelId}) request failed.`,
+      };
     }
   }
 
-  // 5. Local offline-safe SVG artwork fallback so users NEVER hit a dead end
   return {
-    svgCode: buildProceduralFallbackSvg(
-      params.title,
-      params.pollinationsDims.w,
-      params.pollinationsDims.h
-    ),
-    provider: 'svg',
+    ok: false,
+    reason: `Nano Banana (${officialModelId}) requires a configured Gemini API key.`,
   };
 }
 
@@ -2339,28 +2145,16 @@ export async function generateArtworkUnified(params: {
   description: string;
   detailedPrompt: string;
   svgCode?: string;
-  imageUrl?: string;
-  provider: 'nano-banana' | 'pollinations' | 'horde' | 'svg';
-  modelUsed?: string;
+  imageUrl: string;
+  provider: 'nano-banana' | 'pollinations';
+  modelUsed: string;
   aspectRatio: '1:1' | '16:9' | '4:3';
   width: number;
   height: number;
 }> {
-  const is2K = params.resolution === '2K';
-  const dims =
-    params.aspectRatio === '16:9'
-      ? is2K
-        ? { w: 2048, h: 1152 }
-        : { w: 1280, h: 720 }
-      : params.aspectRatio === '4:3'
-        ? is2K
-          ? { w: 2048, h: 1536 }
-          : { w: 1024, h: 768 }
-        : is2K
-          ? { w: 2048, h: 2048 }
-          : { w: 1024, h: 1024 };
+  const configuredModel = resolveOfficialNanoModelId(loadOwnerConfig().imageModel);
 
-  params.onStatus?.('Enhancing prompt with Gemini AI...');
+  params.onStatus?.('Translating & enhancing prompt with Gemini 2.5 Flash...');
   const { detailedPrompt, shortTitle } =
     params.preEnhanced?.detailedPrompt
       ? params.preEnhanced
@@ -2370,30 +2164,32 @@ export async function generateArtworkUnified(params: {
           hasServerGeminiKey: params.hasServerGeminiKey,
         });
 
-  const resolved = await resolveImageWithFallback({
-    rawPrompt: params.prompt,
-    safePrompt: detailedPrompt,
+  const nanoRes = await tryNanoBananaApi({
+    prompt: detailedPrompt,
     aspectRatio: params.aspectRatio,
     resolution: params.resolution || '1K',
-    pollinationsDims: dims,
-    title: shortTitle,
-    language: params.language,
+    mode: 'generate',
+    preferredModel: configuredModel,
+    skipEnhance: true,
     hasBackendApi: params.hasBackendApi,
     hasServerGeminiKey: params.hasServerGeminiKey,
     onStatus: params.onStatus,
   });
 
+  if (!nanoRes.ok) {
+    throw new Error(nanoRes.reason);
+  }
+
   return {
-    title: shortTitle || 'Ultra-HD AI Artwork',
+    title: shortTitle || nanoRes.title || 'Ultra-HD AI Artwork',
     description: detailedPrompt,
-    detailedPrompt,
-    imageUrl: resolved.imageUrl,
-    svgCode: resolved.svgCode,
-    provider: resolved.provider,
-    modelUsed: resolved.modelUsed,
+    detailedPrompt: nanoRes.detailedPrompt || detailedPrompt,
+    imageUrl: nanoRes.imageUrl,
+    provider: nanoRes.provider,
+    modelUsed: nanoRes.modelUsed,
     aspectRatio: params.aspectRatio,
-    width: resolved.width || dims.w,
-    height: resolved.height || dims.h,
+    width: nanoRes.width,
+    height: nanoRes.height,
   };
 }
 
@@ -2414,7 +2210,7 @@ export async function editArtworkUnified(params: {
   detailedPrompt: string;
   assistantText?: string;
   imageUrl: string;
-  provider: 'nano-banana';
+  provider: 'nano-banana' | 'pollinations';
   modelUsed: string;
   isEdited: true;
   aspectRatio: '1:1' | '16:9' | '4:3';
@@ -2422,12 +2218,9 @@ export async function editArtworkUnified(params: {
   height: number;
 }> {
   const aspectRatio = params.aspectRatio || '1:1';
-  const configuredImageModel = loadOwnerConfig().imageModel;
-  const preferredNano = NANO_BANANA_MODELS.has(configuredImageModel)
-    ? configuredImageModel
-    : 'nano-banana';
+  const configuredModel = resolveOfficialNanoModelId(loadOwnerConfig().imageModel);
 
-  params.onStatus?.('Preparing source image for Nano Banana HD editing...');
+  params.onStatus?.('Preparing source image for Nano Banana editing...');
   const extracted = await extractBase64AndMimeFromUrl(
     params.sourceImageDataUrl,
     params.sourceMimeType || 'image/png'
@@ -2445,7 +2238,7 @@ export async function editArtworkUnified(params: {
     aspectRatio,
     resolution: params.resolution || '1K',
     mode: 'edit',
-    preferredModel: preferredNano,
+    preferredModel: configuredModel,
     previousEditContext: params.previousEditContext,
     skipEnhance: Boolean(params.preEnhanced?.detailedPrompt),
     hasBackendApi: params.hasBackendApi,
@@ -2463,7 +2256,7 @@ export async function editArtworkUnified(params: {
     detailedPrompt: nanoRes.detailedPrompt,
     assistantText: nanoRes.assistantText,
     imageUrl: nanoRes.imageUrl,
-    provider: 'nano-banana',
+    provider: nanoRes.provider,
     modelUsed: nanoRes.modelUsed,
     isEdited: true,
     aspectRatio,
@@ -2556,21 +2349,24 @@ export async function generateVideoUnified(params: {
     heroVisualPrompt || `${cleanUserPrompt}, ${styleLabel} cinematic wide atmosphere`
   );
 
-  // SINGLE-FETCH PIPELINE: Only fetch ONE scene image so we NEVER trigger 4x rate-limit blocks!
-  const imageResult = await resolveImageWithFallback({
-    safePrompt: safeHeroPrompt,
+  const configuredModel = resolveOfficialNanoModelId(loadOwnerConfig().imageModel);
+  const imageResult = await tryNanoBananaApi({
+    prompt: safeHeroPrompt,
     aspectRatio: '16:9',
-    pollinationsDims: { w: 768, h: 432 },
-    title,
-    language: params.language,
+    resolution: '1K',
+    mode: 'generate',
+    preferredModel: configuredModel,
+    skipEnhance: true,
     hasBackendApi: params.hasBackendApi,
     hasServerGeminiKey: params.hasServerGeminiKey,
     onStatus: params.onStatus,
   });
 
-  const singleHeroUrl = imageResult.svgCode
-    ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(imageResult.svgCode)}`
-    : imageResult.imageUrl || '';
+  if (!imageResult.ok) {
+    throw new Error(imageResult.reason);
+  }
+
+  const singleHeroUrl = imageResult.imageUrl;
 
   const scenes: VideoScene[] = captions.slice(0, 4).map((caption) => ({
     caption,

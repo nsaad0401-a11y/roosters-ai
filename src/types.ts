@@ -69,12 +69,14 @@ export type VoicePresetId =
   | 'news-anchor'
   | 'cloned';
 
-export type ClonedVoiceLanguage = 'Urdu' | 'English' | 'Hindi' | 'Arabic' | 'Spanish';
+export type ClonedVoiceLanguage = string;
 
 export type VoiceAccentToneId =
   | 'pakistani-south-asian'
   | 'american'
   | 'british'
+  | 'middle-eastern'
+  | 'european'
   | 'natural-friendly'
   | 'deep-serious'
   | 'news-anchor';
@@ -117,14 +119,8 @@ export interface UserAppSettings {
 }
 
 export type OwnerImageModel =
-  | 'nano-banana'
-  | 'gemini-nano-banana-2.1'
-  | 'gemini-3.1-flash-image'
   | 'gemini-2.5-flash-image'
-  | 'flux'
-  | 'flux-realism'
-  | 'turbo'
-  | 'horde';
+  | 'gemini-3.1-flash-image-preview';
 
 export interface OwnerConfig {
   chatModel: string;

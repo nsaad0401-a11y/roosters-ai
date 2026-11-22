@@ -4,6 +4,8 @@ import {
   Captions,
   Mic,
   MicOff,
+  Monitor,
+  MonitorOff,
   PhoneOff,
   Radio,
   Send,
@@ -11,7 +13,7 @@ import {
   Volume2,
 } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
-import { ROOSTERS_LOGO_SRC } from '../constants';
+import { ROOSTERS_LOGO_SRC, detectTextLanguageCode } from '../constants';
 import { MissingApiKeyError, OutgoingMessage, streamChatCompletion } from '../utils/aiClient';
 import { loadCustomApiKey } from '../utils/storage';
 import { OwnerConfig, UserAppSettings, VoiceStudioSettings } from '../types';
@@ -23,6 +25,7 @@ import {
   resolveBcp47ForVoice,
   speakWithVoiceProfile,
 } from '../utils/voiceEngine';
+import { SearchableLanguageSelect } from './SearchableLanguageSelect';
 
 interface LiveTalkModalProps {
   isOpen: boolean;
@@ -155,6 +158,8 @@ export function LiveTalkModal({
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
   const [hasCameraTrack, setHasCameraTrack] = useState(false);
   const [cameraError, setCameraError] = useState('');
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [screenError, setScreenError] = useState('');
   const [showSubtitles, setShowSubtitles] = useState(true);
   const [userCaption, setUserCaption] = useState('');
   const [aiCaption, setAiCaption] = useState(
@@ -163,13 +168,18 @@ export function LiveTalkModal({
   const [orbIntensity, setOrbIntensity] = useState(0);
   const [manualInput, setManualInput] = useState('');
   const [micHint, setMicHint] = useState('');
+  const [liveLanguage, setLiveLanguage] = useState<string>(selectedLanguage || 'Auto-Detect');
   const [turns, setTurns] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
 
   // Refs to prevent stale closures inside Web Audio / WebSocket / setInterval callbacks
   const isMountedRef = useRef(false);
+  const explicitEndRef = useRef(false);
   const transportModeRef = useRef<LiveTransportMode>('duplex');
+  const liveLanguageRef = useRef<string>(selectedLanguage || 'Auto-Detect');
+  const autoDetectedLangRef = useRef<string>('');
   const isMutedRef = useRef(false);
   const isCameraOnRef = useRef(true);
+  const isScreenSharingRef = useRef(false);
   const facingModeRef = useRef<'user' | 'environment'>('user');
   const statusRef = useRef<LiveStatus>('connecting');
   const turnsRef = useRef<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
@@ -187,6 +197,7 @@ export function LiveTalkModal({
   const activeSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const isAiPlayingRef = useRef(false);
   const vadFramesRef = useRef(0);
+  const lastBargeRestartAtRef = useRef(0);
   const micLevelRef = useRef(0);
   const aiLevelRef = useRef(0);
 
@@ -194,10 +205,12 @@ export function LiveTalkModal({
   const currentUserTurnRef = useRef('');
   const currentAiTurnRef = useRef('');
 
-  // Streams & Camera Refs
+  // Streams, Camera & Screen Share Refs
   const audioStreamRef = useRef<MediaStream | null>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const screenVideoRef = useRef<HTMLVideoElement | null>(null);
   const videoIntervalRef = useRef<number | null>(null);
   const visualRafRef = useRef<number | null>(null);
 
@@ -231,13 +244,26 @@ export function LiveTalkModal({
     transportModeRef.current = transportMode;
   }, [transportMode]);
 
+  useEffect(() => {
+    const initial = selectedLanguage || 'Auto-Detect';
+    setLiveLanguage(initial);
+    liveLanguageRef.current = initial;
+    autoDetectedLangRef.current = '';
+  }, [isOpen, selectedLanguage]);
+
   const activeClonedProfile =
     voiceSettings.activeVoiceId === 'cloned' ? voiceSettings.clonedProfile : null;
-  const effectiveLiveLanguage =
-    activeClonedProfile?.language && selectedLanguage === 'Auto-Detect'
-      ? activeClonedProfile.language
-      : selectedLanguage;
-  const effectiveTtsLanguage = activeClonedProfile?.language || effectiveLiveLanguage;
+  const effectiveLiveLanguage = liveLanguage;
+  const effectiveTtsLanguage =
+    liveLanguage !== 'Auto-Detect'
+      ? liveLanguage
+      : activeClonedProfile?.language && selectedLanguage !== 'Auto-Detect'
+        ? activeClonedProfile.language
+        : 'Auto-Detect';
+
+  useEffect(() => {
+    isScreenSharingRef.current = isScreenSharing;
+  }, [isScreenSharing]);
 
   // Bind active camera stream to preview <video>
   useEffect(() => {
@@ -251,13 +277,28 @@ export function LiveTalkModal({
     }
   }, [isCameraOn, hasCameraTrack, facingMode]);
 
-  const captureCurrentVideoFrame = useCallback(
-    (maxW = 640, quality = 0.68): { base64: string; mimeType: string } | null => {
-      if (!isCameraOnRef.current) return null;
-      const videoEl = cameraVideoRef.current;
-      if (!videoEl || !cameraStreamRef.current) return null;
-      const vw = videoEl.videoWidth || 640;
-      const vh = videoEl.videoHeight || 480;
+  // Bind active screen share stream to preview <video>
+  useEffect(() => {
+    const screenEl = screenVideoRef.current;
+    if (!screenEl) return;
+    if (isScreenSharing && screenStreamRef.current) {
+      screenEl.srcObject = screenStreamRef.current;
+      void screenEl.play().catch(() => {});
+    } else {
+      screenEl.srcObject = null;
+    }
+  }, [isScreenSharing]);
+
+  const captureVideoElementFrame = useCallback(
+    (
+      videoEl: HTMLVideoElement | null,
+      stream: MediaStream | null,
+      maxW = 640,
+      quality = 0.68
+    ): { base64: string; mimeType: string } | null => {
+      if (!videoEl || !stream) return null;
+      const vw = videoEl.videoWidth || 0;
+      const vh = videoEl.videoHeight || 0;
       if (vw < 16 || vh < 16) return null;
 
       const scale = Math.min(1, maxW / vw);
@@ -279,6 +320,75 @@ export function LiveTalkModal({
     },
     []
   );
+
+  const captureCurrentVideoFrame = useCallback(
+    (maxW = 640, quality = 0.68): { base64: string; mimeType: string } | null => {
+      if (!isCameraOnRef.current) return null;
+      return captureVideoElementFrame(cameraVideoRef.current, cameraStreamRef.current, maxW, quality);
+    },
+    [captureVideoElementFrame]
+  );
+
+  const captureCurrentScreenFrame = useCallback(
+    (maxW = 1024, quality = 0.72): { base64: string; mimeType: string } | null => {
+      if (!isScreenSharingRef.current) return null;
+      return captureVideoElementFrame(screenVideoRef.current, screenStreamRef.current, maxW, quality);
+    },
+    [captureVideoElementFrame]
+  );
+
+  const captureHybridVisualFrame = useCallback((): {
+    base64: string;
+    mimeType: string;
+    sourceLabel: string;
+  } | null => {
+    const screenEl = isScreenSharingRef.current ? screenVideoRef.current : null;
+    const screenStream = isScreenSharingRef.current ? screenStreamRef.current : null;
+    const camEl = isCameraOnRef.current ? cameraVideoRef.current : null;
+    const camStream = isCameraOnRef.current ? cameraStreamRef.current : null;
+
+    const hasScreen = Boolean(screenEl && screenStream && screenEl.videoWidth >= 16);
+    const hasCam = Boolean(camEl && camStream && camEl.videoWidth >= 16);
+
+    if (hasScreen && screenEl) {
+      const vw = screenEl.videoWidth;
+      const vh = screenEl.videoHeight;
+      const scale = Math.min(1, 1024 / vw);
+      const width = Math.max(1, Math.round(vw * scale));
+      const height = Math.max(1, Math.round(vh * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      ctx.drawImage(screenEl, 0, 0, width, height);
+
+      // Picture-in-picture camera inset if both screen & camera are active simultaneously
+      if (hasCam && camEl) {
+        const pipW = Math.round(width * 0.22);
+        const pipH = Math.round((camEl.videoHeight / Math.max(1, camEl.videoWidth)) * pipW);
+        const pad = 12;
+        ctx.drawImage(camEl, width - pipW - pad, height - pipH - pad, pipW, pipH);
+      }
+
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.78);
+      const base64 = (dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl).trim();
+      return base64
+        ? {
+            base64,
+            mimeType: 'image/jpeg',
+            sourceLabel: hasCam ? 'live-screen-and-camera.jpg' : 'live-screen-share.jpg',
+          }
+        : null;
+    }
+
+    if (hasCam) {
+      const camFrame = captureCurrentVideoFrame(768, 0.8);
+      return camFrame ? { ...camFrame, sourceLabel: 'live-camera-frame.jpg' } : null;
+    }
+
+    return null;
+  }, [captureCurrentVideoFrame]);
 
   // Clear scheduled 24kHz PCM playback queue immediately (for Barge-In / interruption)
   const clearDuplexAudioQueue = useCallback(() => {
@@ -382,10 +492,11 @@ export function LiveTalkModal({
     stopFallbackRecognition();
 
     const recognition = new RecognitionCtor();
-    recognition.lang = resolveBcp47ForVoice(
-      effectiveLiveLanguage,
-      activeClonedProfile?.accentTone
-    );
+    const sttLanguage =
+      liveLanguageRef.current !== 'Auto-Detect'
+        ? liveLanguageRef.current
+        : autoDetectedLangRef.current || activeClonedProfile?.language || 'Auto-Detect';
+    recognition.lang = resolveBcp47ForVoice(sttLanguage, activeClonedProfile?.accentTone);
     recognition.continuous = false;
     recognition.interimResults = true;
     recognition.maxAlternatives = 1;
@@ -458,7 +569,7 @@ export function LiveTalkModal({
       // Ignore already-started error
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeClonedProfile?.accentTone, effectiveLiveLanguage, stopFallbackRecognition]);
+  }, [activeClonedProfile?.accentTone, activeClonedProfile?.language, stopFallbackRecognition]);
 
   const enqueueFallbackSentenceSpeech = useCallback(
     (sentence: string) => {
@@ -508,25 +619,32 @@ export function LiveTalkModal({
       stopAllFallbackSpeech();
       streamAbortRef.current?.abort();
 
+      if (liveLanguageRef.current === 'Auto-Detect') {
+        const guessedLang = detectTextLanguageCode(queryText);
+        if (guessedLang && guessedLang !== 'Auto-Detect') {
+          autoDetectedLangRef.current = guessedLang;
+        }
+      }
+
       setStatus('thinking');
       setUserCaption(queryText);
       setAiCaption('');
       streamFinishedRef.current = false;
 
-      const capturedFrame = captureCurrentVideoFrame(768, 0.8);
+      const capturedVisual = captureHybridVisualFrame();
       const updatedTurns = [...turnsRef.current, { role: 'user' as const, content: queryText }];
       setTurns(updatedTurns);
 
       const outgoingHistory: OutgoingMessage[] = updatedTurns.map((turn, idx) => {
-        if (idx === updatedTurns.length - 1 && capturedFrame) {
+        if (idx === updatedTurns.length - 1 && capturedVisual) {
           return {
             role: 'user',
             content: queryText,
             attachment: {
               kind: 'image',
-              name: 'live-camera-frame.jpg',
-              base64: capturedFrame.base64,
-              mimeType: capturedFrame.mimeType,
+              name: capturedVisual.sourceLabel,
+              base64: capturedVisual.base64,
+              mimeType: capturedVisual.mimeType,
             },
           };
         }
@@ -549,7 +667,7 @@ export function LiveTalkModal({
 
         await streamChatCompletion({
           messages: outgoingHistory,
-          language: effectiveLiveLanguage,
+          language: liveLanguageRef.current,
           userName,
           isLiveVoice: true,
           responseStyle: userSettings?.responseStyle,
@@ -607,7 +725,7 @@ export function LiveTalkModal({
     },
     [
       activeClonedProfile,
-      captureCurrentVideoFrame,
+      captureHybridVisualFrame,
       effectiveLiveLanguage,
       enqueueFallbackSentenceSpeech,
       hasBackendApi,
@@ -625,7 +743,7 @@ export function LiveTalkModal({
 
   const activateFallbackMode = useCallback(
     (reason?: string) => {
-      if (!isMountedRef.current || transportModeRef.current === 'fallback') return;
+      if (!isMountedRef.current || explicitEndRef.current || transportModeRef.current === 'fallback') return;
       wsReadyRef.current = false;
       clearDuplexAudioQueue();
       if (wsRef.current) {
@@ -638,10 +756,23 @@ export function LiveTalkModal({
       }
       transportModeRef.current = 'fallback';
       setTransportMode('fallback');
-      if (reason) {
-        setMicHint(`${reason} Switched to Smart Voice Mode cleanly.`);
+
+      const lower = (reason || '').toLowerCase();
+      const isQuotaSwitch =
+        !reason ||
+        lower.includes('429') ||
+        lower.includes('quota') ||
+        lower.includes('resource_exhausted') ||
+        lower.includes('limit');
+
+      if (!isQuotaSwitch && reason) {
+        setMicHint('Switched seamlessly to Unlimited Hybrid Voice + Vision Mode.');
+      } else {
+        setMicHint('');
       }
-      setAiCaption(`Hi ${userName}! I'm listening cleanly — ask me anything!`);
+      setAiCaption(
+        `Hi ${userName}! I'm listening live — speak freely or show your camera or screen!`
+      );
       startFallbackRecognitionLoop();
     },
     [clearDuplexAudioQueue, startFallbackRecognitionLoop, userName]
@@ -704,11 +835,26 @@ export function LiveTalkModal({
     }
   }, []);
 
-  // Main session lifecycle: Mic PCM AudioContext + Output 24kHz AudioContext + WebSocket Gemini Live + 1 FPS Camera
+  const stopScreenShare = useCallback(() => {
+    screenStreamRef.current?.getTracks().forEach((t) => {
+      t.onended = null;
+      t.enabled = false;
+      t.stop();
+    });
+    screenStreamRef.current = null;
+    if (screenVideoRef.current) {
+      screenVideoRef.current.srcObject = null;
+    }
+    isScreenSharingRef.current = false;
+    setIsScreenSharing(false);
+  }, []);
+
+  // Main session lifecycle: Mic PCM AudioContext + Output 24kHz AudioContext + WebSocket Gemini Live + 1 FPS Camera/Screen
   useEffect(() => {
     if (!isOpen) return;
 
     isMountedRef.current = true;
+    explicitEndRef.current = false;
     transportModeRef.current = 'duplex';
     setTransportMode('duplex');
     setStatus('connecting');
@@ -721,6 +867,9 @@ export function LiveTalkModal({
     facingModeRef.current = 'user';
     setHasCameraTrack(false);
     setCameraError('');
+    setIsScreenSharing(false);
+    isScreenSharingRef.current = false;
+    setScreenError('');
     setUserCaption('');
     setMicHint('');
     setTurns([]);
@@ -728,6 +877,7 @@ export function LiveTalkModal({
     currentUserTurnRef.current = '';
     currentAiTurnRef.current = '';
     vadFramesRef.current = 0;
+    lastBargeRestartAtRef.current = 0;
     micLevelRef.current = 0;
     aiLevelRef.current = 0;
     setAiCaption(`Connecting Roosters AI Live for ${userName}...`);
@@ -824,14 +974,28 @@ export function LiveTalkModal({
               // Instant Barge-In: interrupt AI speech immediately when user speaks (~3 frames / ~120ms)
               if (rms > 0.036) {
                 vadFramesRef.current += 1;
+                const canInterruptHybrid =
+                  transportModeRef.current === 'fallback' &&
+                  (statusRef.current === 'speaking' || statusRef.current === 'thinking');
                 if (
                   vadFramesRef.current >= 3 &&
-                  (isAiPlayingRef.current || statusRef.current === 'speaking')
+                  (isAiPlayingRef.current || statusRef.current === 'speaking' || canInterruptHybrid)
                 ) {
                   clearDuplexAudioQueue();
-                  stopAllFallbackSpeech();
-                  if (statusRef.current === 'speaking') {
-                    setStatus('listening');
+                  if (transportModeRef.current === 'fallback') {
+                    const now = Date.now();
+                    if (now - lastBargeRestartAtRef.current > 650) {
+                      lastBargeRestartAtRef.current = now;
+                      streamAbortRef.current?.abort();
+                      stopAllFallbackSpeech();
+                      setStatus('listening');
+                      startFallbackRecognitionLoop();
+                    }
+                  } else {
+                    stopAllFallbackSpeech();
+                    if (statusRef.current === 'speaking') {
+                      setStatus('listening');
+                    }
                   }
                 }
               } else {
@@ -862,28 +1026,43 @@ export function LiveTalkModal({
         });
     }
 
-    // 2. Start Camera Preview & 1 FPS Live Vision Frame Stream
+    // 2. Start Camera Preview & 1 FPS Live Vision Frame Stream (Camera + Screen Share)
     void startOrFlipCameraStream('user');
 
     videoIntervalRef.current = window.setInterval(() => {
       if (
         !isMountedRef.current ||
-        !isCameraOnRef.current ||
         transportModeRef.current !== 'duplex' ||
         !wsReadyRef.current ||
         wsRef.current?.readyState !== WebSocket.OPEN
       ) {
         return;
       }
-      const frame = captureCurrentVideoFrame(640, 0.65);
-      if (frame) {
-        wsRef.current.send(
-          JSON.stringify({
-            type: 'video',
-            data: frame.base64,
-            mimeType: frame.mimeType,
-          })
-        );
+
+      if (isScreenSharingRef.current) {
+        const screenFrame = captureCurrentScreenFrame(1024, 0.72);
+        if (screenFrame) {
+          wsRef.current.send(
+            JSON.stringify({
+              type: 'video',
+              data: screenFrame.base64,
+              mimeType: screenFrame.mimeType,
+            })
+          );
+        }
+      }
+
+      if (isCameraOnRef.current) {
+        const camFrame = captureCurrentVideoFrame(640, 0.65);
+        if (camFrame) {
+          wsRef.current.send(
+            JSON.stringify({
+              type: 'video',
+              data: camFrame.base64,
+              mimeType: camFrame.mimeType,
+            })
+          );
+        }
       }
     }, 950);
 
@@ -919,7 +1098,7 @@ export function LiveTalkModal({
           ws.send(
             JSON.stringify({
               type: 'start',
-              language: effectiveLiveLanguage,
+              language: liveLanguageRef.current,
               userName,
               voiceGender: userSettings?.voiceGender || 'default',
               responseStyle: userSettings?.responseStyle || 'simple',
@@ -938,6 +1117,7 @@ export function LiveTalkModal({
             text?: string;
             message?: string;
             model?: string;
+            isQuota?: boolean;
           };
           try {
             msg = JSON.parse(String(event.data)) as typeof msg;
@@ -950,7 +1130,7 @@ export function LiveTalkModal({
             wsReadyRef.current = true;
             setStatus(isMutedRef.current ? 'muted' : 'listening');
             setAiCaption(
-              `Hello ${userName}! I'm Roosters AI Live. Speak freely in Urdu, Roman Urdu, or English — or show me anything on camera!`
+              `Hello ${userName}! I'm Roosters AI Live. Speak freely in any world language — or share your camera or screen!`
             );
           } else if (msg.type === 'audio' && msg.data) {
             scheduleDuplexAudioChunk(msg.data);
@@ -981,29 +1161,26 @@ export function LiveTalkModal({
             }
           } else if (msg.type === 'error') {
             window.clearTimeout(connectTimeoutId);
-            if (!wsReadyRef.current) {
-              activateFallbackMode(msg.message);
-            } else if (msg.message) {
-              setMicHint(msg.message);
-            }
+            // Seamlessly switch to Unlimited Hybrid Multimodal Pipeline on ANY connect or mid-session 429/error
+            activateFallbackMode(msg.isQuota ? '' : msg.message);
           } else if (msg.type === 'session_closed') {
             window.clearTimeout(connectTimeoutId);
-            if (wsReadyRef.current && isMountedRef.current) {
-              setMicHint('Live audio stream reconnecting or finished.');
+            if (!explicitEndRef.current && isMountedRef.current && transportModeRef.current === 'duplex') {
+              activateFallbackMode();
             }
           }
         };
 
         ws.onerror = () => {
           window.clearTimeout(connectTimeoutId);
-          if (isMountedRef.current && !wsReadyRef.current) {
+          if (!explicitEndRef.current && isMountedRef.current && transportModeRef.current === 'duplex') {
             activateFallbackMode('Live WebSocket unavailable.');
           }
         };
 
         ws.onclose = () => {
           window.clearTimeout(connectTimeoutId);
-          if (isMountedRef.current && !wsReadyRef.current && transportModeRef.current === 'duplex') {
+          if (!explicitEndRef.current && isMountedRef.current && transportModeRef.current === 'duplex') {
             activateFallbackMode();
           }
         };
@@ -1013,6 +1190,7 @@ export function LiveTalkModal({
     }
 
     return () => {
+      explicitEndRef.current = true;
       isMountedRef.current = false;
       wsReadyRef.current = false;
       if (videoIntervalRef.current) {
@@ -1035,6 +1213,7 @@ export function LiveTalkModal({
       stopFallbackRecognition();
       stopAllFallbackSpeech();
       clearDuplexAudioQueue();
+      stopScreenShare();
       try {
         micProcessorRef.current?.disconnect();
         micSourceNodeRef.current?.disconnect();
@@ -1055,17 +1234,19 @@ export function LiveTalkModal({
   }, [
     activeClonedProfile,
     activateFallbackMode,
+    captureCurrentScreenFrame,
     captureCurrentVideoFrame,
     clearDuplexAudioQueue,
-    effectiveLiveLanguage,
     hasBackendApi,
     hasServerGeminiKey,
     isOpen,
     ownerConfig?.globalSystemPrompt,
     scheduleDuplexAudioChunk,
+    startFallbackRecognitionLoop,
     startOrFlipCameraStream,
     stopAllFallbackSpeech,
     stopFallbackRecognition,
+    stopScreenShare,
     userName,
     userSettings?.customInstructions,
     userSettings?.responseStyle,
@@ -1106,6 +1287,53 @@ export function LiveTalkModal({
     unlockAudioContexts();
     const nextFacing = facingModeRef.current === 'user' ? 'environment' : 'user';
     await startOrFlipCameraStream(nextFacing);
+  };
+
+  const handleToggleScreenShare = async () => {
+    unlockAudioContexts();
+    setScreenError('');
+    if (isScreenSharingRef.current) {
+      stopScreenShare();
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      setScreenError('Screen sharing is not supported in this browser.');
+      return;
+    }
+
+    try {
+      const displayStream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: { ideal: 5, max: 10 } } as MediaTrackConstraints,
+        audio: false,
+      });
+
+      if (!isMountedRef.current) {
+        displayStream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+
+      const [videoTrack] = displayStream.getVideoTracks();
+      if (videoTrack) {
+        videoTrack.onended = () => {
+          if (isMountedRef.current) {
+            stopScreenShare();
+          }
+        };
+      }
+
+      screenStreamRef.current = displayStream;
+      isScreenSharingRef.current = true;
+      setIsScreenSharing(true);
+      if (screenVideoRef.current) {
+        screenVideoRef.current.srcObject = displayStream;
+        void screenVideoRef.current.play().catch(() => {});
+      }
+    } catch {
+      isScreenSharingRef.current = false;
+      setIsScreenSharing(false);
+      setScreenError('Screen sharing was cancelled or blocked.');
+    }
   };
 
   const handleToggleMute = () => {
@@ -1154,6 +1382,7 @@ export function LiveTalkModal({
   };
 
   const handleEndCall = () => {
+    explicitEndRef.current = true;
     isMountedRef.current = false;
     wsReadyRef.current = false;
     try {
@@ -1166,6 +1395,7 @@ export function LiveTalkModal({
     stopFallbackRecognition();
     stopAllFallbackSpeech();
     clearDuplexAudioQueue();
+    stopScreenShare();
     audioStreamRef.current?.getTracks().forEach((t) => t.stop());
     cameraStreamRef.current?.getTracks().forEach((t) => t.stop());
     onClose(turnsRef.current);
@@ -1190,6 +1420,23 @@ export function LiveTalkModal({
       wsRef.current.send(JSON.stringify({ type: 'text', text }));
     } else {
       void handleFallbackUserQuery(text);
+    }
+  };
+
+  const handleLiveLanguageChange = (nextLang: string) => {
+    setLiveLanguage(nextLang);
+    liveLanguageRef.current = nextLang;
+    autoDetectedLangRef.current = nextLang === 'Auto-Detect' ? '' : nextLang;
+    if (transportModeRef.current === 'fallback') {
+      if (!isMutedRef.current && statusRef.current !== 'speaking' && statusRef.current !== 'thinking') {
+        startFallbackRecognitionLoop();
+      }
+    } else if (wsReadyRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
+      const langInstruction =
+        nextLang === 'Auto-Detect'
+          ? '[System preference: Auto-detect whichever world language the user speaks and reply naturally in that exact same language.]'
+          : `[System preference: Speak and reply in ${nextLang} from now on.]`;
+      wsRef.current.send(JSON.stringify({ type: 'text', text: langInstruction }));
     }
   };
 
@@ -1265,29 +1512,67 @@ export function LiveTalkModal({
               </span>
             </div>
             <div className="text-[11px] sm:text-[12px] text-[#94a3b8] truncate">
-              {selectedLanguage} · {getResolvedVoiceParameters(voiceSettings, userSettings?.voiceGender).label} · Instant Barge-In Active
+              {effectiveLiveLanguage} · {getResolvedVoiceParameters(voiceSettings, userSettings?.voiceGender).label} · Instant Barge-In Active
             </div>
           </div>
         </div>
 
-        <span
-          className={`px-3 py-1 rounded-full text-[11.5px] sm:text-[12.5px] font-semibold border whitespace-nowrap ${
-            status === 'speaking'
-              ? 'bg-[#ffd700]/15 border-[#ffd700]/50 text-[#ffd700]'
-              : status === 'connecting' || status === 'thinking'
-                ? 'bg-[#a855f7]/15 border-[#a855f7]/50 text-[#c084fc]'
-                : status === 'muted'
-                  ? 'bg-slate-800 border-slate-700 text-slate-300'
-                  : 'bg-[#00d4ff]/15 border-[#00d4ff]/50 text-[#00d4ff]'
-          }`}
-        >
-          {statusLabel}
-        </span>
+        <div className="flex items-center gap-2 ml-auto">
+          <div className="w-40 sm:w-48">
+            <SearchableLanguageSelect
+              value={liveLanguage}
+              onChange={handleLiveLanguageChange}
+              includeAutoDetect={true}
+              compact
+              align="right"
+              ariaLabel="Live Talk Language"
+            />
+          </div>
+
+          <span
+            className={`px-3 py-1 rounded-full text-[11.5px] sm:text-[12.5px] font-semibold border whitespace-nowrap ${
+              status === 'speaking'
+                ? 'bg-[#ffd700]/15 border-[#ffd700]/50 text-[#ffd700]'
+                : status === 'connecting' || status === 'thinking'
+                  ? 'bg-[#a855f7]/15 border-[#a855f7]/50 text-[#c084fc]'
+                  : status === 'muted'
+                    ? 'bg-slate-800 border-slate-700 text-slate-300'
+                    : 'bg-[#00d4ff]/15 border-[#00d4ff]/50 text-[#00d4ff]'
+            }`}
+          >
+            {statusLabel}
+          </span>
+        </div>
       </div>
 
-      {/* Center Stage: Live Camera Vision Feed + Reactive Gemini-Style Orb */}
+      {/* Center Stage: Live Screen Share + Camera Vision Feed + Reactive Gemini-Style Orb */}
       <div className="relative z-10 flex flex-col items-center justify-center my-auto w-full max-w-4xl py-3">
-        <div className="flex flex-col md:flex-row items-center justify-center gap-6 w-full">
+        <div className="flex flex-col md:flex-row flex-wrap items-center justify-center gap-5 w-full">
+          {isScreenSharing && (
+            <div className="relative w-72 sm:w-96 aspect-video rounded-3xl overflow-hidden border-2 border-[#ffd700]/60 bg-[#0d121d] shadow-[0_0_40px_rgba(255,215,0,0.2)] shrink-0">
+              <video
+                ref={screenVideoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-full h-full object-contain bg-black"
+              />
+              <div className="absolute top-2.5 left-2.5 px-2.5 py-1 rounded-full bg-black/75 backdrop-blur-md border border-[#ffd700]/50 text-[10.5px] font-semibold text-[#ffd700] flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>LIVE SCREEN SHARE</span>
+              </div>
+              <button
+                type="button"
+                onClick={stopScreenShare}
+                title="Stop Screen Share"
+                aria-label="Stop Screen Share"
+                className="absolute bottom-2.5 right-2.5 p-2 rounded-full bg-black/75 backdrop-blur-md border border-white/25 text-white hover:border-[#ffd700] hover:text-[#ffd700] transition-colors cursor-pointer"
+              >
+                <MonitorOff className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
           {isCameraOn && hasCameraTrack && (
             <div className="relative w-64 sm:w-80 aspect-[4/3] rounded-3xl overflow-hidden border-2 border-[#00d4ff]/50 bg-[#0d121d] shadow-[0_0_40px_rgba(0,212,255,0.2)] shrink-0">
               <video
@@ -1397,9 +1682,9 @@ export function LiveTalkModal({
           </div>
         )}
 
-        {(micHint || cameraError) && (
+        {(micHint || cameraError || screenError) && (
           <p className="mt-2.5 text-[12px] text-[#ffd700]/90 max-w-md text-center">
-            {micHint || cameraError}
+            {micHint || screenError || cameraError}
           </p>
         )}
 
@@ -1410,9 +1695,11 @@ export function LiveTalkModal({
             value={manualInput}
             onChange={(e) => setManualInput(e.target.value)}
             placeholder={
-              isCameraOn && hasCameraTrack
-                ? 'Or type about what the camera sees...'
-                : 'Speak hands-free or send a quick text...'
+              isScreenSharing
+                ? 'Or ask about what is on your shared screen...'
+                : isCameraOn && hasCameraTrack
+                  ? 'Or type about what the camera sees...'
+                  : 'Speak hands-free or send a quick text...'
             }
             className="flex-1 rounded-full bg-[#101624]/90 border border-[#263147] px-4 py-2 text-[13px] text-white focus:outline-none focus:border-[#00d4ff]"
           />
@@ -1479,7 +1766,26 @@ export function LiveTalkModal({
           <span className="text-[9.5px] font-semibold mt-1">Flip</span>
         </button>
 
-        {/* 4. Live Subtitles Toggle */}
+        {/* 4. Live Screen Share */}
+        <button
+          type="button"
+          onClick={() => void handleToggleScreenShare()}
+          title={isScreenSharing ? 'Stop Screen Share' : 'Share Screen'}
+          aria-label={isScreenSharing ? 'Stop Screen Share' : 'Share Screen'}
+          aria-pressed={isScreenSharing}
+          className={`flex flex-col items-center justify-center w-14 h-14 sm:w-16 sm:h-16 rounded-full border transition-all cursor-pointer ${
+            isScreenSharing
+              ? 'bg-[#ffd700]/15 border-[#ffd700] text-[#ffd700]'
+              : 'bg-[#121826] border-[#293548] text-slate-200 hover:border-[#00d4ff] hover:text-[#00d4ff]'
+          }`}
+        >
+          {isScreenSharing ? <MonitorOff className="w-5 h-5" /> : <Monitor className="w-5 h-5" />}
+          <span className="text-[9.5px] font-semibold mt-1">
+            {isScreenSharing ? 'Stop' : 'Screen'}
+          </span>
+        </button>
+
+        {/* 5. Live Subtitles Toggle */}
         <button
           type="button"
           onClick={() => setShowSubtitles((prev) => !prev)}
@@ -1496,7 +1802,7 @@ export function LiveTalkModal({
           <span className="text-[9.5px] font-semibold mt-1">Captions</span>
         </button>
 
-        {/* 5. End Call (Red Button) */}
+        {/* 6. End Call (Red Button) */}
         <button
           type="button"
           onClick={handleEndCall}

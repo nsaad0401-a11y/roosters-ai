@@ -1,4 +1,9 @@
-import { getBcp47ForLanguage } from '../constants';
+import {
+  detectBcp47FromText,
+  getBcp47ForLanguage,
+  WORLD_LANGUAGES,
+  WorldLanguageOption,
+} from '../constants';
 import {
   ClonedVoiceLanguage,
   ClonedVoiceProfile,
@@ -14,18 +19,9 @@ export const SAFE_PITCH_MAX = 1.22;
 export const SAFE_RATE_MIN = 0.82;
 export const SAFE_RATE_MAX = 1.22;
 
-export const CLONED_VOICE_LANGUAGES: Array<{
-  code: ClonedVoiceLanguage;
-  label: string;
-  native: string;
-  bcp47: string;
-}> = [
-  { code: 'Urdu', label: 'Urdu', native: 'اردو', bcp47: 'ur-PK' },
-  { code: 'English', label: 'English', native: 'English', bcp47: 'en-US' },
-  { code: 'Hindi', label: 'Hindi', native: 'हिन्दी', bcp47: 'hi-IN' },
-  { code: 'Arabic', label: 'Arabic', native: 'العربية', bcp47: 'ar-SA' },
-  { code: 'Spanish', label: 'Spanish', native: 'Español', bcp47: 'es-ES' },
-];
+export const CLONED_VOICE_LANGUAGES: WorldLanguageOption[] = WORLD_LANGUAGES.filter(
+  (l) => l.code !== 'Auto-Detect'
+);
 
 export interface VoiceAccentToneOption {
   id: VoiceAccentToneId;
@@ -61,6 +57,22 @@ export const VOICE_ACCENT_TONES: VoiceAccentToneOption[] = [
     lahjaNote: 'Refined UK RP cadence & articulate delivery',
     pitchFactor: 0.98,
     rateFactor: 0.97,
+  },
+  {
+    id: 'middle-eastern',
+    label: 'Middle Eastern Accent',
+    shortLabel: 'Middle Eastern',
+    lahjaNote: 'Expressive Gulf & Levantine melodic cadence',
+    pitchFactor: 0.97,
+    rateFactor: 0.96,
+  },
+  {
+    id: 'european',
+    label: 'European Accent',
+    shortLabel: 'European',
+    lahjaNote: 'Polished Continental European tone & clarity',
+    pitchFactor: 1.01,
+    rateFactor: 0.98,
   },
   {
     id: 'natural-friendly',
@@ -152,42 +164,50 @@ function clamp(min: number, max: number, val: number): number {
 }
 
 export function normalizeClonedVoiceLanguage(raw?: string): ClonedVoiceLanguage {
-  if (
-    raw === 'Urdu' ||
-    raw === 'English' ||
-    raw === 'Hindi' ||
-    raw === 'Arabic' ||
-    raw === 'Spanish'
-  ) {
-    return raw;
-  }
-  if (raw === 'Roman Urdu') return 'Urdu';
-  return 'English';
+  const trimmed = (raw || '').trim();
+  if (!trimmed || trimmed === 'Auto-Detect') return 'English';
+  const match = WORLD_LANGUAGES.find(
+    (l) => l.code.toLowerCase() === trimmed.toLowerCase() && l.code !== 'Auto-Detect'
+  );
+  return match?.code ?? trimmed;
 }
 
 export function getAccentToneMeta(id?: VoiceAccentToneId): VoiceAccentToneOption {
-  return VOICE_ACCENT_TONES.find((a) => a.id === id) ?? VOICE_ACCENT_TONES[3];
+  return (
+    VOICE_ACCENT_TONES.find((a) => a.id === id) ??
+    VOICE_ACCENT_TONES.find((a) => a.id === 'natural-friendly') ??
+    VOICE_ACCENT_TONES[0]
+  );
 }
 
 export function resolveBcp47ForVoice(
   language?: string,
-  accentTone?: VoiceAccentToneId
+  accentTone?: VoiceAccentToneId,
+  textHint?: string
 ): string {
-  const normalizedLang = language?.trim() || 'English';
+  const normalizedLang = language?.trim() || 'Auto-Detect';
+
+  if (normalizedLang === 'Auto-Detect') {
+    if (textHint?.trim()) {
+      return detectBcp47FromText(textHint);
+    }
+    return typeof navigator !== 'undefined' && navigator.language ? navigator.language : 'en-US';
+  }
 
   if (normalizedLang === 'English') {
     if (accentTone === 'british') return 'en-GB';
     if (accentTone === 'pakistani-south-asian') return 'en-IN';
+    if (accentTone === 'european') return 'en-IE';
     return 'en-US';
   }
-  if (normalizedLang === 'Urdu' || normalizedLang === 'Roman Urdu') {
+  if (normalizedLang === 'Urdu' || normalizedLang === 'Roman Urdu' || normalizedLang === 'Saraiki') {
     return 'ur-PK';
   }
-  if (normalizedLang === 'Hindi') {
+  if (normalizedLang === 'Hindi' || normalizedLang === 'Roman Hindi') {
     return 'hi-IN';
   }
   if (normalizedLang === 'Arabic') {
-    return 'ar-SA';
+    return accentTone === 'middle-eastern' ? 'ar-AE' : 'ar-SA';
   }
   if (normalizedLang === 'Spanish') {
     return accentTone === 'american' ? 'es-US' : 'es-ES';
@@ -203,15 +223,39 @@ export function getSamplePreviewText(
   const accentLabel = getAccentToneMeta(accentTone).shortLabel;
   switch (language) {
     case 'Urdu':
+    case 'Roman Urdu':
       return `Assalam-o-Alaikum! Main ${profileName} hoon, aur ab main ${accentLabel} lahjay mein bilkul saaf bol raha hoon.`;
     case 'Hindi':
+    case 'Roman Hindi':
       return `Namaste! Main ${profileName} hoon, aur ab main ${accentLabel} style mein bilkul saaf bol raha hoon.`;
     case 'Arabic':
       return `Marhaban! Ana ${profileName}, atahaddathu al-aan bi-nibratin wadihatin wa tabi-iyyah.`;
+    case 'Punjabi':
+      return `Sat Sri Akal te Assalam-o-Alaikum! Main ${profileName} haan, bilkul saaf te qudrati awaaz vich.`;
+    case 'Pashto':
+      return `Assalam-o-Alaikum! Za ${profileName} yam, da ${accentLabel} pah lahja ke khabare kawam.`;
+    case 'Persian':
+      return `Salam! Man ${profileName} hastam va ba sedaye tabiee va shafaf sohbat mikonam.`;
     case 'Spanish':
-      return `Hola! Soy ${profileName}, hablando ahora con una entonacion clara y natural.`;
+      return `Hola! Soy ${profileName}, hablando ahora con una entonación clara y natural.`;
+    case 'French':
+      return `Bonjour! Je suis ${profileName}, je parle maintenant avec une voix claire et naturelle.`;
+    case 'German':
+      return `Hallo! Ich bin ${profileName} und spreche jetzt mit einer klaren und natürlichen Stimme.`;
+    case 'Turkish':
+      return `Merhaba! Ben ${profileName}, şimdi net ve doğal bir ses tonuyla konuşuyorum.`;
+    case 'Portuguese':
+      return `Olá! Eu sou ${profileName}, falando agora com uma voz clara e natural.`;
+    case 'Chinese (Simplified)':
+    case 'Chinese (Traditional)':
+      return `你好！我是${profileName}，现在正在用清晰自然的声音为您朗读。`;
+    case 'Japanese':
+      return `こんにちは！${profileName}です。今、自然で聞き取りやすい声でお話ししています。`;
+    case 'Korean':
+      return `안녕하세요! 저는 ${profileName}입니다. 지금 자연스럽고 또렷한 목소리로 말하고 있습니다.`;
+    case 'Russian':
+      return `Привет! Меня зовут ${profileName}, сейчас я говорю чистым и естественным голосом.`;
     case 'English':
-    default:
       if (accentTone === 'british') {
         return `Good day! This is ${profileName}, speaking clearly in a refined British tone.`;
       }
@@ -219,6 +263,8 @@ export function getSamplePreviewText(
         return `Assalam-o-Alaikum and hello! This is ${profileName}, calibrated in a warm South Asian tone.`;
       }
       return `Hello! This is ${profileName}, calibrated clearly with a ${accentLabel.toLowerCase()} voice.`;
+    default:
+      return `Hello! This is ${profileName}, calibrated for ${language} with a ${accentLabel.toLowerCase()} tone.`;
   }
 }
 
@@ -230,10 +276,14 @@ export function getClonedVoiceLiveTalkInstruction(profile: ClonedVoiceProfile): 
     `Primary spoken language preference: ${lang}.`,
     `Speaking tone & accent (lahja): ${accent.label} (${accent.lahjaNote}).`,
   ];
-  if (lang === 'Urdu' && accent.id === 'pakistani-south-asian') {
+  if ((lang === 'Urdu' || lang === 'Roman Urdu') && accent.id === 'pakistani-south-asian') {
     parts.push('Use natural conversational Pakistani Urdu or Roman Urdu phrasing suitable for spoken voice.');
   } else if (accent.id === 'british') {
     parts.push('Use polite, natural British English phrasing.');
+  } else if (accent.id === 'middle-eastern') {
+    parts.push('Speak with warm, hospitable Middle Eastern conversational cadence.');
+  } else if (accent.id === 'european') {
+    parts.push('Speak with polite, articulate European phrasing.');
   } else if (accent.id === 'deep-serious') {
     parts.push('Keep sentences concise, calm, and thoughtful.');
   } else if (accent.id === 'news-anchor') {
@@ -637,6 +687,14 @@ export function pickSpeechVoice(
       if (vLang === 'en-us' || vLang === 'es-us' || /(united states|us english|samantha|alex|aria|jenny|guy|david|zira|mark)/i.test(vName)) {
         score += 18;
       }
+    } else if (accentTone === 'middle-eastern') {
+      if (/^(ar-|fa-|tr-|he-)/i.test(vLang) || /(arabic|maged|tarik|leila|salma|hoda|naayf|zeina|mehdi)/i.test(vName)) {
+        score += 18;
+      }
+    } else if (accentTone === 'european') {
+      if (/^(en-gb|en-ie|fr-|de-|es-es|it-|nl-|pt-|sv-|pl-)/i.test(vLang) || /(europe|french|german|spanish|italian|thomas|amélie|anna|monica|elsa)/i.test(vName)) {
+        score += 18;
+      }
     } else if (accentTone === 'deep-serious') {
       if (maleKeywords.test(vName)) score += 14;
     } else if (accentTone === 'news-anchor') {
@@ -797,7 +855,7 @@ export function speakWithVoiceProfile(options: {
       options.language;
 
     const accentMeta = effectiveAccent ? getAccentToneMeta(effectiveAccent) : null;
-    const bcp47 = resolveBcp47ForVoice(effectiveLanguage, effectiveAccent);
+    const bcp47 = resolveBcp47ForVoice(effectiveLanguage, effectiveAccent, trimmed);
 
     const accentPitchMultiplier =
       options.overrideParams && accentMeta ? accentMeta.pitchFactor : 1.0;
