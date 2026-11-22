@@ -197,14 +197,37 @@ function extractSubjectRemainder(rawText: string): string {
 const IMAGE_CONTEXT_CUE_RX =
   /\b(pic|pics|picture|photo|foto|image|img|tasveer|tasweer|tasvir|taswir|naksha|naqsha|draw|paint|sketch|design|logo|poster|banner|portrait|wallpaper|bna|bnao|bnado|bana|banado|تصویر|نقشہ|فوٹو)\b/i;
 
+const ATTACHED_PHOTO_EDIT_RX =
+  /\b(edit|retouch|restore|enhance|upscale|colorize|colourize|figurine|3d\s*figurine|collectible|miniature|toy\s*figure|change\s+(the\s+|this\s+|its\s+|my\s+)?(background|bg|outfit|clothes|clothing|dress|shirt|suit|jacket|hair|color|colour|sky|lighting|weather|mood|style)|replace\s+(the\s+)?(background|bg|sky|clothes|outfit)|remove\s+(the\s+)?(background|bg|object|person|people|text|watermark)|make\s+(this|it|me|him|her)\s+(look\s+like|into|a\s+|an\s+)?|turn\s+(this|it|me|him|her)\s+into|convert\s+(this|it)\s+(to|into)|put\s+(me|him|her|this|it)\s+(on|in|at)|add\s+(sunglasses|glasses|hat|cap|beard|crown|snow|rain|lights|fireworks|smile)|swap\s+|anime\s+style|cartoon\s+style|ghibli|cyberpunk|oil\s+painting|pencil\s+sketch|background\s*(badal|change|hatta|hata|remove)|kapre\s*(badal|change)|photo\s*(restore|saaf|edit|bna|bana)|tasveer\s*(badal|edit)|figurine\s*(bna|bana)|purani\s*photo|saaf\s*(kar|kr)|badal\s*(do|de|dy))\b|(بیک\s*گراؤنڈ|ایڈٹ|تبدیل|بحال|کپڑے)/i;
+
+const FOLLOWUP_EDIT_RX =
+  /\b(now\s+make|make\s+it|make\s+the|make\s+him|make\s+her|turn\s+it|change\s+(it|the|his|her|its)|replace\s+the|remove\s+the|add\s+(a\s+|an\s+|some\s+)?|put\s+(a\s+|an\s+|some\s+)?|night\s*time|day\s*time|sunset|sunrise|rain|raining|snow|snowing|brighter|darker|more\s+realistic|cartoon|anime|3d\s*figurine|ab\s+(is|isko|is\s*ko|iske|is\s*ke|iska|is\s*ka)|raat\s+ka|subah\s+ka|rang\s+badal|background\s+change|background\s+badal|kapre\s+change|kapre\s+badal|glasses\s+pehna|hat\s+pehna|sunglasses)\b/i;
+
 export function detectChatMediaIntent(
   rawText: string,
-  hasAttachment: boolean
-): 'video' | 'image' | 'chat' {
-  if (hasAttachment) return 'chat';
+  hasAttachment: boolean,
+  hasPreviousGeneratedImage = false
+): 'video' | 'image_edit' | 'image' | 'chat' {
   const text = rawText.trim();
   if (!text || text.length > 500) return 'chat';
   const lower = text.toLowerCase();
+
+  // When a photo is attached/captured, route photo-editing commands to Nano Banana Image-to-Image editing
+  if (hasAttachment) {
+    if (ATTACHED_PHOTO_EDIT_RX.test(text)) {
+      return 'image_edit';
+    }
+    return 'chat';
+  }
+
+  // Multi-turn conversational refinement on a previously generated/edited image in chat
+  if (
+    hasPreviousGeneratedImage &&
+    FOLLOWUP_EDIT_RX.test(text) &&
+    !/\b(what is|who is|why |how do|explain|translate|code for|script for)\b/i.test(lower)
+  ) {
+    return 'image_edit';
+  }
 
   // Exclude coding/explanatory/tutorial questions unless explicitly asking to render an image/video directly
   const isTutorialOrCodeQuestion =
@@ -231,7 +254,7 @@ export function detectChatMediaIntent(
 
   // 2. Image / Photo / Drawing / Design / Naksha intent in ANY language (English, Urdu, Roman Urdu, etc.)
   const imagePatterns: RegExp[] = [
-    /\b(create|generate|make|draw|paint|sketch|render|design|illustrate|show)\s+(me\s+)?(a\s+|an\s+|some\s+|the\s+)?(hd\s+|ultra[\s-]*hd\s+|4k\s+|real\s+|realistic\s+|photorealistic\s+|cute\s+|cool\s+|beautiful\s+|modern\s+|3d\s+)?(picture|pic|pics|image|img|photo|photograph|portrait|wallpaper|illustration|artwork|drawing|poster|avatar|painting|sketch|logo|banner|icon|blueprint|floor\s*plan|house\s*design|interior\s*design)\b/i,
+    /\b(create|generate|make|draw|paint|sketch|render|design|illustrate|show)\s+(me\s+)?(a\s+|an\s+|some\s+|the\s+)?(hd\s+|ultra[\s-]*hd\s+|4k\s+|2k\s+|real\s+|realistic\s+|photorealistic\s+|cute\s+|cool\s+|beautiful\s+|modern\s+|3d\s+)?(picture|pic|pics|image|img|photo|photograph|portrait|wallpaper|illustration|artwork|drawing|poster|avatar|painting|sketch|logo|banner|icon|blueprint|floor\s*plan|house\s*design|interior\s*design)\b/i,
     /^(draw|paint|sketch|illustrate|design)\s+(a|an|the|me|some)?\s*\S+/i,
     /\b(picture|pic|image|photo|portrait|drawing|sketch|illustration|logo|design)\s+of\b/i,
     /\b(pic|pics|picture|tasveer|tasweer|tasvir|taswir|photo|foto|image|img|drawing|sketch|chitra|portrait|wallpaper|naksha|naqsha|logo|design|poster)\s*(banao|bnao|bna\s*do|bna\s*dy|bna\s*de|bna\s*kar\s*do|bna\s*kr\s*do|bna\s*k\s*do|bana\s*do|bana\s*dy|bana\s*de|bana\s*kar\s*do|bana\s*kr\s*do|bana\s*k\s*do|banado|bnado|dikhao|dikha\s*do|nikalo|chahiye|khincho|bna|bana)\b/i,
@@ -262,18 +285,44 @@ function hasPendingImageContext(recentMessages?: Array<{ role: string; content: 
 
 function shouldInvokeGeminiIntentCheck(
   rawText: string,
+  hasAttachment: boolean,
+  hasPreviousGeneratedImage: boolean,
   recentMessages?: Array<{ role: string; content: string }>
 ): boolean {
   const text = rawText.trim();
   if (!text || text.length > 500) return false;
-  if (detectChatMediaIntent(text, false) !== 'chat') return true;
+  const lower = text.toLowerCase();
+
+  if (hasAttachment) {
+    if (ATTACHED_PHOTO_EDIT_RX.test(text)) return true;
+    // Check Roman Urdu/English edit hints when a photo is attached, skipping pure questions
+    if (
+      /^(what|who|why|when|where|how|read|solve|explain|translate|kya\s+hai|ye\s+kya|kya\s+likha)\b/i.test(
+        lower
+      )
+    ) {
+      return false;
+    }
+    return /\b(background|bg|outfit|clothes|dress|shirt|suit|figurine|3d|restore|edit|change|replace|remove|add|make|turn|convert|style|hair|glasses|badal|bna|bana|saaf|karo|kr\s*do)\b/i.test(
+      lower
+    ) || /[\u0600-\u06FF\u0900-\u097F]/.test(text);
+  }
+
+  if (detectChatMediaIntent(text, false, hasPreviousGeneratedImage) !== 'chat') return true;
+
+  if (
+    hasPreviousGeneratedImage &&
+    !/^(hi|hello|hey|thanks|thank you|ok|good|nice|wah|shukriya|what is|explain|how)\b/i.test(lower) &&
+    text.length <= 160
+  ) {
+    return true;
+  }
 
   // Check if previous 1-3 turns asked for a picture/photo (e.g., "Mujhe aik pic bna k do" -> next turn: "Aik insan ki moon pr")
   if (hasPendingImageContext(recentMessages)) {
     return true;
   }
 
-  const lower = text.toLowerCase();
   // Skip obvious pure greetings/math/code/translation questions unless visual cues exist
   if (
     /^(hi|hello|hey|salam|assalam|how are you|what is|who is|why |when |where |explain |translate |write code|write a function)/i.test(
@@ -298,25 +347,26 @@ export async function detectAndEnhanceChatMediaIntent(params: {
   text: string;
   recentMessages?: Array<{ role: string; content: string }>;
   hasAttachment: boolean;
+  hasPreviousGeneratedImage?: boolean;
   hasBackendApi: boolean;
   hasServerGeminiKey: boolean;
 }): Promise<{
-  intent: 'video' | 'image' | 'chat';
+  intent: 'video' | 'image_edit' | 'image' | 'chat';
   preEnhanced?: { detailedPrompt: string; shortTitle: string };
 }> {
-  if (params.hasAttachment) return { intent: 'chat' };
   const cleaned = params.text.trim();
   if (!cleaned || cleaned.length > 500) return { intent: 'chat' };
 
+  const hasPrevImg = Boolean(params.hasPreviousGeneratedImage);
   const recentSlice = (params.recentMessages ?? []).slice(-4).map((m) => ({
     role: m.role,
     content: m.content.slice(0, 260),
   }));
 
-  const fastIntent = detectChatMediaIntent(cleaned, false);
+  const fastIntent = detectChatMediaIntent(cleaned, params.hasAttachment, hasPrevImg);
   const pendingContext = hasPendingImageContext(recentSlice);
 
-  if (!shouldInvokeGeminiIntentCheck(cleaned, recentSlice)) {
+  if (!shouldInvokeGeminiIntentCheck(cleaned, params.hasAttachment, hasPrevImg, recentSlice)) {
     return { intent: fastIntent };
   }
 
@@ -334,6 +384,8 @@ export async function detectAndEnhanceChatMediaIntent(params: {
           text: cleaned,
           recentMessages: recentSlice,
           forceImage: fastIntent === 'image',
+          hasAttachment: params.hasAttachment,
+          hasPreviousGeneratedImage: hasPrevImg,
           apiKey: clientGeminiKey || undefined,
         }),
       });
@@ -343,19 +395,24 @@ export async function detectAndEnhanceChatMediaIntent(params: {
           shortTitle?: string;
           enhancedPrompt?: string;
         };
-        const resolvedIntent: 'video' | 'image' | 'chat' =
-          fastIntent === 'video' || data.intent === 'video'
-            ? 'video'
-            : fastIntent === 'image' || data.intent === 'image'
-              ? 'image'
-              : 'chat';
+        const resolvedIntent: 'video' | 'image_edit' | 'image' | 'chat' =
+          fastIntent === 'image_edit' || data.intent === 'image_edit'
+            ? 'image_edit'
+            : fastIntent === 'video' || data.intent === 'video'
+              ? 'video'
+              : fastIntent === 'image' || data.intent === 'image'
+                ? 'image'
+                : 'chat';
 
-        if (resolvedIntent === 'image' && data.enhancedPrompt?.trim()) {
+        if ((resolvedIntent === 'image' || resolvedIntent === 'image_edit') && data.enhancedPrompt?.trim()) {
           return {
-            intent: 'image',
+            intent: resolvedIntent,
             preEnhanced: {
               shortTitle: (data.shortTitle || cleaned).slice(0, 56),
-              detailedPrompt: buildSafeArtisticPrompt(data.enhancedPrompt.trim()),
+              detailedPrompt:
+                resolvedIntent === 'image_edit'
+                  ? data.enhancedPrompt.trim()
+                  : buildSafeArtisticPrompt(data.enhancedPrompt.trim()),
             },
           };
         }
@@ -366,21 +423,28 @@ export async function detectAndEnhanceChatMediaIntent(params: {
     }
   }
 
-  const contextBlock =
+  const contextBlock = [
+    `Session State: USER_ATTACHED_PHOTO=${params.hasAttachment} | PREVIOUS_GENERATED_IMAGE_EXISTS_IN_CHAT=${hasPrevImg}`,
     recentSlice.length > 0
       ? `Recent Conversation Context:\n${recentSlice
           .map((m) => `${m.role === 'assistant' ? 'Assistant' : 'User'}: ${m.content}`)
-          .join('\n')}\n\nLatest User Message:\n${cleaned}`
-      : cleaned;
+          .join('\n')}`
+      : '',
+    `Latest User Message:\n${cleaned}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 
   // Step 1B: Direct Gemini REST fallback (for static deployments with client Gemini key)
   if (clientGeminiKey) {
     try {
       const sysText = [
-        'Classify the Latest User Message together with Recent Conversation Context (in ANY language: English, Urdu, Roman Urdu like "pic bna", "pic bana", "tasveer", "photo bana", "naksha", "draw", "image", "generate") as intent "image", "video", or "chat".',
-        'CRITICAL CONTEXT RULE: If a previous recent message asked for a picture/photo (e.g., "Mujhe aik pic bna k do") and the Latest User Message supplies a subject (e.g., "Aik insan ki moon pr"), combine BOTH into intent "image".',
-        'If intent is "image", translate and expand the combined idea into a highly detailed, photorealistic/cinematic English image-generation prompt (35-65 words) with realistic lighting, textures, architectural or environmental detail, and crisp focus, plus a 3-6 word shortTitle.',
-        'Return ONLY JSON: {"intent":"image|video|chat","shortTitle":"...","enhancedPrompt":"..."}',
+        'Classify the Latest User Message with Session State and Recent Conversation Context (English, Urdu, Roman Urdu) as intent "image_edit", "image", "video", or "chat".',
+        '- Choose "image_edit" when USER_ATTACHED_PHOTO=true and user wants to edit/transform/restore/make 3D figurine/change background/outfit, OR when PREVIOUS_GENERATED_IMAGE_EXISTS_IN_CHAT=true and user asks a follow-up visual refinement ("now make it night time").',
+        '- Choose "image" when user asks to create a new picture/photo/naksha (including follow-ups after "Mujhe aik pic bna k do").',
+        '- Choose "chat" for questions, vision Q&A on an attached photo, or coding help.',
+        'If "image" or "image_edit", return an English enhancedPrompt + 3-6 word shortTitle.',
+        'Return ONLY JSON: {"intent":"image_edit|image|video|chat","shortTitle":"...","enhancedPrompt":"..."}',
       ].join(' ');
       const resp = await fetch(
         'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
@@ -414,18 +478,23 @@ export async function detectAndEnhanceChatMediaIntent(params: {
             shortTitle?: string;
             enhancedPrompt?: string;
           };
-          const resolvedIntent: 'video' | 'image' | 'chat' =
-            fastIntent === 'video' || parsed.intent === 'video'
-              ? 'video'
-              : fastIntent === 'image' || parsed.intent === 'image'
-                ? 'image'
-                : 'chat';
-          if (resolvedIntent === 'image' && parsed.enhancedPrompt?.trim()) {
+          const resolvedIntent: 'video' | 'image_edit' | 'image' | 'chat' =
+            fastIntent === 'image_edit' || parsed.intent === 'image_edit'
+              ? 'image_edit'
+              : fastIntent === 'video' || parsed.intent === 'video'
+                ? 'video'
+                : fastIntent === 'image' || parsed.intent === 'image'
+                  ? 'image'
+                  : 'chat';
+          if ((resolvedIntent === 'image' || resolvedIntent === 'image_edit') && parsed.enhancedPrompt?.trim()) {
             return {
-              intent: 'image',
+              intent: resolvedIntent,
               preEnhanced: {
                 shortTitle: (parsed.shortTitle || cleaned).slice(0, 56),
-                detailedPrompt: buildSafeArtisticPrompt(parsed.enhancedPrompt.trim()),
+                detailedPrompt:
+                  resolvedIntent === 'image_edit'
+                    ? parsed.enhancedPrompt.trim()
+                    : buildSafeArtisticPrompt(parsed.enhancedPrompt.trim()),
               },
             };
           }
@@ -438,8 +507,8 @@ export async function detectAndEnhanceChatMediaIntent(params: {
   }
 
   // Deterministic fallback when Gemini classifier isn't reachable:
-  // If user previously said "Mujhe aik pic bna k do" and now gives a non-greeting subject, combine cleanly
   if (
+    !params.hasAttachment &&
     pendingContext &&
     fastIntent === 'chat' &&
     !/^(hi|hello|hey|thanks|thank you|ok|cancel|stop|no|nahi|explain|what is)\b/i.test(cleaned) &&
@@ -1874,9 +1943,276 @@ export async function translatePromptToDetailedEnglish(params: {
   };
 }
 
+const NANO_BANANA_MODELS = new Set([
+  'nano-banana',
+  'gemini-nano-banana-2.1',
+  'gemini-3.1-flash-image',
+  'gemini-2.5-flash-image',
+]);
+
+async function extractBase64AndMimeFromUrl(
+  imageUrlOrDataUrl: string,
+  fallbackMime = 'image/png'
+): Promise<{ base64: string; mimeType: string }> {
+  const trimmed = imageUrlOrDataUrl.trim();
+  if (trimmed.startsWith('data:')) {
+    const commaIdx = trimmed.indexOf(',');
+    const meta = commaIdx > 5 ? trimmed.slice(5, commaIdx) : '';
+    const mimeType = meta.split(';')[0] || fallbackMime;
+    const rawPayload = commaIdx >= 0 ? trimmed.slice(commaIdx + 1) : '';
+    if (mimeType.includes('svg')) {
+      // Convert SVG data URL to lossless PNG data URL via canvas for Gemini Vision/Editing
+      const img = await new Promise<HTMLImageElement | null>((resolve) => {
+        const el = new Image();
+        el.onload = () => resolve(el);
+        el.onerror = () => resolve(null);
+        el.src = trimmed;
+      });
+      if (img && img.naturalWidth > 0) {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth || 1024;
+        canvas.height = img.naturalHeight || 1024;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          const pngUrl = canvas.toDataURL('image/png');
+          return {
+            base64: pngUrl.split(',')[1] || '',
+            mimeType: 'image/png',
+          };
+        }
+      }
+    }
+    return { base64: rawPayload.trim(), mimeType };
+  }
+
+  const resp = await fetch(trimmed);
+  if (!resp.ok) {
+    throw new Error('Could not load the previous image for editing.');
+  }
+  const blob = await resp.blob();
+  const dataUrl = await blobToSharpDataUrl(blob);
+  if (!dataUrl) {
+    throw new Error('Could not decode the previous image for editing.');
+  }
+  const commaIdx = dataUrl.indexOf(',');
+  const mimeType = dataUrl.slice(5, commaIdx).split(';')[0] || blob.type || fallbackMime;
+  return {
+    base64: dataUrl.slice(commaIdx + 1).trim(),
+    mimeType,
+  };
+}
+
+async function tryNanoBananaApi(params: {
+  prompt: string;
+  sourceImageBase64?: string;
+  sourceMimeType?: string;
+  aspectRatio: '1:1' | '16:9' | '4:3';
+  resolution?: '1K' | '2K';
+  mode: 'generate' | 'edit';
+  preferredModel?: string;
+  previousEditContext?: string;
+  skipEnhance?: boolean;
+  hasBackendApi: boolean;
+  hasServerGeminiKey: boolean;
+  onStatus?: (msg: string) => void;
+}): Promise<
+  | {
+      ok: true;
+      imageUrl: string;
+      modelUsed: string;
+      title: string;
+      detailedPrompt: string;
+      assistantText?: string;
+      width: number;
+      height: number;
+    }
+  | { ok: false; reason: string }
+> {
+  const localKey = loadCustomApiKey().trim();
+  const envGeminiKey = getEnvGeminiKey();
+  const clientGeminiKey = localKey.startsWith('AIza') ? localKey : envGeminiKey;
+
+  const modelBadge =
+    params.preferredModel && params.preferredModel !== 'nano-banana'
+      ? params.preferredModel
+      : 'Nano Banana HD';
+
+  params.onStatus?.(
+    params.mode === 'edit'
+      ? `Editing photo seamlessly with ${modelBadge} (preserving identity)...`
+      : `Generating uncompressed ${params.resolution || '1K'} HD image with ${modelBadge}...`
+  );
+
+  // 1. Primary: Express Server /api/nano-banana (uses @google/genai SDK cleanly)
+  if (params.hasBackendApi || params.hasServerGeminiKey) {
+    try {
+      const resp = await fetch('/api/nano-banana', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: params.prompt,
+          sourceImageBase64: params.sourceImageBase64,
+          sourceMimeType: params.sourceMimeType,
+          aspectRatio: params.aspectRatio,
+          resolution: params.resolution || '1K',
+          mode: params.mode,
+          preferredModel:
+            params.preferredModel && params.preferredModel !== 'nano-banana'
+              ? params.preferredModel
+              : undefined,
+          previousEditContext: params.previousEditContext,
+          skipEnhance: params.skipEnhance,
+          apiKey: clientGeminiKey || undefined,
+        }),
+      });
+      const contentType = resp.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const data = (await resp.json()) as {
+          imageUrl?: string;
+          modelUsed?: string;
+          title?: string;
+          detailedPrompt?: string;
+          assistantText?: string;
+          width?: number;
+          height?: number;
+          error?: string;
+        };
+        if (resp.ok && data.imageUrl) {
+          return {
+            ok: true,
+            imageUrl: data.imageUrl,
+            modelUsed: data.modelUsed || 'gemini-nano-banana-2.1',
+            title: data.title || params.prompt.slice(0, 52),
+            detailedPrompt: data.detailedPrompt || params.prompt,
+            assistantText: data.assistantText,
+            width: data.width || 1024,
+            height: data.height || 1024,
+          };
+        }
+        if (data.error) {
+          return { ok: false, reason: data.error };
+        }
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        reason: err instanceof Error ? err.message : 'Nano Banana backend connection failed',
+      };
+    }
+  }
+
+  // 2. Direct Gemini REST fallback (static deployments with client key)
+  if (clientGeminiKey) {
+    const fallbackSequence = [
+      ...(params.preferredModel && params.preferredModel !== 'nano-banana'
+        ? [params.preferredModel]
+        : []),
+      'gemini-3.1-flash-image',
+      'gemini-nano-banana-2.1',
+      'gemini-3.1-flash-lite-image',
+      'gemini-2.5-flash-image',
+    ].filter((m, idx, arr) => arr.indexOf(m) === idx);
+
+    const parts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [];
+    if (params.sourceImageBase64) {
+      parts.push({
+        inlineData: {
+          data: params.sourceImageBase64,
+          mimeType: params.sourceMimeType || 'image/png',
+        },
+      });
+    }
+    const finalText =
+      params.mode === 'edit'
+        ? `${params.prompt} Keep the original subject face, identity, and proportions consistent. Render sharp high-definition clarity.`
+        : params.prompt;
+    parts.push({ text: finalText });
+
+    let lastReason = 'Nano Banana image model unavailable';
+    for (const modelId of fallbackSequence) {
+      try {
+        const resp = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+            modelId
+          )}:generateContent`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': clientGeminiKey,
+            },
+            body: JSON.stringify({
+              contents: [{ role: 'user', parts }],
+              safetySettings: GEMINI_SAFETY_SETTINGS,
+              generationConfig: {
+                responseModalities: ['TEXT', 'IMAGE'],
+                imageConfig:
+                  modelId === 'gemini-nano-banana-2.1'
+                    ? { aspectRatio: params.aspectRatio, imageSize: params.resolution || '1K' }
+                    : { aspectRatio: params.aspectRatio },
+              },
+            }),
+          }
+        );
+
+        if (!resp.ok) {
+          lastReason = extractReadableApiError(await resp.text(), resp.status);
+          continue;
+        }
+
+        const json = (await resp.json()) as {
+          candidates?: Array<{
+            content?: {
+              parts?: Array<{
+                text?: string;
+                inlineData?: { data?: string; mimeType?: string };
+              }>;
+            };
+          }>;
+        };
+
+        let imgData = '';
+        let imgMime = 'image/png';
+        let assistantText = '';
+        for (const p of json.candidates?.[0]?.content?.parts ?? []) {
+          if (p.inlineData?.data && !imgData) {
+            imgData = p.inlineData.data;
+            imgMime = p.inlineData.mimeType || 'image/png';
+          } else if (p.text) {
+            assistantText += `${p.text}\n`;
+          }
+        }
+
+        if (imgData) {
+          const w = params.aspectRatio === '16:9' ? 1376 : params.aspectRatio === '4:3' ? 1200 : 1024;
+          const h = params.aspectRatio === '16:9' ? 768 : params.aspectRatio === '4:3' ? 896 : 1024;
+          return {
+            ok: true,
+            imageUrl: `data:${imgMime};base64,${imgData}`,
+            modelUsed: modelId,
+            title: params.prompt.slice(0, 52),
+            detailedPrompt: finalText,
+            assistantText: assistantText.trim(),
+            width: w,
+            height: h,
+          };
+        }
+      } catch (err) {
+        lastReason = err instanceof Error ? err.message : lastReason;
+      }
+    }
+    return { ok: false, reason: lastReason };
+  }
+
+  return { ok: false, reason: 'Nano Banana requires a configured Gemini API key.' };
+}
+
 async function resolveImageWithFallback(params: {
+  rawPrompt?: string;
   safePrompt: string;
   aspectRatio: '1:1' | '16:9' | '4:3';
+  resolution?: '1K' | '2K';
   pollinationsDims: { w: number; h: number };
   title: string;
   language?: string;
@@ -1886,9 +2222,37 @@ async function resolveImageWithFallback(params: {
 }): Promise<{
   imageUrl?: string;
   svgCode?: string;
-  provider: 'pollinations' | 'horde' | 'svg';
+  provider: 'nano-banana' | 'pollinations' | 'horde' | 'svg';
+  modelUsed?: string;
+  width?: number;
+  height?: number;
 }> {
-  const configuredImageModel = loadOwnerConfig().imageModel || 'flux';
+  const configuredImageModel = loadOwnerConfig().imageModel || 'nano-banana';
+
+  // 1. Primary: Google Nano Banana Native Image Generation (when configured — now default)
+  if (NANO_BANANA_MODELS.has(configuredImageModel)) {
+    const nanoRes = await tryNanoBananaApi({
+      prompt: params.safePrompt,
+      aspectRatio: params.aspectRatio,
+      resolution: params.resolution || '1K',
+      mode: 'generate',
+      preferredModel: configuredImageModel,
+      skipEnhance: true,
+      hasBackendApi: params.hasBackendApi,
+      hasServerGeminiKey: params.hasServerGeminiKey,
+      onStatus: params.onStatus,
+    });
+    if (nanoRes.ok) {
+      return {
+        imageUrl: nanoRes.imageUrl,
+        provider: 'nano-banana',
+        modelUsed: nanoRes.modelUsed,
+        width: nanoRes.width,
+        height: nanoRes.height,
+      };
+    }
+    params.onStatus?.(`${nanoRes.reason} — switching to Flux 1024×1024 Ultra-HD...`);
+  }
 
   if (configuredImageModel === 'horde') {
     const hordePreferred = await tryAiHordeImage({
@@ -1901,19 +2265,20 @@ async function resolveImageWithFallback(params: {
     }
   }
 
-  // 1. Primary: Pollinations (1024x1024 Ultra-HD Flux / Realism / Turbo)
+  // 2. Fallback / Flux engine: Pollinations (1024x1024 Ultra-HD Flux / Realism / Turbo)
+  const fluxModelChoice = NANO_BANANA_MODELS.has(configuredImageModel) ? 'flux' : configuredImageModel;
   const pollinationsRes = await tryPollinationsImage({
     safePrompt: params.safePrompt,
     width: params.pollinationsDims.w,
     height: params.pollinationsDims.h,
-    modelName: configuredImageModel,
+    modelName: fluxModelChoice,
     onStatus: params.onStatus,
   });
   if (pollinationsRes.ok) {
     return { imageUrl: pollinationsRes.imageUrl, provider: 'pollinations' };
   }
 
-  // 2. Fallback: Free Public AI Horde API
+  // 3. Fallback: Free Public AI Horde API
   params.onStatus?.(`${pollinationsRes.reason} — switching to Free AI Horde...`);
   const hordeRes = await tryAiHordeImage({
     safePrompt: params.safePrompt,
@@ -1924,7 +2289,7 @@ async function resolveImageWithFallback(params: {
     return { imageUrl: hordeRes.imageUrl, provider: 'horde' };
   }
 
-  // 3. Optional backend Gemini SVG fallback if server is running
+  // 4. Optional backend Gemini SVG fallback if server is running
   if (params.hasBackendApi) {
     try {
       const resolved = resolveActiveProvider(params.hasServerGeminiKey);
@@ -1949,7 +2314,7 @@ async function resolveImageWithFallback(params: {
     }
   }
 
-  // 4. Local offline-safe SVG artwork fallback so users NEVER hit a dead end
+  // 5. Local offline-safe SVG artwork fallback so users NEVER hit a dead end
   return {
     svgCode: buildProceduralFallbackSvg(
       params.title,
@@ -1963,6 +2328,7 @@ async function resolveImageWithFallback(params: {
 export async function generateArtworkUnified(params: {
   prompt: string;
   aspectRatio: '1:1' | '16:9' | '4:3';
+  resolution?: '1K' | '2K';
   language?: string;
   hasBackendApi: boolean;
   hasServerGeminiKey: boolean;
@@ -1974,17 +2340,25 @@ export async function generateArtworkUnified(params: {
   detailedPrompt: string;
   svgCode?: string;
   imageUrl?: string;
-  provider: 'pollinations' | 'horde' | 'svg';
+  provider: 'nano-banana' | 'pollinations' | 'horde' | 'svg';
+  modelUsed?: string;
   aspectRatio: '1:1' | '16:9' | '4:3';
   width: number;
   height: number;
 }> {
+  const is2K = params.resolution === '2K';
   const dims =
     params.aspectRatio === '16:9'
-      ? { w: 1280, h: 720 }
+      ? is2K
+        ? { w: 2048, h: 1152 }
+        : { w: 1280, h: 720 }
       : params.aspectRatio === '4:3'
-        ? { w: 1024, h: 768 }
-        : { w: 1024, h: 1024 };
+        ? is2K
+          ? { w: 2048, h: 1536 }
+          : { w: 1024, h: 768 }
+        : is2K
+          ? { w: 2048, h: 2048 }
+          : { w: 1024, h: 1024 };
 
   params.onStatus?.('Enhancing prompt with Gemini AI...');
   const { detailedPrompt, shortTitle } =
@@ -1997,8 +2371,10 @@ export async function generateArtworkUnified(params: {
         });
 
   const resolved = await resolveImageWithFallback({
+    rawPrompt: params.prompt,
     safePrompt: detailedPrompt,
     aspectRatio: params.aspectRatio,
+    resolution: params.resolution || '1K',
     pollinationsDims: dims,
     title: shortTitle,
     language: params.language,
@@ -2014,9 +2390,85 @@ export async function generateArtworkUnified(params: {
     imageUrl: resolved.imageUrl,
     svgCode: resolved.svgCode,
     provider: resolved.provider,
+    modelUsed: resolved.modelUsed,
     aspectRatio: params.aspectRatio,
-    width: dims.w,
-    height: dims.h,
+    width: resolved.width || dims.w,
+    height: resolved.height || dims.h,
+  };
+}
+
+export async function editArtworkUnified(params: {
+  prompt: string;
+  sourceImageDataUrl: string;
+  sourceMimeType?: string;
+  aspectRatio?: '1:1' | '16:9' | '4:3';
+  resolution?: '1K' | '2K';
+  previousEditContext?: string;
+  preEnhanced?: { detailedPrompt: string; shortTitle: string };
+  hasBackendApi: boolean;
+  hasServerGeminiKey: boolean;
+  onStatus?: (msg: string) => void;
+}): Promise<{
+  title: string;
+  description: string;
+  detailedPrompt: string;
+  assistantText?: string;
+  imageUrl: string;
+  provider: 'nano-banana';
+  modelUsed: string;
+  isEdited: true;
+  aspectRatio: '1:1' | '16:9' | '4:3';
+  width: number;
+  height: number;
+}> {
+  const aspectRatio = params.aspectRatio || '1:1';
+  const configuredImageModel = loadOwnerConfig().imageModel;
+  const preferredNano = NANO_BANANA_MODELS.has(configuredImageModel)
+    ? configuredImageModel
+    : 'nano-banana';
+
+  params.onStatus?.('Preparing source image for Nano Banana HD editing...');
+  const extracted = await extractBase64AndMimeFromUrl(
+    params.sourceImageDataUrl,
+    params.sourceMimeType || 'image/png'
+  );
+
+  if (!extracted.base64) {
+    throw new Error('Source photo data could not be read for editing. Please re-attach the photo.');
+  }
+
+  const editPrompt = params.preEnhanced?.detailedPrompt || params.prompt.trim();
+  const nanoRes = await tryNanoBananaApi({
+    prompt: editPrompt,
+    sourceImageBase64: extracted.base64,
+    sourceMimeType: extracted.mimeType,
+    aspectRatio,
+    resolution: params.resolution || '1K',
+    mode: 'edit',
+    preferredModel: preferredNano,
+    previousEditContext: params.previousEditContext,
+    skipEnhance: Boolean(params.preEnhanced?.detailedPrompt),
+    hasBackendApi: params.hasBackendApi,
+    hasServerGeminiKey: params.hasServerGeminiKey,
+    onStatus: params.onStatus,
+  });
+
+  if (!nanoRes.ok) {
+    throw new Error(nanoRes.reason);
+  }
+
+  return {
+    title: params.preEnhanced?.shortTitle || nanoRes.title || 'Edited HD Photo',
+    description: nanoRes.detailedPrompt,
+    detailedPrompt: nanoRes.detailedPrompt,
+    assistantText: nanoRes.assistantText,
+    imageUrl: nanoRes.imageUrl,
+    provider: 'nano-banana',
+    modelUsed: nanoRes.modelUsed,
+    isEdited: true,
+    aspectRatio,
+    width: nanoRes.width,
+    height: nanoRes.height,
   };
 }
 

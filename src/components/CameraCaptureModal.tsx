@@ -99,7 +99,7 @@ export function CameraCaptureModal({
       return;
     }
 
-    const maxWidth = 1024;
+    const maxWidth = 1920;
     let targetW = video.videoWidth;
     let targetH = video.videoHeight;
     if (targetW > maxWidth) {
@@ -116,11 +116,10 @@ export function CameraCaptureModal({
       return;
     }
 
-    ctx.fillStyle = '#000000';
-    ctx.fillRect(0, 0, targetW, targetH);
     ctx.drawImage(video, 0, 0, targetW, targetH);
 
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+    // Zero Compression: save crisp lossless PNG for Vision & Nano Banana photo editing
+    const dataUrl = canvas.toDataURL('image/png');
     const base64 = (dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl).trim();
     if (!base64) {
       setErrorMsg('Captured image was empty. Please try again.');
@@ -129,8 +128,8 @@ export function CameraCaptureModal({
 
     const attachment: MessageAttachment = {
       kind: 'image',
-      name: `camera-photo-${Date.now()}.jpg`,
-      mimeType: 'image/jpeg',
+      name: `camera-photo-${Date.now()}.png`,
+      mimeType: 'image/png',
       base64,
       dataUrl,
       source: 'camera',

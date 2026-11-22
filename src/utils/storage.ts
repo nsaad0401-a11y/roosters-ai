@@ -595,7 +595,7 @@ const OWNER_CONFIG_KEY = 'roosters_ai_owner_config_v1';
 
 export const DEFAULT_OWNER_CONFIG: OwnerConfig = {
   chatModel: 'auto',
-  imageModel: 'flux',
+  imageModel: 'nano-banana',
   globalSystemPrompt: '',
   announcementEnabled: false,
   announcementText: '',
@@ -605,17 +605,25 @@ export const DEFAULT_OWNER_CONFIG: OwnerConfig = {
 
 let memoryOwnerConfig: OwnerConfig = { ...DEFAULT_OWNER_CONFIG };
 
+const VALID_IMAGE_MODELS: ReadonlyArray<OwnerImageModel> = [
+  'nano-banana',
+  'gemini-nano-banana-2.1',
+  'gemini-3.1-flash-image',
+  'gemini-2.5-flash-image',
+  'flux',
+  'flux-realism',
+  'turbo',
+  'horde',
+];
+
 export function loadOwnerConfig(): OwnerConfig {
   const raw = safeGetItem(OWNER_CONFIG_KEY);
   if (!raw) return memoryOwnerConfig;
   try {
     const parsed = JSON.parse(raw) as Partial<OwnerConfig>;
-    const imgModel: OwnerImageModel =
-      parsed.imageModel === 'flux-realism' ||
-      parsed.imageModel === 'turbo' ||
-      parsed.imageModel === 'horde'
-        ? parsed.imageModel
-        : 'flux';
+    const imgModel: OwnerImageModel = VALID_IMAGE_MODELS.includes(parsed.imageModel as OwnerImageModel)
+      ? (parsed.imageModel as OwnerImageModel)
+      : 'nano-banana';
 
     const rawPin = typeof parsed.ownerPin === 'string' ? parsed.ownerPin.trim() : '';
     const resolvedPin = !rawPin || rawPin === '2026' ? 'sadd1+2=3' : rawPin;

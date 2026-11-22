@@ -1,15 +1,40 @@
-import { Download, Image as ImageIcon, Loader2, RefreshCw } from 'lucide-react';
+import { Download, Image as ImageIcon, Loader2, RefreshCw, Sparkles } from 'lucide-react';
 import { useState } from 'react';
 import { GeneratedArtwork } from '../types';
 
 interface GeneratedArtworkCardProps {
   artwork: GeneratedArtwork;
+  onQuickEditHint?: (artwork: GeneratedArtwork) => void;
 }
 
-export function GeneratedArtworkCard({ artwork }: GeneratedArtworkCardProps) {
+function dataUrlToLosslessBlob(dataUrl: string): { blob: Blob; ext: string } | null {
+  try {
+    const commaIdx = dataUrl.indexOf(',');
+    if (commaIdx < 0) return null;
+    const header = dataUrl.slice(5, commaIdx);
+    const mime = header.split(';')[0] || 'image/png';
+    const base64 = dataUrl.slice(commaIdx + 1);
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const ext = mime.includes('webp')
+      ? 'webp'
+      : mime.includes('jpeg') || mime.includes('jpg')
+        ? 'jpg'
+        : 'png';
+    return { blob: new Blob([bytes], { type: mime }), ext };
+  } catch {
+    return null;
+  }
+}
+
+export function GeneratedArtworkCard({ artwork, onQuickEditHint }: GeneratedArtworkCardProps) {
   const [imgLoading, setImgLoading] = useState(Boolean(artwork.imageUrl));
   const [imgFailed, setImgFailed] = useState(false);
   const [retrySeed, setRetrySeed] = useState(0);
+  const [naturalDims, setNaturalDims] = useState<{ w: number; h: number } | null>(null);
 
   const activeImageUrl = artwork.imageUrl
     ? retrySeed > 0 && artwork.imageUrl.startsWith('http')
@@ -17,11 +42,17 @@ export function GeneratedArtworkCard({ artwork }: GeneratedArtworkCardProps) {
       : artwork.imageUrl
     : '';
   const engineLabel =
-    artwork.provider === 'horde'
-      ? 'AI Horde Studio'
-      : artwork.provider === 'svg'
-        ? 'Vector Art'
-        : 'AI Studio HD';
+    artwork.provider === 'nano-banana'
+      ? artwork.modelUsed?.includes('2.1')
+        ? 'Nano Banana 2.1 HD'
+        : artwork.modelUsed?.includes('3.1')
+          ? 'Nano Banana 3.1 HD'
+          : 'Nano Banana HD'
+      : artwork.provider === 'horde'
+        ? 'AI Horde Studio'
+        : artwork.provider === 'svg'
+          ? 'Vector Art'
+          : 'AI Studio HD';
   const hasRaster = Boolean(activeImageUrl) && !imgFailed;
   const hasSvg = Boolean(artwork.svgCode);
   const svgDataUrl = artwork.svgCode
@@ -29,6 +60,9 @@ export function GeneratedArtworkCard({ artwork }: GeneratedArtworkCardProps) {
     : '';
   const safeFileSlug =
     artwork.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 48) || 'roosters-hd-image';
+
+  const displayWidth = naturalDims?.w || artwork.width;
+  const displayHeight = naturalDims?.h || artwork.height;
 
   const handleDownloadSvg = () => {
     if (!artwork.svgCode) return;
@@ -45,14 +79,32 @@ export function GeneratedArtworkCard({ artwork }: GeneratedArtworkCardProps) {
 
   const handleDownloadHD = async () => {
     if (hasRaster && activeImageUrl) {
+      // Zero Compression: extract raw bytes directly from DataURL without canvas resampling
+      if (activeImageUrl.startsWith('data:')) {
+        const raw = dataUrlToLosslessBlob(activeImageUrl);
+        if (raw) {
+          const url = URL.createObjectURL(raw.blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `${safeFileSlug}-hd.${raw.ext}`;
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          URL.revokeObjectURL(url);
+          return;
+        }
+      }
+
       try {
         const resp = await fetch(activeImageUrl);
         if (resp.ok) {
           const blob = await resp.blob();
+          const mime = blob.type || 'image/png';
+          const ext = mime.includes('webp') ? 'webp' : mime.includes('jpeg') ? 'jpg' : 'png';
           const url = URL.createObjectURL(blob);
           const link = document.createElement('a');
           link.href = url;
-          link.download = `${safeFileSlug}-hd.png`;
+          link.download = `${safeFileSlug}-hd.${ext}`;
           document.body.appendChild(link);
           link.click();
           link.remove();
@@ -114,10 +166,20 @@ export function GeneratedArtworkCard({ artwork }: GeneratedArtworkCardProps) {
           <ImageIcon className="w-4 h-4 text-[#ffd700] shrink-0" />
           <span className="text-[13px] font-semibold text-white truncate">{artwork.title}</span>
           <span className="text-[11px] text-[#64748b] tabular-nums shrink-0">
-            {artwork.width}×{artwork.height} HD
+            {displayWidth}×{displayHeight} HD
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {hasRaster && onQuickEditHint && (
+            <button
+              type="button"
+              onClick={() => onQuickEditHint(artwork)}
+              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#182032] border border-[#334155] text-[11.5px] font-medium text-[#ffd700] hover:border-[#ffd700] transition-colors cursor-pointer whitespace-nowrap"
+            >
+              <Sparkles className="w-3 h-3" />
+              <span>Edit</span>
+            </button>
+          )}
           {(hasRaster || hasSvg) && (
             <button
               type="button"
@@ -147,7 +209,7 @@ export function GeneratedArtworkCard({ artwork }: GeneratedArtworkCardProps) {
             <div className="w-11 h-11 rounded-full border-2 border-[#00d4ff]/30 border-t-[#ffd700] animate-spin" />
             <div>
               <p className="text-[13.5px] font-semibold text-white">
-                Rendering {artwork.width}×{artwork.height} HD AI Image...
+                Rendering {displayWidth}×{displayHeight} HD AI Image...
               </p>
               <p className="text-[11.5px] text-[#94a3b8] mt-1">
                 {engineLabel} synthesis in progress
@@ -161,7 +223,12 @@ export function GeneratedArtworkCard({ artwork }: GeneratedArtworkCardProps) {
             src={activeImageUrl}
             alt={artwork.title}
             referrerPolicy="no-referrer"
-            onLoad={() => {
+            onLoad={(e) => {
+              const nw = e.currentTarget.naturalWidth;
+              const nh = e.currentTarget.naturalHeight;
+              if (nw > 0 && nh > 0) {
+                setNaturalDims({ w: nw, h: nh });
+              }
               setImgLoading(false);
               setImgFailed(false);
             }}
@@ -169,7 +236,7 @@ export function GeneratedArtworkCard({ artwork }: GeneratedArtworkCardProps) {
               setImgLoading(false);
               setImgFailed(true);
             }}
-            className={`max-h-[460px] w-auto rounded-lg object-contain border border-[#1f293d] transition-opacity duration-300 ${
+            className={`max-h-[540px] w-auto rounded-lg object-contain border border-[#1f293d] transition-opacity duration-300 ${
               imgLoading ? 'opacity-0' : 'opacity-100'
             }`}
           />
@@ -212,7 +279,9 @@ export function GeneratedArtworkCard({ artwork }: GeneratedArtworkCardProps) {
               <span>{engineLabel}</span>
             </span>
           ) : (
-            <span className="text-[11px] text-[#64748b] shrink-0">{engineLabel}</span>
+            <span className="text-[11px] text-[#64748b] shrink-0 whitespace-nowrap">
+              {artwork.isEdited ? `${engineLabel} · Edited` : engineLabel}
+            </span>
           )}
         </div>
       )}

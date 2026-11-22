@@ -53,6 +53,7 @@ import {
 import {
   buildSafeArtisticPrompt,
   detectAndEnhanceChatMediaIntent,
+  editArtworkUnified,
   generateArtworkUnified,
   generateVideoUnified,
   getEnvGeminiKey,
@@ -124,9 +125,22 @@ function fileToAttachment(
       const extractBase64 = (url: string) =>
         (url.includes(',') ? url.split(',')[1] : url).trim();
 
+      // Zero Compression: keep original uncompressed file bytes directly when <= 6 MB
+      if (file.size > 0 && file.size <= 6 * 1024 * 1024 && file.type.startsWith('image/')) {
+        resolve({
+          kind: 'image',
+          name: file.name || 'image.png',
+          mimeType: file.type || 'image/png',
+          base64: extractBase64(rawUrl),
+          dataUrl: rawUrl,
+          source,
+        });
+        return;
+      }
+
       const img = new Image();
       img.onload = () => {
-        const maxWidth = 1024;
+        const maxWidth = 2048;
         let width = img.naturalWidth || img.width;
         let height = img.naturalHeight || img.height;
 
@@ -142,8 +156,8 @@ function fileToAttachment(
         if (!ctx) {
           resolve({
             kind: 'image',
-            name: file.name || 'image.jpg',
-            mimeType: file.type || 'image/jpeg',
+            name: file.name || 'image.png',
+            mimeType: file.type || 'image/png',
             base64: extractBase64(rawUrl),
             dataUrl: rawUrl,
             source,
@@ -151,24 +165,22 @@ function fileToAttachment(
           return;
         }
 
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        const compressedUrl = canvas.toDataURL('image/jpeg', 0.8);
+        const pngUrl = canvas.toDataURL('image/png');
         resolve({
           kind: 'image',
-          name: file.name || 'image.jpg',
-          mimeType: 'image/jpeg',
-          base64: extractBase64(compressedUrl),
-          dataUrl: compressedUrl,
+          name: file.name || 'image.png',
+          mimeType: 'image/png',
+          base64: extractBase64(pngUrl),
+          dataUrl: pngUrl,
           source,
         });
       };
       img.onerror = () => {
         resolve({
           kind: 'image',
-          name: file.name || 'image.jpg',
-          mimeType: file.type || 'image/jpeg',
+          name: file.name || 'image.png',
+          mimeType: file.type || 'image/png',
           base64: extractBase64(rawUrl),
           dataUrl: rawUrl,
           source,
@@ -260,6 +272,7 @@ interface ChatMessageRowProps {
   isTtsPaused: boolean;
   onCopy: (msg: ChatMessage) => void;
   onListen: (msg: ChatMessage) => void;
+  onQuickEditImage?: () => void;
 }
 
 const ChatMessageRow = memo(function ChatMessageRow({
@@ -273,6 +286,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
   isTtsPaused,
   onCopy,
   onListen,
+  onQuickEditImage,
 }: ChatMessageRowProps) {
   if (msg.role === 'user') {
     return (
@@ -383,7 +397,12 @@ const ChatMessageRow = memo(function ChatMessageRow({
           </div>
         )}
 
-        {msg.generatedImage && <GeneratedArtworkCard artwork={msg.generatedImage} />}
+        {msg.generatedImage && (
+          <GeneratedArtworkCard
+            artwork={msg.generatedImage}
+            onQuickEditHint={onQuickEditImage}
+          />
+        )}
 
         {msg.generatedVideo && (
           <GeneratedVideoCard
@@ -654,7 +673,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         for (const s of idbSessions) merged.set(s.id, s);
         for (const s of prev) {
           const existing = merged.get(s.id);
-          if (!existing || s.updatedAt >= existing.updatedAt) {
+          if (!existing || s.updatedAt > existing.updatedAt) {
             merged.set(s.id, s);
           }
         }
@@ -952,14 +971,48 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       unlockSpeechSynthesis();
     }
 
-    // Step 1: Context-aware Gemini Multilingual Intent & Prompt Enhancer (English, Urdu, Roman Urdu)
+    const latestGeneratedImageMsg = [...messages]
+      .reverse()
+      .find((m) => Boolean(m.generatedImage?.imageUrl));
+
+    // Step 1: Context-aware Gemini Multilingual Intent & Prompt Enhancer (Generate, Photo Edit, Video, Chat)
     const detectedMedia = await detectAndEnhanceChatMediaIntent({
       text: textToSend,
       recentMessages: messages.slice(-4).map((m) => ({ role: m.role, content: m.content })),
-      hasAttachment: Boolean(attachmentToSend),
+      hasAttachment: Boolean(attachmentToSend && attachmentToSend.kind !== 'file'),
+      hasPreviousGeneratedImage: Boolean(latestGeneratedImageMsg?.generatedImage?.imageUrl),
       hasBackendApi,
       hasServerGeminiKey,
     });
+
+    if (detectedMedia.intent === 'image_edit') {
+      const sourceDataUrl =
+        attachmentToSend && attachmentToSend.kind !== 'file'
+          ? attachmentToSend.dataUrl
+          : latestGeneratedImageMsg?.generatedImage?.imageUrl || '';
+      if (sourceDataUrl) {
+        if (!overrideText) {
+          setInputValue('');
+          setPendingAttachment(null);
+          if (textareaRef.current) textareaRef.current.style.height = 'auto';
+        }
+        await handleEditArtwork({
+          prompt: textToSend,
+          sourceImageDataUrl: sourceDataUrl,
+          sourceMimeType:
+            attachmentToSend && attachmentToSend.kind !== 'file'
+              ? attachmentToSend.mimeType
+              : 'image/png',
+          aspectRatio: latestGeneratedImageMsg?.generatedImage?.aspectRatio || '1:1',
+          userAttachment: attachmentToSend,
+          previousEditContext: latestGeneratedImageMsg?.generatedImage?.detailedPrompt,
+          preEnhanced: detectedMedia.preEnhanced,
+          displayUserText: textToSend,
+        });
+        return;
+      }
+    }
+
     if (detectedMedia.intent === 'image') {
       if (!overrideText) {
         setInputValue('');
@@ -1420,11 +1473,11 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const handleCaptureScreenFrame = () => {
     const video = screenVideoRef.current;
     if (!video || !screenStream) return;
-    let width = video.videoWidth || 1024;
-    let height = video.videoHeight || 576;
-    if (width > 1024) {
-      height = Math.max(1, Math.round((height * 1024) / width));
-      width = 1024;
+    let width = video.videoWidth || 1920;
+    let height = video.videoHeight || 1080;
+    if (width > 1920) {
+      height = Math.max(1, Math.round((height * 1920) / width));
+      width = 1920;
     }
     const canvas = document.createElement('canvas');
     canvas.width = width;
@@ -1433,18 +1486,18 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     if (!ctx) return;
 
     ctx.drawImage(video, 0, 0, width, height);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+    const dataUrl = canvas.toDataURL('image/png');
     const base64 = (dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl).trim();
 
     setPendingAttachment({
       kind: 'image',
-      name: `screen-capture-${new Date().toLocaleTimeString().replace(/[:\s]/g, '-')}.jpg`,
-      mimeType: 'image/jpeg',
+      name: `screen-capture-${new Date().toLocaleTimeString().replace(/[:\s]/g, '-')}.png`,
+      mimeType: 'image/png',
       base64,
       dataUrl,
       source: 'screen',
     });
-    setNotice('Screen frame captured and attached. Ask Roosters AI anything about it!');
+    setNotice('Screen frame captured (lossless HD) and attached. Ask or edit with Roosters AI!');
   };
 
   const handleToggleMic = async () => {
@@ -1541,6 +1594,108 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     }
   };
 
+  const handleEditArtwork = async (params: {
+    prompt: string;
+    sourceImageDataUrl: string;
+    sourceMimeType?: string;
+    aspectRatio?: '1:1' | '16:9' | '4:3';
+    resolution?: '1K' | '2K';
+    userAttachment?: MessageAttachment;
+    previousEditContext?: string;
+    preEnhanced?: { detailedPrompt: string; shortTitle: string };
+    displayUserText?: string;
+  }) => {
+    if (!isOnline) {
+      setNotice('You are offline. Connect to the internet to edit HD photos.');
+      return;
+    }
+    setIsGeneratingImage(true);
+    setNotice('');
+
+    const nextMessages: ChatMessage[] = [
+      ...messages,
+      {
+        id: createId('msg'),
+        role: 'user',
+        content: params.displayUserText || params.prompt,
+        createdAt: Date.now(),
+        attachment: params.userAttachment,
+      },
+    ];
+    const assistantPlaceholderId = createId('msg');
+    const loadingMsg: ChatMessage = {
+      id: assistantPlaceholderId,
+      role: 'assistant',
+      content: 'Editing photo with Nano Banana HD (preserving subject identity)...',
+      createdAt: Date.now(),
+      isPending: true,
+    };
+    const currentSessionId = syncMessagesToSession(nextMessages);
+    setMessages([...nextMessages, loadingMsg]);
+    setIsImageModalOpen(false);
+
+    const updateProgressText = (statusText: string) => {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === assistantPlaceholderId ? { ...m, content: statusText } : m))
+      );
+    };
+
+    try {
+      const data = await editArtworkUnified({
+        prompt: params.prompt,
+        sourceImageDataUrl: params.sourceImageDataUrl,
+        sourceMimeType: params.sourceMimeType,
+        aspectRatio: params.aspectRatio || '1:1',
+        resolution: params.resolution || '1K',
+        previousEditContext: params.previousEditContext,
+        preEnhanced: params.preEnhanced,
+        hasBackendApi,
+        hasServerGeminiKey,
+        onStatus: updateProgressText,
+      });
+
+      const assistantReplyText = data.assistantText
+        ? `${data.assistantText}\n\nHere is your edited HD image (**${data.title}**). Reply with any follow-up refinement anytime!`
+        : `Here is your edited HD image (**${data.title}**). Reply with any follow-up edit like *"now make it night time"* anytime!`;
+
+      const aiMsg: ChatMessage = {
+        id: assistantPlaceholderId,
+        role: 'assistant',
+        content: assistantReplyText,
+        createdAt: Date.now(),
+        generatedImage: {
+          title: data.title,
+          description: data.description,
+          detailedPrompt: data.detailedPrompt,
+          imageUrl: data.imageUrl,
+          provider: data.provider,
+          modelUsed: data.modelUsed,
+          isEdited: true,
+          aspectRatio: data.aspectRatio,
+          width: data.width,
+          height: data.height,
+        },
+      };
+
+      const finalMessages = [...nextMessages, aiMsg];
+      setMessages(finalMessages);
+      syncMessagesToSession(finalMessages, currentSessionId);
+    } catch (err) {
+      const errMsg: ChatMessage = {
+        id: assistantPlaceholderId,
+        role: 'assistant',
+        content: err instanceof Error ? err.message : 'Unable to edit photo with Nano Banana.',
+        createdAt: Date.now(),
+        isError: true,
+      };
+      const finalMessages = [...nextMessages, errMsg];
+      setMessages(finalMessages);
+      syncMessagesToSession(finalMessages, currentSessionId);
+    } finally {
+      setIsGeneratingImage(false);
+    }
+  };
+
   const handleGenerateArtwork = async (
     prompt: string,
     aspectRatio: '1:1' | '16:9' | '4:3',
@@ -1550,8 +1705,31 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       replaceAssistantId?: string;
       baseMessages?: ChatMessage[];
       sessionId?: string;
+      resolution?: '1K' | '2K';
+      referenceImage?: { dataUrl: string; mimeType: string; name: string };
     }
   ) => {
+    if (options?.referenceImage?.dataUrl) {
+      const refImg = options.referenceImage;
+      await handleEditArtwork({
+        prompt,
+        sourceImageDataUrl: refImg.dataUrl,
+        sourceMimeType: refImg.mimeType,
+        aspectRatio,
+        resolution: options.resolution || '1K',
+        userAttachment: {
+          kind: 'image',
+          name: refImg.name,
+          mimeType: refImg.mimeType,
+          base64: (refImg.dataUrl.split(',')[1] || '').trim(),
+          dataUrl: refImg.dataUrl,
+          source: 'upload',
+        },
+        displayUserText: displayUserText || `Edit Photo (${aspectRatio}): ${prompt}`,
+      });
+      return;
+    }
+
     if (!isOnline) {
       setNotice('You are offline. Connect to the internet to generate new HD images.');
       return;
@@ -1575,7 +1753,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       id: assistantPlaceholderId,
       role: 'assistant',
       content: options?.preEnhanced
-        ? 'Generating 1024×1024 Ultra-HD Flux image...'
+        ? 'Generating uncompressed HD image...'
         : 'Enhancing your prompt with Gemini AI...',
       createdAt: Date.now(),
       isPending: true,
@@ -1594,6 +1772,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       const data = await generateArtworkUnified({
         prompt,
         aspectRatio,
+        resolution: options?.resolution || '1K',
         language: selectedLanguage,
         hasBackendApi,
         hasServerGeminiKey,
@@ -1602,11 +1781,13 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       });
 
       const providerBadge =
-        data.provider === 'horde'
-          ? ' (Free AI Horde Engine)'
-          : data.provider === 'svg'
-            ? ' (Vector Studio)'
-            : '';
+        data.provider === 'nano-banana'
+          ? ' (Nano Banana HD)'
+          : data.provider === 'horde'
+            ? ' (Free AI Horde Engine)'
+            : data.provider === 'svg'
+              ? ' (Vector Studio)'
+              : '';
 
       const aiMsg: ChatMessage = {
         id: assistantPlaceholderId,
@@ -1620,6 +1801,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
           svgCode: data.svgCode,
           imageUrl: data.imageUrl,
           provider: data.provider,
+          modelUsed: data.modelUsed,
           aspectRatio: data.aspectRatio,
           width: data.width,
           height: data.height,
@@ -1926,6 +2108,11 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     void handleListenTTS(msg);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ttsPlayingId, ttsPausedId, selectedLanguage, voiceSettings]);
+
+  const handleQuickEditImageCallback = useCallback(() => {
+    setNotice('Multi-turn edit ready: type your change below (e.g., "now make it night time", "change outfit to a black jacket").');
+    textareaRef.current?.focus();
+  }, []);
 
   const wallpaperStyle = useMemo(
     () => getWallpaperStyle(themeSettings, theme),
@@ -3007,6 +3194,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     isTtsPaused={ttsPausedId === msg.id}
                     onCopy={handleCopyCallback}
                     onListen={handleListenCallback}
+                    onQuickEditImage={handleQuickEditImageCallback}
                   />
                 ))
               )}

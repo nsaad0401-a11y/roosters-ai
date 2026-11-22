@@ -34,7 +34,9 @@ export interface GeneratedArtwork {
   detailedPrompt?: string;
   svgCode?: string;
   imageUrl?: string;
-  provider?: 'pollinations' | 'horde' | 'svg';
+  provider?: 'nano-banana' | 'pollinations' | 'horde' | 'svg';
+  modelUsed?: string;
+  isEdited?: boolean;
   aspectRatio: '1:1' | '16:9' | '4:3';
   width: number;
   height: number;
@@ -53,7 +55,7 @@ export interface GeneratedVideo {
   mood: 'cinematic' | 'calm' | 'epic' | 'study';
   style: string;
   heroImageUrl?: string;
-  provider?: 'pollinations' | 'horde' | 'svg';
+  provider?: 'nano-banana' | 'pollinations' | 'horde' | 'svg';
   scenes: VideoScene[];
   aspectRatio: '16:9';
   createdAt: number;
@@ -114,7 +116,15 @@ export interface UserAppSettings {
   customInstructions: string;
 }
 
-export type OwnerImageModel = 'flux' | 'flux-realism' | 'turbo' | 'horde';
+export type OwnerImageModel =
+  | 'nano-banana'
+  | 'gemini-nano-banana-2.1'
+  | 'gemini-3.1-flash-image'
+  | 'gemini-2.5-flash-image'
+  | 'flux'
+  | 'flux-realism'
+  | 'turbo'
+  | 'horde';
 
 export interface OwnerConfig {
   chatModel: string;
