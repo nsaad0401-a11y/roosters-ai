@@ -191,7 +191,7 @@ const CodeBlock = memo(function CodeBlock({ language, code }: { language: string
 });
 
 function renderInlineFormatting(text: string, isLight: boolean): Array<string | React.JSX.Element> {
-  const inlineRegex = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g;
+  const inlineRegex = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\)|https?:\/\/[^\s<>()]+(?:\([^\s<>()]*\)[^\s<>()]*)*)/gi;
   const result: Array<string | React.JSX.Element> = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -232,26 +232,57 @@ function renderInlineFormatting(text: string, isLight: boolean): Array<string | 
     } else if (token.startsWith('[')) {
       const linkMatch = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
       if (linkMatch) {
-        const [, label, href] = linkMatch;
-        const safeHref = /^https?:\/\//i.test(href) ? href : '#';
+        const [, label, rawHref] = linkMatch;
+        const href = rawHref.trim();
+        if (/^https?:\/\//i.test(href)) {
+          result.push(
+            <a
+              key={key}
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`underline underline-offset-2 break-words transition-colors ${
+                isLight
+                  ? 'text-sky-700 hover:text-amber-600'
+                  : 'text-[#00d4ff] hover:text-[#ffd700]'
+              }`}
+            >
+              {label}
+            </a>
+          );
+        } else {
+          result.push(label);
+        }
+      } else {
+        result.push(token);
+      }
+    } else if (/^https?:\/\//i.test(token)) {
+      const trimmedUrl = token.replace(/[.,;:!?)'"]+$/, '');
+      const trailingPunct = token.slice(trimmedUrl.length);
+      if (/^https?:\/\/\S+/i.test(trimmedUrl)) {
         result.push(
           <a
             key={key}
-            href={safeHref}
+            href={trimmedUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className={`underline underline-offset-2 transition-colors ${
+            className={`underline underline-offset-2 break-all transition-colors ${
               isLight
                 ? 'text-sky-700 hover:text-amber-600'
                 : 'text-[#00d4ff] hover:text-[#ffd700]'
             }`}
           >
-            {label}
+            {trimmedUrl}
           </a>
         );
+        if (trailingPunct) {
+          result.push(trailingPunct);
+        }
       } else {
         result.push(token);
       }
+    } else {
+      result.push(token);
     }
 
     lastIndex = inlineRegex.lastIndex;

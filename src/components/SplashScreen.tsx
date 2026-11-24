@@ -7,6 +7,7 @@ interface SplashScreenProps {
 
 export function SplashScreen({ onComplete }: SplashScreenProps) {
   const [fadingOut, setFadingOut] = useState(false);
+  const [logoError, setLogoError] = useState(false);
 
   useEffect(() => {
     const fadeTimer = window.setTimeout(() => {
@@ -41,7 +42,7 @@ export function SplashScreen({ onComplete }: SplashScreenProps) {
           handleSkip();
         }
       }}
-      aria-label="Roosters AI Splash Screen. Click to continue."
+      aria-label="Roosters AI Loading Screen. Click to continue."
       className={`fixed inset-0 min-h-[100dvh] z-50 flex flex-col items-center justify-center px-4 bg-[#07090e] cursor-pointer select-none transition-opacity duration-300 ${
         fadingOut ? 'opacity-0 pointer-events-none' : 'opacity-100'
       }`}
@@ -57,7 +58,7 @@ export function SplashScreen({ onComplete }: SplashScreenProps) {
       />
 
       <div className="relative flex flex-col items-center">
-        {/* Centerpiece rounded square dark card (#111622) with subtle neon cyan outer glow */}
+        {/* Centerpiece rounded square dark card (#111622) featuring the Roosters AI rooster icon logo */}
         <div
           className="relative flex items-center justify-center w-[148px] h-[148px] sm:w-[180px] sm:h-[180px] rounded-[24px] bg-[#111622] border border-[#00d4ff]/35 overflow-hidden p-1.5"
           style={{
@@ -65,12 +66,38 @@ export function SplashScreen({ onComplete }: SplashScreenProps) {
               '0 0 38px rgba(0, 212, 255, 0.28), 0 0 14px rgba(0, 212, 255, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.06)',
           }}
         >
-          <img
-            src={ROOSTERS_LOGO_SRC}
-            alt="Roosters AI Logo"
-            referrerPolicy="no-referrer"
-            className="w-full h-full object-cover object-center rounded-[18px]"
-          />
+          {!logoError ? (
+            <img
+              src={ROOSTERS_LOGO_SRC}
+              alt="Roosters AI Rooster Logo"
+              referrerPolicy="no-referrer"
+              onError={() => setLogoError(true)}
+              className="w-full h-full object-cover rounded-[18px]"
+            />
+          ) : (
+            <svg
+              viewBox="0 0 120 120"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+              aria-label="Roosters AI Rooster Logo"
+              className="w-4/5 h-4/5"
+            >
+              <path
+                d="M44 24L52 14L60 22L72 13L74 26L86 22L81 36C89 44 92 58 84 74L72 95L58 83L45 96L42 74L32 62L22 57L33 48C33 38 37 29 44 24Z"
+                stroke="#ffd700"
+                strokeWidth="3.5"
+                strokeLinejoin="round"
+                fill="#0b101b"
+              />
+              <path
+                d="M52 38C58 34 67 36 72 44M62 50L75 63L69 78M47 58C45 64 47 71 53 74"
+                stroke="#00d4ff"
+                strokeWidth="3"
+                strokeLinecap="round"
+              />
+              <circle cx="53" cy="45" r="3" fill="#00d4ff" />
+            </svg>
+          )}
         </div>
 
         {/* Below logo card: Bold uppercase title "ROOSTERS AI" in glowing gold (#ffd700) with wide letter spacing */}

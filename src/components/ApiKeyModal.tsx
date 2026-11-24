@@ -420,7 +420,7 @@ export function ApiKeyModal({
                     ))}
                   </select>
                   <p className="mt-1 text-[10.5px]" style={{ color: theme.textMuted }}>
-                    Paid Gemini keys use Nano Banana natively; free keys auto-switch to 1024×1024 Flux HD.
+                    Zero-setup HD generation works automatically for all users; Gemini models handle native photo-to-photo editing when a Gemini key is configured.
                   </p>
                 </div>
               </div>

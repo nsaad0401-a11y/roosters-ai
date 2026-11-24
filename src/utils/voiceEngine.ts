@@ -753,6 +753,8 @@ export function unlockSpeechSynthesis(): void {
 
 function splitIntoNaturalSpeechChunks(text: string, maxLen = 210): string[] {
   const normalized = text
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/gi, '$1')
+    .replace(/https?:\/\/\S+/gi, ' ')
     .replace(/[*_`#>~]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();

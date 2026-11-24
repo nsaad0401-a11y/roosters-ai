@@ -99,10 +99,10 @@ export function ImageCreateModal({
             </div>
             <div>
               <h2 id="create-image-title" className="font-display text-[17px] font-bold">
-                Nano Banana Image Studio
+                Roosters HD Image Studio
               </h2>
               <p className="text-[12px]" style={{ color: theme.textMuted }}>
-                Uncompressed HD generation &amp; photo-to-photo editing
+                Instant Zero-Setup HD Image Studio · Unlimited Creations
               </p>
             </div>
           </div>
@@ -254,7 +254,7 @@ export function ImageCreateModal({
             </div>
           </div>
 
-          {/* Zero Compression Notice */}
+          {/* Engine Notice */}
           <div
             className="rounded-xl border px-3 py-2 text-[11.5px] flex items-center gap-2"
             style={{
@@ -265,7 +265,7 @@ export function ImageCreateModal({
           >
             <ShieldCheck className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
             <span>
-              Nano Banana Native HD · Uncompressed PNG output &amp; multi-turn follow-up editing ready.
+              Instant automatic HD synthesis for all guests &amp; users — no API key or token required.
             </span>
           </div>
 

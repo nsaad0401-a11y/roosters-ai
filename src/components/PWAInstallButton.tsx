@@ -1,9 +1,9 @@
 import { Monitor, Share, Smartphone, WifiOff, X } from 'lucide-react';
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ROOSTERS_LOGO_SRC } from '../constants';
 import { useOnlineStatus, usePWAInstall } from '../hooks/usePWAInstall';
 import { AppTheme } from '../themes';
+import { BrandLogo } from './BrandLogo';
 
 const ANDROID_APK_URL =
   'https://github.com/nsaad0401-a11y/roosters-ai/releases/download/v1.0/app-release.apk';
@@ -46,13 +46,7 @@ export function InstallAppModal({ isOpen, theme, onClose }: InstallAppModalProps
       >
         <div className="flex items-center justify-between gap-3 mb-4">
           <div className="flex items-center gap-3">
-            <img
-              src={ROOSTERS_LOGO_SRC}
-              alt="Roosters AI App Icon"
-              referrerPolicy="no-referrer"
-              className="w-11 h-11 rounded-xl object-cover border shrink-0"
-              style={{ borderColor: theme.borderColor }}
-            />
+            <BrandLogo variant="badge" className="w-11 h-11 shrink-0" ariaLabel="Roosters AI App Icon" />
             <div>
               <h2 id="pwa-install-guide-title" className="font-display text-[17px] font-bold">
                 Install Roosters AI App

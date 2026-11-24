@@ -177,6 +177,7 @@ function buildStudyTutorInstruction(options: {
   language?: string;
   userName?: string;
   isLiveVoice?: boolean;
+  deepResearch?: boolean;
   responseStyle?: 'simple' | 'detailed' | 'study';
   customInstructions?: string;
   globalSystemPrompt?: string;
@@ -185,6 +186,7 @@ function buildStudyTutorInstruction(options: {
     language,
     userName,
     isLiveVoice,
+    deepResearch = false,
     responseStyle = 'simple',
     customInstructions,
     globalSystemPrompt,
@@ -200,11 +202,24 @@ function buildStudyTutorInstruction(options: {
           : `CRITICAL LANGUAGE RULE: Reply fluently, politely, and naturally in ${language}.`;
 
   const styleRule =
-    responseStyle === 'study'
-      ? 'Use Study & Exam Mode: explain clearly with structured headings, concise study notes, real-world examples, and 2–3 helpful practice questions at the end when teaching a concept.'
-      : responseStyle === 'detailed'
-        ? 'Use Detailed Mode: provide thorough, comprehensive, well-structured explanations with clear step-by-step examples.'
-        : "By default, always give clear, simple, direct, and concise answers in plain conversational language. Do NOT add long headings, bulleted study notes, or practice questions unless the user explicitly asks for 'study notes', 'notes', 'questions', or a detailed explanation.";
+    deepResearch && !isLiveVoice
+      ? [
+          'DEEP RESEARCH MODE ACTIVE: Conduct thorough, multi-step analytical research grounded in live Google Search findings.',
+          'You MUST structure EVERY response cleanly using these exact Markdown headings:',
+          '## Executive Summary',
+          '(Concise 2-4 sentence overview answering the core question)',
+          '## Detailed Findings & Analysis',
+          '(Comprehensive breakdown using clear ### subheadings and bullet points comparing perspectives, context, causes, and implications)',
+          '## Key Facts & Data',
+          '(Bullet list of concrete statistics, dates, benchmarks, specifications, or verified empirical figures)',
+          '## Verified Sources & Links',
+          '(Markdown bullet list of real verified source links formatted as [Source Title](https://full-url) — only include authentic URLs from search results, never invent links).',
+        ].join(' ')
+      : responseStyle === 'study'
+        ? 'Use Study & Exam Mode: explain clearly with structured headings, concise study notes, real-world examples, and 2–3 helpful practice questions at the end when teaching a concept.'
+        : responseStyle === 'detailed'
+          ? 'Use Detailed Mode: provide thorough, comprehensive, well-structured explanations with clear step-by-step examples.'
+          : "By default, always give clear, simple, direct, and concise answers in plain conversational language. Do NOT add long headings, bulleted study notes, or practice questions unless the user explicitly asks for 'study notes', 'notes', 'questions', or a detailed explanation.";
 
   const baseInstruction = [
     'You are Roosters AI, a helpful, polite educational, technical, and creative AI assistant created by SandSoft.',
@@ -227,7 +242,7 @@ function buildStudyTutorInstruction(options: {
       baseInstruction,
       userName ? `You are warmly assisting ${userName}.` : '',
       multimodalCore,
-      'Speak naturally in 2–4 concise, clear sentences without markdown symbols or code fences unless asked.',
+      'Speak naturally in 2–4 concise, clear sentences without markdown symbols, URLs, or code fences unless asked.',
       langRule,
       globalExtra,
       userExtra,
@@ -326,11 +341,13 @@ async function streamWithFallback(
     systemInstruction: string;
     apiKey?: string;
     preferredModel?: string;
+    enableSearchGrounding?: boolean;
   }
 ) {
   const ai = getAiClient(params.apiKey);
   let lastErr: unknown = null;
   let succeeded = false;
+  const collectedSources = new Map<string, string>();
 
   const preferred = params.preferredModel?.trim();
   const orderedCandidates: ModelCandidate[] =
@@ -341,31 +358,74 @@ async function streamWithFallback(
         ]
       : FAST_CHAT_MODELS;
 
+  const runCandidateStream = async (candidate: ModelCandidate, useSearchTool: boolean) => {
+    let emittedAnyChunk = false;
+    const stream = await ai.models.generateContentStream({
+      model: candidate.model,
+      contents: params.contents,
+      config: {
+        systemInstruction: params.systemInstruction,
+        thinkingConfig: candidate.thinkingConfig,
+        safetySettings: DEFAULT_SAFETY_SETTINGS,
+        ...(useSearchTool ? { tools: [{ googleSearch: {} }] } : {}),
+      },
+    });
+
+    for await (const chunk of stream) {
+      const text = chunk.text;
+      if (text) {
+        emittedAnyChunk = true;
+        res.write(`data: ${JSON.stringify({ type: 'chunk', text })}\n\n`);
+      }
+
+      const groundingChunks = (
+        chunk as unknown as {
+          candidates?: Array<{
+            groundingMetadata?: {
+              groundingChunks?: Array<{ web?: { uri?: string; title?: string } }>;
+            };
+          }>;
+        }
+      )?.candidates?.[0]?.groundingMetadata?.groundingChunks;
+
+      if (Array.isArray(groundingChunks)) {
+        for (const gChunk of groundingChunks) {
+          const uri = gChunk?.web?.uri?.trim();
+          if (uri && /^https?:\/\//i.test(uri) && !collectedSources.has(uri)) {
+            const title = (gChunk.web?.title || uri).trim();
+            collectedSources.set(uri, title);
+          }
+        }
+      }
+    }
+
+    if (!emittedAnyChunk) {
+      throw new Error('Gemini stream completed without returning any text.');
+    }
+    return emittedAnyChunk;
+  };
+
   for (let i = 0; i < orderedCandidates.length; i++) {
     const candidate = orderedCandidates[i];
     let emittedAnyChunk = false;
 
     try {
-      const stream = await ai.models.generateContentStream({
-        model: candidate.model,
-        contents: params.contents,
-        config: {
-          systemInstruction: params.systemInstruction,
-          thinkingConfig: candidate.thinkingConfig,
-          safetySettings: DEFAULT_SAFETY_SETTINGS,
-        },
-      });
-
-      for await (const chunk of stream) {
-        const text = chunk.text;
-        if (text) {
-          emittedAnyChunk = true;
-          res.write(`data: ${JSON.stringify({ type: 'chunk', text })}\n\n`);
+      try {
+        emittedAnyChunk = await runCandidateStream(
+          candidate,
+          Boolean(params.enableSearchGrounding)
+        );
+      } catch (toolErr) {
+        const msg = (toolErr instanceof Error ? toolErr.message : String(toolErr)).toLowerCase();
+        const isToolUnsupported =
+          Boolean(params.enableSearchGrounding) &&
+          !emittedAnyChunk &&
+          (msg.includes('tool') || msg.includes('googlesearch') || msg.includes('search'));
+        if (isToolUnsupported) {
+          emittedAnyChunk = await runCandidateStream(candidate, false);
+        } else {
+          throw toolErr;
         }
-      }
-
-      if (!emittedAnyChunk) {
-        throw new Error('Gemini stream completed without returning any text.');
       }
 
       succeeded = true;
@@ -391,6 +451,13 @@ async function streamWithFallback(
     );
     res.end();
     return;
+  }
+
+  if (collectedSources.size > 0) {
+    const sources = Array.from(collectedSources.entries())
+      .slice(0, 12)
+      .map(([uri, title]) => ({ uri, title }));
+    res.write(`data: ${JSON.stringify({ type: 'sources', sources })}\n\n`);
   }
 
   res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
@@ -438,6 +505,7 @@ async function startServer() {
         customInstructions,
         globalSystemPrompt,
         chatModel,
+        deepResearch,
       } = req.body as {
         messages: IncomingHistoryItem[];
         language?: string;
@@ -447,6 +515,7 @@ async function startServer() {
         customInstructions?: string;
         globalSystemPrompt?: string;
         chatModel?: string;
+        deepResearch?: boolean;
       };
 
       if (!Array.isArray(messages) || messages.length === 0) {
@@ -472,12 +541,14 @@ async function startServer() {
           language,
           userName,
           isLiveVoice: false,
+          deepResearch: Boolean(deepResearch),
           responseStyle,
           customInstructions,
           globalSystemPrompt,
         }),
         apiKey,
         preferredModel: chatModel,
+        enableSearchGrounding: true,
       });
     } catch (err) {
       const formatted = formatGeminiError(err);
@@ -932,7 +1003,243 @@ async function startServer() {
     }
   });
 
-  // Google Nano Banana Native Image Generation & Conversational Photo Editing Endpoint
+  function randomImageSeed(): number {
+    return Math.floor(Math.random() * 1_000_000_000) + 1;
+  }
+
+  // Server-Side Keyless Image Fetch Helper (Converts fetched image directly to Base64 data URL)
+  async function fetchKeylessImageAsDataUrl(
+    targetUrl: string,
+    timeoutMs = 18000
+  ): Promise<{ ok: true; dataUrl: string; mimeType: string } | { ok: false; reason: string; status?: number }> {
+    if (!/^https:\/\//i.test(targetUrl)) {
+      return { ok: false, reason: 'Invalid image URL scheme' };
+    }
+    const ctrl = new AbortController();
+    const timeoutId = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const resp = await fetch(targetUrl, {
+        method: 'GET',
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          Accept: 'image/avif,image/webp,image/apng,image/png,image/jpeg,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        redirect: 'follow',
+        signal: ctrl.signal,
+      });
+
+      if (!resp.ok) {
+        return { ok: false, reason: `HTTP ${resp.status}`, status: resp.status };
+      }
+
+      const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+      if (!contentType.startsWith('image/')) {
+        return { ok: false, reason: `Unexpected content-type: ${contentType || 'unknown'}`, status: resp.status };
+      }
+
+      const arrayBuf = await resp.arrayBuffer();
+      // Reject tiny rate-limit/error notices or empty payloads
+      if (arrayBuf.byteLength < 4500) {
+        return { ok: false, reason: `Image payload too small (${arrayBuf.byteLength} bytes)` };
+      }
+
+      const cleanMime = contentType.split(';')[0].trim() || 'image/jpeg';
+      const b64 = Buffer.from(arrayBuf).toString('base64');
+      return {
+        ok: true,
+        dataUrl: `data:${cleanMime};base64,${b64}`,
+        mimeType: cleanMime,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: err instanceof Error ? err.message : 'Image fetch timed out or failed',
+      };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  // Keyless Hugging Face FLUX.1-schnell Gradio Space helper (returns Base64 data URL)
+  async function fetchFluxSchnellGradioAsDataUrl(
+    prompt: string,
+    width: number,
+    height: number,
+    timeoutMs = 20000
+  ): Promise<{ ok: true; dataUrl: string; mimeType: string } | { ok: false; reason: string }> {
+    const ctrl = new AbortController();
+    const timeoutId = setTimeout(() => ctrl.abort(), timeoutMs);
+    const spaceBase = 'https://black-forest-labs-flux-1-schnell.hf.space';
+    const clampedW = Math.min(1024, Math.max(512, Math.round(width / 8) * 8));
+    const clampedH = Math.min(1024, Math.max(512, Math.round(height / 8) * 8));
+    try {
+      const startResp = await fetch(`${spaceBase}/gradio_api/call/infer`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        },
+        body: JSON.stringify({
+          data: [prompt, randomImageSeed(), false, clampedW, clampedH, 4],
+        }),
+        signal: ctrl.signal,
+      });
+
+      if (!startResp.ok) {
+        return { ok: false, reason: `FLUX Space start HTTP ${startResp.status}` };
+      }
+
+      const startJson = (await startResp.json()) as { event_id?: string };
+      const eventId = startJson.event_id;
+      if (!eventId) {
+        return { ok: false, reason: 'FLUX Space missing event_id' };
+      }
+
+      const pollResp = await fetch(`${spaceBase}/gradio_api/call/infer/${encodeURIComponent(eventId)}`, {
+        method: 'GET',
+        headers: { Accept: 'text/event-stream' },
+        signal: ctrl.signal,
+      });
+
+      if (!pollResp.ok) {
+        return { ok: false, reason: `FLUX Space result HTTP ${pollResp.status}` };
+      }
+
+      const sseText = await pollResp.text();
+      const dataLines = sseText
+        .split('\n')
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trim());
+
+      for (let i = dataLines.length - 1; i >= 0; i--) {
+        try {
+          const parsed = JSON.parse(dataLines[i]) as Array<{ url?: string; path?: string }>;
+          const fileUrl =
+            parsed?.[0]?.url ||
+            (parsed?.[0]?.path ? `${spaceBase}/gradio_api/file=${parsed[0].path}` : '');
+          if (fileUrl && fileUrl.startsWith(spaceBase)) {
+            return await fetchKeylessImageAsDataUrl(fileUrl, 12000);
+          }
+        } catch {
+          // Continue checking lines
+        }
+      }
+
+      return { ok: false, reason: 'FLUX Space returned no image output' };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: err instanceof Error ? err.message : 'FLUX Space timed out or failed',
+      };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  // Keyless AI Horde (Stable Horde anonymous tier) helper (returns Base64 data URL)
+  async function fetchAiHordeAsDataUrl(
+    prompt: string,
+    aspectRatio: '1:1' | '16:9' | '4:3',
+    attempt = 1,
+    timeoutMs = 22000
+  ): Promise<{ ok: true; dataUrl: string; mimeType: string } | { ok: false; reason: string }> {
+    const deadline = Date.now() + timeoutMs;
+    // Fast anonymous dimensions (multiples of 64) for reliable worker pickup in ~7-14s
+    const hordeDims =
+      attempt >= 2
+        ? aspectRatio === '16:9'
+          ? { w: 768, h: 448 }
+          : aspectRatio === '4:3'
+            ? { w: 640, h: 512 }
+            : { w: 512, h: 512 }
+        : aspectRatio === '16:9'
+          ? { w: 896, h: 512 }
+          : aspectRatio === '4:3'
+            ? { w: 768, h: 576 }
+            : { w: 768, h: 768 };
+
+    try {
+      const submitCtrl = new AbortController();
+      const submitTimer = setTimeout(() => submitCtrl.abort(), 7000);
+      let jobId = '';
+      try {
+        const submitResp = await fetch('https://aihorde.net/api/v2/generate/async', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: '0000000000',
+            'Client-Agent': 'RoostersAI:2.0:sandsoft',
+          },
+          body: JSON.stringify({
+            prompt,
+            params: {
+              width: hordeDims.w,
+              height: hordeDims.h,
+              steps: attempt >= 2 ? 14 : 16,
+              n: 1,
+            },
+            r2: true,
+          }),
+          signal: submitCtrl.signal,
+        });
+        if (!submitResp.ok) {
+          return { ok: false, reason: `AI Horde HTTP ${submitResp.status}` };
+        }
+        const submitJson = (await submitResp.json()) as { id?: string };
+        jobId = submitJson.id || '';
+      } finally {
+        clearTimeout(submitTimer);
+      }
+
+      if (!jobId) {
+        return { ok: false, reason: 'AI Horde missing job id' };
+      }
+
+      while (Date.now() < deadline) {
+        await sleep(1600);
+        const statusCtrl = new AbortController();
+        const statusTimer = setTimeout(() => statusCtrl.abort(), 5000);
+        try {
+          const statusResp = await fetch(
+            `https://aihorde.net/api/v2/generate/status/${encodeURIComponent(jobId)}`,
+            {
+              headers: { 'Client-Agent': 'RoostersAI:2.0:sandsoft' },
+              signal: statusCtrl.signal,
+            }
+          );
+          if (!statusResp.ok) continue;
+          const statusJson = (await statusResp.json()) as {
+            done?: boolean;
+            faulted?: boolean;
+            generations?: Array<{ img?: string }>;
+          };
+          if (statusJson.faulted) {
+            return { ok: false, reason: 'AI Horde job faulted' };
+          }
+          const imgUrl = statusJson.generations?.[0]?.img;
+          if (statusJson.done && imgUrl && /^https:\/\//i.test(imgUrl)) {
+            return await fetchKeylessImageAsDataUrl(imgUrl, 10000);
+          }
+        } catch {
+          // Retry polling until deadline
+        } finally {
+          clearTimeout(statusTimer);
+        }
+      }
+
+      return { ok: false, reason: 'AI Horde generation timed out' };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: err instanceof Error ? err.message : 'AI Horde failed',
+      };
+    }
+  }
+
+  // Zero-Setup Server-Side Image Generation Route (Multi-Provider + 3-Attempt Retry + Optional Gemini Native)
   app.post('/api/nano-banana', async (req, res) => {
     try {
       const {
@@ -967,214 +1274,159 @@ async function startServer() {
 
       const cleanBase64 = (sourceImageBase64 || '').replace(/^data:[^;]+;base64,/, '').trim();
       const isEditMode = mode === 'edit' || Boolean(cleanBase64);
-
       const resolvedKey = (apiKey || getServerDefaultGeminiKey()).trim();
-      if (!resolvedKey) {
-        res.status(503).json({
-          error: 'Gemini API key is not configured. Please add a valid GEMINI_API_KEY in Secrets or Owner Settings.',
-        });
-        return;
-      }
-      const ai = getAiClient(resolvedKey);
 
-      // Step 1: Translate/Enhance Roman Urdu, Urdu, or short prompts into detailed English first using gemini-2.5-flash
       let enhancedPrompt = rawPrompt;
       let shortTitle = rawPrompt.slice(0, 52);
 
-      if (!skipEnhance) {
+      // Step 1: Optional fast single-attempt prompt enhancement when Gemini key exists (never blocks on quota)
+      if (resolvedKey && !skipEnhance) {
+        const ai = getAiClient(resolvedKey);
         const enhanceSys = isEditMode
           ? [
               'You are a Nano Banana photo-editing prompt engineer.',
               'Translate ANY user edit request from ANY world language into a clean, safe, family-friendly English editing instruction STRICTLY under 25 words.',
-              'Preserve the original person face and identity consistency concisely with sharp HD clarity.',
               'Return ONLY JSON: {"shortTitle":"3-6 word title","enhancedPrompt":"clean English edit instruction under 25 words"}',
             ].join(' ')
           : [
-              'You are a Nano Banana ultra-HD visual prompt engineer.',
-              'Translate ANY request from ANY world language into a clean, safe, family-friendly English prompt STRICTLY under 25 words including sharp photography descriptors such as "ultra-sharp focus, crisp details, 8k resolution, DSLR 85mm lens, natural lighting".',
+              'You are an ultra-HD visual prompt engineer.',
+              'Translate ANY request from ANY world language into a clean, safe, family-friendly English prompt STRICTLY under 25 words including sharp photography descriptors such as "ultra-sharp focus, crisp details, 8k resolution, natural lighting".',
               'Return ONLY JSON: {"shortTitle":"3-6 word title","enhancedPrompt":"clean English image prompt under 25 words"}',
             ].join(' ');
 
         const enhanceInput =
           isEditMode && previousEditContext
-            ? `Previous Image Description/Context: ${previousEditContext.slice(0, 300)}\nNew Edit Request: ${rawPrompt}`
+            ? `Previous Image Context: ${previousEditContext.slice(0, 300)}\nNew Edit Request: ${rawPrompt}`
             : rawPrompt;
 
-        for (let i = 0; i < FAST_CHAT_MODELS.length; i++) {
-          const candidate = FAST_CHAT_MODELS[i];
-          try {
-            const enhResp = await ai.models.generateContent({
-              model: candidate.model,
-              contents: enhanceInput,
-              config: {
-                systemInstruction: enhanceSys,
-                thinkingConfig: candidate.thinkingConfig,
-                safetySettings: DEFAULT_SAFETY_SETTINGS,
-                responseMimeType: 'application/json',
-                responseSchema: {
-                  type: Type.OBJECT,
-                  properties: {
-                    shortTitle: { type: Type.STRING },
-                    enhancedPrompt: { type: Type.STRING },
-                  },
-                  required: ['shortTitle', 'enhancedPrompt'],
+        try {
+          const enhResp = await ai.models.generateContent({
+            model: FAST_CHAT_MODELS[0].model,
+            contents: enhanceInput,
+            config: {
+              systemInstruction: enhanceSys,
+              thinkingConfig: FAST_CHAT_MODELS[0].thinkingConfig,
+              safetySettings: DEFAULT_SAFETY_SETTINGS,
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  shortTitle: { type: Type.STRING },
+                  enhancedPrompt: { type: Type.STRING },
                 },
+                required: ['shortTitle', 'enhancedPrompt'],
               },
-            });
+            },
+          });
 
-            const rawJson = (enhResp.text ?? '{}').trim();
-            const start = rawJson.indexOf('{');
-            const end = rawJson.lastIndexOf('}');
-            const jsonSlice = start >= 0 && end > start ? rawJson.slice(start, end + 1) : rawJson;
-            const parsed = JSON.parse(jsonSlice) as {
-              shortTitle?: string;
-              enhancedPrompt?: string;
-            };
-            if (parsed.enhancedPrompt?.trim()) {
-              enhancedPrompt = parsed.enhancedPrompt.trim();
-            }
-            if (parsed.shortTitle?.trim()) {
-              shortTitle = parsed.shortTitle.trim().slice(0, 56);
-            }
-            break;
-          } catch (err) {
-            if (isRetryableOrFallbackError(err) && i < FAST_CHAT_MODELS.length - 1) {
-              await sleep(120);
-              continue;
-            }
-            break;
+          const rawJson = (enhResp.text ?? '{}').trim();
+          const start = rawJson.indexOf('{');
+          const end = rawJson.lastIndexOf('}');
+          const jsonSlice = start >= 0 && end > start ? rawJson.slice(start, end + 1) : rawJson;
+          const parsed = JSON.parse(jsonSlice) as {
+            shortTitle?: string;
+            enhancedPrompt?: string;
+          };
+          if (parsed.enhancedPrompt?.trim()) {
+            enhancedPrompt = parsed.enhancedPrompt.trim();
           }
+          if (parsed.shortTitle?.trim()) {
+            shortTitle = parsed.shortTitle.trim().slice(0, 56);
+          }
+        } catch {
+          // Immediately proceed to keyless synthesis without stalling
         }
       }
 
       enhancedPrompt = sanitizeSafeImagePrompt(enhancedPrompt, 24);
+      const dims =
+        aspectRatio === '16:9'
+          ? { w: 1024, h: 576 }
+          : aspectRatio === '4:3'
+            ? { w: 1024, h: 768 }
+            : { w: 1024, h: 1024 };
 
-      const finalNanoPrompt = isEditMode
-        ? `${enhancedPrompt}. Keep original subject identity consistent, crisp HD clarity.`
-        : enhancedPrompt;
+      // Step 2: Optional native Gemini image generation/editing when Gemini API key exists (gracefully falls through on quota/free tier)
+      if (resolvedKey) {
+        const ai = getAiClient(resolvedKey);
+        if (isEditMode && cleanBase64) {
+          const editPrompt = `${enhancedPrompt}. Keep original subject identity consistent, crisp HD clarity.`;
+          const nativeModelsOrdered = Array.from(
+            new Set(
+              preferredModel === 'gemini-3.1-flash-image-preview'
+                ? ['gemini-3.1-flash-image-preview', 'gemini-2.5-flash-image']
+                : ['gemini-2.5-flash-image', 'gemini-3.1-flash-lite-image']
+            )
+          );
 
-      // Step 2: Strictly use exact official Gemini image generation model ID (no fake aliases or low-res fallbacks)
-      const modelId =
-        preferredModel === 'gemini-3.1-flash-image-preview'
-          ? 'gemini-3.1-flash-image-preview'
-          : 'gemini-2.5-flash-image';
+          for (const modelId of nativeModelsOrdered) {
+            try {
+              const response = await ai.models.generateContent({
+                model: modelId,
+                contents: {
+                  parts: [
+                    {
+                      inlineData: {
+                        data: cleanBase64,
+                        mimeType: sourceMimeType || 'image/png',
+                      },
+                    },
+                    { text: editPrompt },
+                  ],
+                },
+                config: {
+                  ...(modelId === 'gemini-3.1-flash-lite-image'
+                    ? {}
+                    : { responseModalities: ['IMAGE', 'TEXT'] }),
+                  safetySettings: DEFAULT_SAFETY_SETTINGS,
+                  imageConfig:
+                    modelId === 'gemini-3.1-flash-image-preview' && resolution === '2K'
+                      ? { aspectRatio, imageSize: '2K' }
+                      : { aspectRatio },
+                },
+              });
 
-      const parts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [];
-      if (cleanBase64) {
-        parts.push({
-          inlineData: {
-            data: cleanBase64,
-            mimeType: sourceMimeType || 'image/png',
-          },
-        });
-      }
-      parts.push({ text: finalNanoPrompt });
+              let imageBase64 = '';
+              let imageMime = 'image/png';
+              let assistantText = '';
+              for (const part of response.candidates?.[0]?.content?.parts ?? []) {
+                if (part.inlineData?.data && !imageBase64) {
+                  imageBase64 = part.inlineData.data;
+                  imageMime = part.inlineData.mimeType || 'image/png';
+                } else if (part.text) {
+                  assistantText += `${part.text}\n`;
+                }
+              }
 
-      const config: {
-        responseModalities: string[];
-        safetySettings: typeof DEFAULT_SAFETY_SETTINGS;
-        imageConfig?: { aspectRatio: '1:1' | '16:9' | '4:3'; imageSize?: '1K' | '2K' };
-      } = {
-        responseModalities: ['IMAGE', 'TEXT'],
-        safetySettings: DEFAULT_SAFETY_SETTINGS,
-        imageConfig:
-          modelId === 'gemini-3.1-flash-image-preview' && resolution === '2K'
-            ? { aspectRatio, imageSize: '2K' }
-            : { aspectRatio },
-      };
-
-      try {
-        const response = await ai.models.generateContent({
-          model: modelId,
-          contents: { parts },
-          config,
-        });
-
-        const blockReason = response.promptFeedback?.blockReason;
-        if (blockReason) {
-          res.status(400).json({
-            error: `Gemini API (${modelId}) blocked this prompt: ${blockReason}`,
-          });
-          return;
-        }
-
-        let imageBase64 = '';
-        let imageMime = 'image/png';
-        let assistantText = '';
-
-        for (const part of response.candidates?.[0]?.content?.parts ?? []) {
-          if (part.inlineData?.data && !imageBase64) {
-            imageBase64 = part.inlineData.data;
-            imageMime = part.inlineData.mimeType || 'image/png';
-          } else if (part.text) {
-            assistantText += `${part.text}\n`;
+              if (imageBase64) {
+                res.json({
+                  imageUrl: `data:${imageMime};base64,${imageBase64}`,
+                  mimeType: imageMime,
+                  provider: 'nano-banana',
+                  modelUsed: modelId,
+                  title: shortTitle,
+                  detailedPrompt: editPrompt,
+                  assistantText: assistantText.trim(),
+                  aspectRatio,
+                  width: dims.w,
+                  height: dims.h,
+                  isEdited: true,
+                });
+                return;
+              }
+            } catch {
+              // Gracefully fall through to keyless generation pipeline below
+            }
           }
-        }
 
-        if (!imageBase64) {
-          const finishReason = response.candidates?.[0]?.finishReason;
-          const detail =
-            assistantText.trim() ||
-            (finishReason ? `Finish reason: ${finishReason}` : 'No inlineData image part was returned.');
-          res.status(502).json({
-            error: `Gemini API (${modelId}) did not return an image: ${detail}`,
-          });
-          return;
-        }
-
-        const dims =
-          aspectRatio === '16:9'
-            ? resolution === '2K' && modelId === 'gemini-3.1-flash-image-preview'
-              ? { w: 2048, h: 1152 }
-              : { w: 1376, h: 768 }
-            : aspectRatio === '4:3'
-              ? resolution === '2K' && modelId === 'gemini-3.1-flash-image-preview'
-                ? { w: 2048, h: 1536 }
-                : { w: 1200, h: 896 }
-              : resolution === '2K' && modelId === 'gemini-3.1-flash-image-preview'
-                ? { w: 2048, h: 2048 }
-                : { w: 1024, h: 1024 };
-
-        res.json({
-          imageUrl: `data:${imageMime};base64,${imageBase64}`,
-          mimeType: imageMime,
-          provider: 'nano-banana',
-          modelUsed: modelId,
-          title: shortTitle,
-          detailedPrompt: finalNanoPrompt,
-          assistantText: assistantText.trim(),
-          aspectRatio,
-          width: dims.w,
-          height: dims.h,
-          isEdited: isEditMode,
-        });
-        return;
-      } catch (nanoErr) {
-        const errMsg = nanoErr instanceof Error ? nanoErr.message : String(nanoErr);
-        const errLower = errMsg.toLowerCase();
-        const errStatus = (nanoErr as { status?: number })?.status;
-        const isQuota429 =
-          errStatus === 429 ||
-          errLower.includes('429') ||
-          errLower.includes('resource_exhausted') ||
-          errLower.includes('limit: 0') ||
-          errLower.includes('free_tier') ||
-          errLower.includes('exceeded your current quota');
-
-        if (!isQuota429) {
-          throw nanoErr;
-        }
-
-        // Smart Dual-Engine Free Tier Fallback: return direct client-side HD Flux URL (never fetch from server IP)
-        let fluxPrompt = enhancedPrompt;
-        if (cleanBase64) {
+          // Vision bridge so keyless endpoint renders an accurate edited variation when Gemini native edit is quota-limited
           try {
-            const visionBridge = await ai.models.generateContent({
+            const bridgeResp = await ai.models.generateContent({
               model: 'gemini-2.5-flash',
               contents: [
                 { inlineData: { data: cleanBase64, mimeType: sourceMimeType || 'image/png' } },
                 {
-                  text: `Describe the subject and scene of this photo combined with this edit: "${enhancedPrompt}". Output ONE clean, safe, family-friendly English prompt strictly under 25 words.`,
+                  text: `Combine the subject and scene of this photo with this edit: "${enhancedPrompt}". Output ONE clean, safe English image prompt strictly under 24 words.`,
                 },
               ],
               config: {
@@ -1182,52 +1434,156 @@ async function startServer() {
                 safetySettings: DEFAULT_SAFETY_SETTINGS,
               },
             });
-            if (visionBridge.text?.trim()) {
-              fluxPrompt = visionBridge.text.trim();
+            if (bridgeResp.text?.trim()) {
+              enhancedPrompt = sanitizeSafeImagePrompt(bridgeResp.text.trim(), 24);
             }
           } catch {
-            // Keep enhancedPrompt cleanly if vision bridge fails
+            // Keep sanitized prompt
+          }
+        } else {
+          // Single fast non-blocking Gemini native generation check when Owner configured a paid key
+          const nativeGenModel =
+            preferredModel === 'gemini-3.1-flash-image-preview'
+              ? 'gemini-3.1-flash-image-preview'
+              : 'gemini-2.5-flash-image';
+          try {
+            const response = await ai.models.generateContent({
+              model: nativeGenModel,
+              contents: enhancedPrompt,
+              config: {
+                responseModalities: ['IMAGE', 'TEXT'],
+                safetySettings: DEFAULT_SAFETY_SETTINGS,
+                imageConfig:
+                  nativeGenModel === 'gemini-3.1-flash-image-preview' && resolution === '2K'
+                    ? { aspectRatio, imageSize: '2K' }
+                    : { aspectRatio },
+              },
+            });
+
+            let imageBase64 = '';
+            let imageMime = 'image/png';
+            for (const part of response.candidates?.[0]?.content?.parts ?? []) {
+              if (part.inlineData?.data && !imageBase64) {
+                imageBase64 = part.inlineData.data;
+                imageMime = part.inlineData.mimeType || 'image/png';
+              }
+            }
+
+            if (imageBase64) {
+              res.json({
+                imageUrl: `data:${imageMime};base64,${imageBase64}`,
+                mimeType: imageMime,
+                provider: 'nano-banana',
+                modelUsed: nativeGenModel,
+                title: shortTitle,
+                detailedPrompt: enhancedPrompt,
+                assistantText: '',
+                aspectRatio,
+                width: dims.w,
+                height: dims.h,
+                isEdited: false,
+              });
+              return;
+            }
+          } catch {
+            // Fall through cleanly to keyless multi-provider fallback engine
+          }
+        }
+      }
+
+      // Step 3: Multi-Provider Free Fallback Waterfall with 3 Automatic Retry Rounds
+      const encodedPrompt = encodeURIComponent(enhancedPrompt);
+      const pollinationsModels: Array<'flux' | 'turbo' | 'dreamshaper'> = ['flux', 'turbo', 'dreamshaper'];
+      const MAX_SERVER_ATTEMPTS = 3;
+      const failureReasons: string[] = [];
+
+      for (let attempt = 1; attempt <= MAX_SERVER_ATTEMPTS; attempt++) {
+        // 3A. Pollinations AI multi-model cycle (flux -> turbo -> dreamshaper) with valid 32-bit random seed
+        for (const polyModel of pollinationsModels) {
+          const polyUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${dims.w}&height=${dims.h}&seed=${randomImageSeed()}&model=${polyModel}&nologo=true`;
+          const polyRes = await fetchKeylessImageAsDataUrl(polyUrl, 13000);
+          if (polyRes.ok) {
+            res.json({
+              imageUrl: polyRes.dataUrl,
+              mimeType: polyRes.mimeType,
+              provider: 'pollinations',
+              modelUsed: polyModel,
+              title: shortTitle,
+              detailedPrompt: enhancedPrompt,
+              assistantText: '',
+              aspectRatio,
+              width: dims.w,
+              height: dims.h,
+              isEdited: isEditMode,
+            });
+            return;
+          }
+          failureReasons.push(`pollinations-${polyModel}#${attempt}: ${polyRes.reason}`);
+          // If IP-level rate limit (402 / 429) hit, move immediately to other independent providers this round
+          if (polyRes.status === 402 || polyRes.status === 429) {
+            break;
           }
         }
 
-        const cleanShortPrompt = sanitizeSafeImagePrompt(fluxPrompt, 24);
-        const fluxDims =
-          aspectRatio === '16:9'
-            ? { w: 1280, h: 720 }
-            : aspectRatio === '4:3'
-              ? { w: 1024, h: 768 }
-              : { w: 1024, h: 1024 };
+        // 3B. Keyless Hugging Face FLUX.1-schnell Gradio Space
+        const fluxSpaceRes = await fetchFluxSchnellGradioAsDataUrl(
+          enhancedPrompt,
+          dims.w,
+          dims.h,
+          18000
+        );
+        if (fluxSpaceRes.ok) {
+          res.json({
+            imageUrl: fluxSpaceRes.dataUrl,
+            mimeType: fluxSpaceRes.mimeType,
+            provider: 'flux-hd',
+            modelUsed: 'FLUX.1-schnell',
+            title: shortTitle,
+            detailedPrompt: enhancedPrompt,
+            assistantText: '',
+            aspectRatio,
+            width: dims.w,
+            height: dims.h,
+            isEdited: isEditMode,
+          });
+          return;
+        }
+        failureReasons.push(`flux-space#${attempt}: ${fluxSpaceRes.reason}`);
 
-        const randomSeed = Math.floor(Math.random() * 1000000);
-        const fluxUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(
-          cleanShortPrompt
-        )}?width=${fluxDims.w}&height=${fluxDims.h}&model=flux&nologo=true&safe=true&seed=${randomSeed}`;
+        // 3C. Keyless AI Horde with fast anonymous dimensions (scales down cleanly on retries)
+        const hordeRes = await fetchAiHordeAsDataUrl(enhancedPrompt, aspectRatio, attempt, 22000);
+        if (hordeRes.ok) {
+          res.json({
+            imageUrl: hordeRes.dataUrl,
+            mimeType: hordeRes.mimeType,
+            provider: 'ai-horde',
+            modelUsed: 'stable-horde-xl',
+            title: shortTitle,
+            detailedPrompt: enhancedPrompt,
+            assistantText: '',
+            aspectRatio,
+            width: dims.w,
+            height: dims.h,
+            isEdited: isEditMode,
+          });
+          return;
+        }
+        failureReasons.push(`ai-horde#${attempt}: ${hordeRes.reason}`);
 
-        res.json({
-          imageUrl: fluxUrl,
-          mimeType: 'image/jpeg',
-          provider: 'pollinations',
-          modelUsed: 'flux',
-          title: shortTitle,
-          detailedPrompt: cleanShortPrompt,
-          assistantText: '',
-          aspectRatio,
-          width: fluxDims.w,
-          height: fluxDims.h,
-          isEdited: isEditMode,
-        });
-        return;
+        if (attempt < MAX_SERVER_ATTEMPTS) {
+          await sleep(attempt === 1 ? 900 : 1800);
+        }
       }
+
+      res.status(503).json({
+        error: `Image synthesis servers are momentarily busy after ${MAX_SERVER_ATTEMPTS} retry attempts (${failureReasons.slice(-3).join('; ')}). Please try again.`,
+        code: 'IMAGE_UNAVAILABLE',
+      });
     } catch (err) {
       const rawMessage = err instanceof Error ? err.message : String(err);
       const exactMessage = extractReadableErrorMessage(rawMessage) || rawMessage;
-      const errWithStatus = err as { status?: number };
-      const status =
-        typeof errWithStatus?.status === 'number' && errWithStatus.status >= 400 && errWithStatus.status < 600
-          ? errWithStatus.status
-          : 500;
-      res.status(status).json({
-        error: `Gemini Nano Banana API Error (${status}): ${exactMessage}`,
+      res.status(500).json({
+        error: `Image generation error: ${exactMessage}`,
       });
     }
   });
@@ -1384,9 +1740,21 @@ async function startServer() {
     }
   });
 
+  const httpServer = http.createServer(app);
+
   if (process.env.NODE_ENV !== 'production') {
+    process.env.DISABLE_HMR = 'true';
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        watch: null,
+        allowedHosts: true,
+        ws: {
+          server: httpServer,
+          path: '/__vite_ws',
+        },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -1398,8 +1766,19 @@ async function startServer() {
     });
   }
 
-  const httpServer = http.createServer(app);
-  const liveWss = new WebSocketServer({ server: httpServer, path: '/api/live-ws' });
+  const liveWss = new WebSocketServer({ noServer: true });
+  httpServer.on('upgrade', (req, socket, head) => {
+    try {
+      const pathname = new URL(req.url || '/', 'http://localhost').pathname;
+      if (pathname === '/api/live-ws') {
+        liveWss.handleUpgrade(req, socket, head, (ws) => {
+          liveWss.emit('connection', ws, req);
+        });
+      }
+    } catch {
+      // Ignore malformed upgrade URLs
+    }
+  });
 
   const LIVE_MODELS = [
     'gemini-2.5-flash-native-audio-preview',

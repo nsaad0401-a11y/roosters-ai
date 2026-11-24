@@ -1,7 +1,7 @@
 import { Building2, CheckCircle2, FileText, Mail, Send, ShieldCheck, X } from 'lucide-react';
 import { FormEvent, useState } from 'react';
-import { ROOSTERS_LOGO_SRC } from '../constants';
 import { APP_THEMES, AppTheme } from '../themes';
+import { BrandLogo } from './BrandLogo';
 
 export type LegalPageId = 'about' | 'privacy' | 'terms' | 'contact';
 
@@ -80,13 +80,7 @@ export function LegalPagesModal({
         >
           <div className="flex items-center justify-between gap-3 mb-4">
             <div className="flex items-center gap-3">
-              <img
-                src={ROOSTERS_LOGO_SRC}
-                alt="Roosters AI"
-                referrerPolicy="no-referrer"
-                className="w-9 h-9 rounded-lg object-cover border"
-                style={{ borderColor: theme.borderColor }}
-              />
+              <BrandLogo variant="badge" className="w-9 h-9 shrink-0" ariaLabel="Roosters AI by SandSoft" />
               <div>
                 <h2 id="legal-modal-title" className="font-display text-[18px] font-bold">
                   Roosters AI · Legal &amp; Company Information
@@ -233,14 +227,14 @@ export function LegalPagesModal({
 
                 <section>
                   <h4 className="font-semibold text-[15px] mb-1" style={{ color: theme.textPrimary }}>
-                    2. Third-Party AI Processing (Google Gemini, Groq &amp; Pollinations AI)
+                    2. Third-Party AI Processing
                   </h4>
                   <p>
                     When you submit prompts, study files, voice transcripts, or image generation requests, the
-                    text or media payload is transmitted securely over HTTPS to your selected AI provider
-                    (Google Gemini API, Groq API, or Pollinations AI) solely to generate your requested
-                    response. Please avoid submitting sensitive personal identification, banking credentials, or
-                    confidential passwords in chat prompts.
+                    text or media payload is transmitted securely over HTTPS to our configured AI and media
+                    generation services (including Google Gemini API or Groq API) solely to generate your
+                    requested response. Please avoid submitting sensitive personal identification, banking
+                    credentials, or confidential passwords in chat prompts.
                   </p>
                 </section>
 

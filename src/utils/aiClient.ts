@@ -1,5 +1,5 @@
 import { loadCustomApiKey, loadOwnerConfig, loadUserSettings } from './storage';
-import { GeneratedVideo, ResponseStyleMode, VideoScene } from '../types';
+import { GeneratedVideo, GroundingSource, ResponseStyleMode, VideoScene } from '../types';
 
 export interface OutgoingAttachment {
   kind?: 'image' | 'file';
@@ -109,6 +109,7 @@ export function buildClientStudyTutorInstruction(options: {
   language?: string;
   userName?: string;
   isLiveVoice?: boolean;
+  deepResearch?: boolean;
   responseStyle?: ResponseStyleMode;
   customInstructions?: string;
   globalSystemPrompt?: string;
@@ -120,6 +121,7 @@ export function buildClientStudyTutorInstruction(options: {
     language,
     userName,
     isLiveVoice,
+    deepResearch = false,
     responseStyle = userPrefs.responseStyle || 'simple',
     customInstructions = userPrefs.customInstructions,
     globalSystemPrompt = ownerCfg.globalSystemPrompt,
@@ -135,11 +137,24 @@ export function buildClientStudyTutorInstruction(options: {
           : `CRITICAL LANGUAGE RULE: Reply fluently, politely, and naturally in ${language}.`;
 
   const styleRule =
-    responseStyle === 'study'
-      ? 'Use Study & Exam Mode: explain clearly with structured headings, concise study notes, real-world examples, and 2–3 helpful practice questions at the end when teaching a concept.'
-      : responseStyle === 'detailed'
-        ? 'Use Detailed Mode: provide thorough, comprehensive, well-structured explanations with clear step-by-step examples.'
-        : "By default, always give clear, simple, direct, and concise answers in plain conversational language. Do NOT add long headings, bulleted study notes, or practice questions unless the user explicitly asks for 'study notes', 'notes', 'questions', or a detailed explanation.";
+    deepResearch && !isLiveVoice
+      ? [
+          'DEEP RESEARCH MODE ACTIVE: Conduct thorough, multi-step analytical research grounded in live Google Search findings.',
+          'You MUST structure EVERY response cleanly using these exact Markdown headings:',
+          '## Executive Summary',
+          '(Concise 2-4 sentence overview answering the core question)',
+          '## Detailed Findings & Analysis',
+          '(Comprehensive breakdown using clear ### subheadings and bullet points comparing perspectives, context, causes, and implications)',
+          '## Key Facts & Data',
+          '(Bullet list of concrete statistics, dates, benchmarks, specifications, or verified empirical figures)',
+          '## Verified Sources & Links',
+          '(Markdown bullet list of real verified source links formatted as [Source Title](https://full-url) — only include authentic URLs from search results, never invent links).',
+        ].join(' ')
+      : responseStyle === 'study'
+        ? 'Use Study & Exam Mode: explain clearly with structured headings, concise study notes, real-world examples, and 2–3 helpful practice questions at the end when teaching a concept.'
+        : responseStyle === 'detailed'
+          ? 'Use Detailed Mode: provide thorough, comprehensive, well-structured explanations with clear step-by-step examples.'
+          : "By default, always give clear, simple, direct, and concise answers in plain conversational language. Do NOT add long headings, bulleted study notes, or practice questions unless the user explicitly asks for 'study notes', 'notes', 'questions', or a detailed explanation.";
 
   const baseInstruction = [
     'You are Roosters AI, a helpful, polite educational, technical, and creative AI assistant created by SandSoft.',
@@ -162,7 +177,7 @@ export function buildClientStudyTutorInstruction(options: {
       baseInstruction,
       userName ? `You are warmly assisting ${userName}.` : '',
       multimodalCore,
-      'Speak naturally in 2–4 concise, clear sentences without markdown symbols or code fences unless asked.',
+      'Speak naturally in 2–4 concise, clear sentences without markdown symbols, URLs, or code fences unless asked.',
       langRule,
       globalExtra,
       userExtra,
@@ -661,6 +676,7 @@ async function streamFromGroq(params: {
   language?: string;
   userName?: string;
   isLiveVoice?: boolean;
+  deepResearch?: boolean;
   responseStyle?: ResponseStyleMode;
   customInstructions?: string;
   globalSystemPrompt?: string;
@@ -672,6 +688,7 @@ async function streamFromGroq(params: {
     language: params.language,
     userName: params.userName,
     isLiveVoice: params.isLiveVoice,
+    deepResearch: params.deepResearch,
     responseStyle: params.responseStyle,
     customInstructions: params.customInstructions,
     globalSystemPrompt: params.globalSystemPrompt,
@@ -814,17 +831,20 @@ async function streamFromGeminiDirect(params: {
   language?: string;
   userName?: string;
   isLiveVoice?: boolean;
+  deepResearch?: boolean;
   responseStyle?: ResponseStyleMode;
   customInstructions?: string;
   globalSystemPrompt?: string;
   chatModel?: string;
   signal?: AbortSignal;
   onChunk: (text: string) => void;
+  onSources?: (sources: GroundingSource[]) => void;
 }): Promise<string> {
   const systemText = buildClientStudyTutorInstruction({
     language: params.language,
     userName: params.userName,
     isLiveVoice: params.isLiveVoice,
+    deepResearch: params.deepResearch,
     responseStyle: params.responseStyle,
     customInstructions: params.customInstructions,
     globalSystemPrompt: params.globalSystemPrompt,
@@ -876,26 +896,34 @@ async function streamFromGeminiDirect(params: {
       : baseCandidates;
 
   let lastErrorMsg = 'Unable to connect to Gemini right now.';
+  const collectedSources = new Map<string, string>();
 
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i];
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${candidate.model}:streamGenerateContent?alt=sse`;
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': params.apiKey,
-      },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemText }] },
-        contents,
-        safetySettings: GEMINI_SAFETY_SETTINGS,
-        generationConfig: {
-          thinkingConfig: candidate.thinkingConfig,
+    const makeRequest = (includeSearch: boolean) =>
+      fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': params.apiKey,
         },
-      }),
-      signal: params.signal,
-    });
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: systemText }] },
+          contents,
+          ...(includeSearch ? { tools: [{ google_search: {} }] } : {}),
+          safetySettings: GEMINI_SAFETY_SETTINGS,
+          generationConfig: {
+            thinkingConfig: candidate.thinkingConfig,
+          },
+        }),
+        signal: params.signal,
+      });
+
+    let resp = await makeRequest(!params.isLiveVoice);
+    if (!resp.ok && !params.isLiveVoice && resp.status === 400) {
+      resp = await makeRequest(false);
+    }
 
     if (!resp.ok || !resp.body) {
       const rawErr = await resp.text().catch(() => '');
@@ -924,6 +952,9 @@ async function streamFromGeminiDirect(params: {
               candidates?: Array<{
                 finishReason?: string;
                 content?: { parts?: Array<{ text?: string }> };
+                groundingMetadata?: {
+                  groundingChunks?: Array<{ web?: { uri?: string; title?: string } }>;
+                };
               }>;
               promptFeedback?: { blockReason?: string };
               error?: { message?: string };
@@ -933,6 +964,15 @@ async function streamFromGeminiDirect(params: {
             }
             if (parsed.promptFeedback?.blockReason) {
               throw new Error(`Gemini blocked the request (${parsed.promptFeedback.blockReason}).`);
+            }
+            const gChunks = parsed.candidates?.[0]?.groundingMetadata?.groundingChunks;
+            if (Array.isArray(gChunks)) {
+              for (const gc of gChunks) {
+                const uri = gc?.web?.uri?.trim();
+                if (uri && /^https?:\/\//i.test(uri) && !collectedSources.has(uri)) {
+                  collectedSources.set(uri, (gc.web?.title || uri).trim());
+                }
+              }
             }
             const chunkText = parsed.candidates?.[0]?.content?.parts
               ?.map((p) => p.text ?? '')
@@ -968,6 +1008,14 @@ async function streamFromGeminiDirect(params: {
       throw new Error('Gemini stream completed without returning any text.');
     }
 
+    if (collectedSources.size > 0) {
+      params.onSources?.(
+        Array.from(collectedSources.entries())
+          .slice(0, 12)
+          .map(([uri, title]) => ({ uri, title }))
+      );
+    }
+
     return accumulated;
   }
 
@@ -980,12 +1028,14 @@ async function streamFromBackendEndpoint(params: {
   messages: OutgoingMessage[];
   language?: string;
   userName?: string;
+  deepResearch?: boolean;
   responseStyle?: ResponseStyleMode;
   customInstructions?: string;
   globalSystemPrompt?: string;
   chatModel?: string;
   signal?: AbortSignal;
   onChunk: (text: string) => void;
+  onSources?: (sources: GroundingSource[]) => void;
 }): Promise<{ ok: true; text: string } | { ok: false; shouldFallbackDirect: boolean; error: Error }> {
   try {
     const resp = await fetch(params.endpoint, {
@@ -996,6 +1046,7 @@ async function streamFromBackendEndpoint(params: {
         language: params.language,
         userName: params.userName,
         apiKey: params.apiKey || undefined,
+        deepResearch: Boolean(params.deepResearch),
         responseStyle: params.responseStyle,
         customInstructions: params.customInstructions,
         globalSystemPrompt: params.globalSystemPrompt,
@@ -1051,12 +1102,23 @@ async function streamFromBackendEndpoint(params: {
           const parsed = JSON.parse(jsonStr) as {
             type: string;
             text?: string;
+            sources?: Array<{ uri?: string; title?: string }>;
             error?: string;
             code?: string;
           };
           if (parsed.type === 'chunk' && parsed.text) {
             accumulated += parsed.text;
             params.onChunk(parsed.text);
+          } else if (parsed.type === 'sources' && Array.isArray(parsed.sources)) {
+            const validSources: GroundingSource[] = parsed.sources
+              .filter((s) => s?.uri && /^https?:\/\//i.test(s.uri.trim()))
+              .map((s) => ({
+                uri: s.uri!.trim(),
+                title: (s.title || s.uri!).trim(),
+              }));
+            if (validSources.length > 0) {
+              params.onSources?.(validSources);
+            }
           } else if (parsed.type === 'error') {
             if (parsed.code === 'MISSING_API_KEY') {
               streamError = new MissingApiKeyError();
@@ -1244,6 +1306,7 @@ export async function streamChatCompletion(params: {
   language?: string;
   userName?: string;
   isLiveVoice?: boolean;
+  deepResearch?: boolean;
   responseStyle?: ResponseStyleMode;
   customInstructions?: string;
   globalSystemPrompt?: string;
@@ -1252,6 +1315,7 @@ export async function streamChatCompletion(params: {
   hasServerGeminiKey: boolean;
   signal?: AbortSignal;
   onChunk: (text: string) => void;
+  onSources?: (sources: GroundingSource[]) => void;
 }): Promise<string> {
   const userPrefs = loadUserSettings();
   const ownerCfg = loadOwnerConfig();
@@ -1349,12 +1413,14 @@ export async function streamChatCompletion(params: {
         messages: recentMessages,
         language: params.language,
         userName: params.userName,
+        deepResearch: params.deepResearch,
         responseStyle,
         customInstructions,
         globalSystemPrompt,
         chatModel,
         signal: params.signal,
         onChunk: params.onChunk,
+        onSources: params.onSources,
       });
       if (backendRes.ok) return backendRes.text;
       if (backendRes.shouldFallbackDirect && geminiDirectKey) {
@@ -1364,12 +1430,14 @@ export async function streamChatCompletion(params: {
           language: params.language,
           userName: params.userName,
           isLiveVoice: params.isLiveVoice,
+          deepResearch: params.deepResearch,
           responseStyle,
           customInstructions,
           globalSystemPrompt,
           chatModel,
           signal: params.signal,
           onChunk: params.onChunk,
+          onSources: params.onSources,
         });
       }
       throw backendRes.error;
@@ -1380,12 +1448,14 @@ export async function streamChatCompletion(params: {
       language: params.language,
       userName: params.userName,
       isLiveVoice: params.isLiveVoice,
+      deepResearch: params.deepResearch,
       responseStyle,
       customInstructions,
       globalSystemPrompt,
       chatModel,
       signal: params.signal,
       onChunk: params.onChunk,
+      onSources: params.onSources,
     });
   }
 
@@ -1401,6 +1471,7 @@ export async function streamChatCompletion(params: {
       language: params.language,
       userName: params.userName,
       isLiveVoice: params.isLiveVoice,
+      deepResearch: params.deepResearch,
       responseStyle,
       customInstructions,
       globalSystemPrompt,
@@ -1418,12 +1489,14 @@ export async function streamChatCompletion(params: {
       messages: params.messages,
       language: params.language,
       userName: params.userName,
+      deepResearch: params.deepResearch,
       responseStyle,
       customInstructions,
       globalSystemPrompt,
       chatModel,
       signal: params.signal,
       onChunk: params.onChunk,
+      onSources: params.onSources,
     });
 
     if (backendRes.ok) {
@@ -1437,12 +1510,14 @@ export async function streamChatCompletion(params: {
         language: params.language,
         userName: params.userName,
         isLiveVoice: params.isLiveVoice,
+        deepResearch: params.deepResearch,
         responseStyle,
         customInstructions,
         globalSystemPrompt,
         chatModel,
         signal: params.signal,
         onChunk: params.onChunk,
+        onSources: params.onSources,
       });
     }
 
@@ -1457,12 +1532,14 @@ export async function streamChatCompletion(params: {
       language: params.language,
       userName: params.userName,
       isLiveVoice: params.isLiveVoice,
+      deepResearch: params.deepResearch,
       responseStyle,
       customInstructions,
       globalSystemPrompt,
       chatModel,
       signal: params.signal,
       onChunk: params.onChunk,
+      onSources: params.onSources,
     });
   }
 
@@ -1556,11 +1633,6 @@ async function runQuickTextCompletion(params: {
     // Graceful fallback if quick helper fails
   }
   return null;
-}
-
-// Zero frontend quota/cooldown locks: image generation is always unlimited!
-export function getPollinationsCooldownRemainingSec(): number {
-  return 0;
 }
 
 const RISKY_WORD_REPLACEMENTS: Array<[RegExp, string]> = [
@@ -1825,6 +1897,124 @@ async function extractBase64AndMimeFromUrl(
   };
 }
 
+function randomClientImageSeed(): number {
+  return Math.floor(Math.random() * 1_000_000_000) + 1;
+}
+
+function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchDirectImageAsDataUrl(
+  targetUrl: string,
+  timeoutMs = 14000
+): Promise<{ ok: true; dataUrl: string } | { ok: false; status?: number }> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const r = await fetch(targetUrl, { signal: ctrl.signal });
+    if (!r.ok) {
+      return { ok: false, status: r.status };
+    }
+    const ct = (r.headers.get('content-type') || '').toLowerCase();
+    if (!ct.startsWith('image/')) {
+      return { ok: false, status: r.status };
+    }
+    const blob = await r.blob();
+    if (blob.size < 4500) {
+      return { ok: false };
+    }
+    const dataUrl = await blobToSharpDataUrl(blob);
+    if (!dataUrl) {
+      return { ok: false };
+    }
+    return { ok: true, dataUrl };
+  } catch {
+    return { ok: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function tryClientAiHordeFallback(
+  prompt: string,
+  aspectRatio: '1:1' | '16:9' | '4:3',
+  timeoutMs = 20000
+): Promise<{ ok: true; dataUrl: string; w: number; h: number } | { ok: false }> {
+  const dims =
+    aspectRatio === '16:9'
+      ? { w: 768, h: 448 }
+      : aspectRatio === '4:3'
+        ? { w: 640, h: 512 }
+        : { w: 512, h: 512 };
+  const deadline = Date.now() + timeoutMs;
+  try {
+    const submitCtrl = new AbortController();
+    const submitTimer = setTimeout(() => submitCtrl.abort(), 7000);
+    let jobId = '';
+    try {
+      const submitResp = await fetch('https://aihorde.net/api/v2/generate/async', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: '0000000000',
+          'Client-Agent': 'RoostersAI:2.0:sandsoft',
+        },
+        body: JSON.stringify({
+          prompt,
+          params: { width: dims.w, height: dims.h, steps: 14, n: 1 },
+          r2: true,
+        }),
+        signal: submitCtrl.signal,
+      });
+      if (!submitResp.ok) return { ok: false };
+      const submitJson = (await submitResp.json()) as { id?: string };
+      jobId = submitJson.id || '';
+    } finally {
+      clearTimeout(submitTimer);
+    }
+
+    if (!jobId) return { ok: false };
+
+    while (Date.now() < deadline) {
+      await waitMs(1700);
+      const pollCtrl = new AbortController();
+      const pollTimer = setTimeout(() => pollCtrl.abort(), 5000);
+      try {
+        const statusResp = await fetch(
+          `https://aihorde.net/api/v2/generate/status/${encodeURIComponent(jobId)}`,
+          {
+            headers: { 'Client-Agent': 'RoostersAI:2.0:sandsoft' },
+            signal: pollCtrl.signal,
+          }
+        );
+        if (!statusResp.ok) continue;
+        const statusJson = (await statusResp.json()) as {
+          done?: boolean;
+          faulted?: boolean;
+          generations?: Array<{ img?: string }>;
+        };
+        if (statusJson.faulted) return { ok: false };
+        const imgUrl = statusJson.generations?.[0]?.img;
+        if (statusJson.done && imgUrl && /^https:\/\//i.test(imgUrl)) {
+          const downloaded = await fetchDirectImageAsDataUrl(imgUrl, 10000);
+          if (downloaded.ok) {
+            return { ok: true, dataUrl: downloaded.dataUrl, w: dims.w, h: dims.h };
+          }
+          return { ok: false };
+        }
+      } catch {
+        // Keep polling until deadline
+      } finally {
+        clearTimeout(pollTimer);
+      }
+    }
+    return { ok: false };
+  } catch {
+    return { ok: false };
+  }
+}
+
 async function tryNanoBananaApi(params: {
   prompt: string;
   sourceImageBase64?: string;
@@ -1842,7 +2032,7 @@ async function tryNanoBananaApi(params: {
   | {
       ok: true;
       imageUrl: string;
-      provider: 'nano-banana' | 'pollinations';
+      provider: 'pollinations' | 'airforce' | 'flux-hd' | 'ai-horde' | 'imagen' | 'nano-banana';
       modelUsed: string;
       title: string;
       detailedPrompt: string;
@@ -1859,275 +2049,152 @@ async function tryNanoBananaApi(params: {
     params.preferredModel || loadOwnerConfig().imageModel
   );
 
-  params.onStatus?.(
-    params.mode === 'edit'
-      ? `Editing photo with Nano Banana (${officialModelId})...`
-      : `Generating ${params.resolution || '1K'} HD image with Nano Banana (${officialModelId})...`
-  );
+  const cleanShortPrompt = sanitizeShortSafePrompt(params.prompt, 24);
+  const w = params.aspectRatio === '16:9' ? 1024 : params.aspectRatio === '4:3' ? 1024 : 1024;
+  const h = params.aspectRatio === '16:9' ? 576 : params.aspectRatio === '4:3' ? 768 : 1024;
+  const encodedPrompt = encodeURIComponent(cleanShortPrompt);
+  const pollinationsModels: Array<'flux' | 'turbo' | 'dreamshaper'> = ['flux', 'turbo', 'dreamshaper'];
 
-  // 1. Primary: Express Server /api/nano-banana (Dual-Engine: Nano Banana -> Flux HD on 429)
-  if (params.hasBackendApi || params.hasServerGeminiKey) {
-    try {
-      const resp = await fetch('/api/nano-banana', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: params.prompt,
-          sourceImageBase64: params.sourceImageBase64,
-          sourceMimeType: params.sourceMimeType,
-          aspectRatio: params.aspectRatio,
-          resolution: params.resolution || '1K',
-          mode: params.mode,
-          preferredModel: officialModelId,
-          previousEditContext: params.previousEditContext,
-          skipEnhance: params.skipEnhance,
-          apiKey: clientGeminiKey || undefined,
-        }),
-      });
-      const contentType = resp.headers.get('content-type') || '';
-      if (contentType.includes('application/json')) {
-        const data = (await resp.json()) as {
-          imageUrl?: string;
-          provider?: 'nano-banana' | 'pollinations';
-          modelUsed?: string;
-          title?: string;
-          detailedPrompt?: string;
-          assistantText?: string;
-          width?: number;
-          height?: number;
-          error?: string;
-        };
-        if (resp.ok && data.imageUrl) {
-          return {
-            ok: true,
-            imageUrl: data.imageUrl,
-            provider: data.provider === 'pollinations' ? 'pollinations' : 'nano-banana',
-            modelUsed: data.modelUsed || officialModelId,
-            title: data.title || params.prompt.slice(0, 52),
-            detailedPrompt: data.detailedPrompt || params.prompt,
-            assistantText: data.assistantText,
-            width: data.width || 1024,
-            height: data.height || 1024,
-          };
-        }
-        return {
-          ok: false,
-          reason: data.error || `Gemini API (${officialModelId}) returned HTTP ${resp.status}`,
-        };
-      }
-      const rawText = await resp.text().catch(() => '');
-      return {
-        ok: false,
-        reason: rawText.trim() || `Nano Banana endpoint returned HTTP ${resp.status}`,
-      };
-    } catch (err) {
-      return {
-        ok: false,
-        reason: err instanceof Error ? err.message : 'Nano Banana backend connection failed',
-      };
-    }
-  }
+  const MAX_CLIENT_ATTEMPTS = 3;
+  let backendEndpointMissing = false;
+  let lastBackendError = '';
 
-  // 2. Direct Gemini REST API (when running as static bundle without Express backend)
-  if (clientGeminiKey) {
-    try {
-      // Translate Roman Urdu / short prompts into detailed English using gemini-2.5-flash when not pre-enhanced
-      let promptToSend = params.prompt.trim();
-      let shortTitle = promptToSend.slice(0, 52);
+  for (let attempt = 1; attempt <= MAX_CLIENT_ATTEMPTS; attempt++) {
+    params.onStatus?.(
+      attempt === 1
+        ? params.mode === 'edit'
+          ? 'Editing your photo in HD...'
+          : `Generating ${params.resolution || '1K'} HD image...`
+        : `Server busy — retrying backup HD engine (Attempt ${attempt}/${MAX_CLIENT_ATTEMPTS})...`
+    );
 
-      if (!params.skipEnhance) {
-        try {
-          const enhResp = await fetch(
-            'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-goog-api-key': clientGeminiKey,
-              },
-              body: JSON.stringify({
-                system_instruction: {
-                  parts: [
-                    {
-                      text:
-                        params.mode === 'edit'
-                          ? 'Translate ANY photo edit request from ANY world language into a clean, safe, family-friendly English editing instruction STRICTLY under 25 words. Keep subject identity consistent. Return ONLY JSON: {"shortTitle":"3-6 words","enhancedPrompt":"clean English edit instruction under 25 words"}'
-                          : 'Translate ANY image request from ANY world language into a clean, safe, family-friendly English prompt STRICTLY under 25 words including sharp photography descriptors ("ultra-sharp focus, crisp details, 8k resolution, DSLR 85mm lens, natural lighting"). Return ONLY JSON: {"shortTitle":"3-6 words","enhancedPrompt":"clean English image prompt under 25 words"}',
-                    },
-                  ],
-                },
-                contents: [{ role: 'user', parts: [{ text: promptToSend }] }],
-                safetySettings: GEMINI_SAFETY_SETTINGS,
-                generationConfig: {
-                  responseMimeType: 'application/json',
-                  thinkingConfig: { thinkingBudget: 0 },
-                },
-              }),
-            }
-          );
-          if (enhResp.ok) {
-            const enhJson = (await enhResp.json()) as {
-              candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    // 1. Try Express backend /api/nano-banana (skipped only if host returned 404/405 static-only)
+    if (!backendEndpointMissing) {
+      const apiCtrl = new AbortController();
+      const apiTimer = setTimeout(() => apiCtrl.abort(), attempt === 1 ? 60000 : 45000);
+      try {
+        const resp = await fetch('/api/nano-banana', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: apiCtrl.signal,
+          body: JSON.stringify({
+            prompt: params.prompt,
+            sourceImageBase64: params.sourceImageBase64,
+            sourceMimeType: params.sourceMimeType,
+            aspectRatio: params.aspectRatio,
+            resolution: params.resolution || '1K',
+            mode: params.mode,
+            preferredModel: officialModelId,
+            previousEditContext: params.previousEditContext,
+            skipEnhance: params.skipEnhance,
+            apiKey: clientGeminiKey || undefined,
+          }),
+        });
+        if (resp.status === 404 || resp.status === 405) {
+          backendEndpointMissing = true;
+        } else {
+          const contentType = resp.headers.get('content-type') || '';
+          if (contentType.includes('application/json')) {
+            const data = (await resp.json()) as {
+              imageUrl?: string;
+              provider?: 'pollinations' | 'airforce' | 'flux-hd' | 'ai-horde' | 'imagen' | 'nano-banana';
+              modelUsed?: string;
+              title?: string;
+              detailedPrompt?: string;
+              assistantText?: string;
+              width?: number;
+              height?: number;
+              error?: string;
             };
-            const rawJsonText = enhJson.candidates?.[0]?.content?.parts?.[0]?.text || '';
-            if (rawJsonText) {
-              const parsed = JSON.parse(rawJsonText.trim()) as {
-                shortTitle?: string;
-                enhancedPrompt?: string;
+            if (resp.ok && data.imageUrl) {
+              return {
+                ok: true,
+                imageUrl: data.imageUrl,
+                provider:
+                  data.provider === 'imagen' ||
+                  data.provider === 'nano-banana' ||
+                  data.provider === 'flux-hd' ||
+                  data.provider === 'ai-horde' ||
+                  data.provider === 'airforce' ||
+                  data.provider === 'pollinations'
+                    ? data.provider
+                    : 'flux-hd',
+                modelUsed: data.modelUsed || 'FLUX.1-schnell',
+                title: data.title || params.prompt.slice(0, 52),
+                detailedPrompt: data.detailedPrompt || params.prompt,
+                assistantText: data.assistantText,
+                width: data.width || w,
+                height: data.height || h,
               };
-              if (parsed.enhancedPrompt?.trim()) promptToSend = parsed.enhancedPrompt.trim();
-              if (parsed.shortTitle?.trim()) shortTitle = parsed.shortTitle.trim().slice(0, 56);
+            }
+            if (resp.status === 400) {
+              return {
+                ok: false,
+                reason: data.error || 'Please provide a clear image prompt.',
+              };
+            }
+            if (data.error) {
+              lastBackendError = data.error;
             }
           }
-        } catch {
-          // Proceed with original prompt so primary image call still executes cleanly
         }
+      } catch {
+        // Proceed smoothly to direct browser-IP multi-provider fallback on this attempt
+      } finally {
+        clearTimeout(apiTimer);
       }
+    }
 
-      promptToSend = sanitizeShortSafePrompt(promptToSend, 24);
-
-      const finalText =
-        params.mode === 'edit'
-          ? `${promptToSend}. Keep original subject identity consistent, crisp HD clarity.`
-          : promptToSend;
-
-      const parts: Array<{ text: string } | { inlineData: { data: string; mimeType: string } }> = [];
-      if (params.sourceImageBase64) {
-        parts.push({
-          inlineData: {
-            data: params.sourceImageBase64,
-            mimeType: params.sourceMimeType || 'image/png',
-          },
-        });
-      }
-      parts.push({ text: finalText });
-
-      const resp = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-          officialModelId
-        )}:generateContent`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': clientGeminiKey,
-          },
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts }],
-            safetySettings: GEMINI_SAFETY_SETTINGS,
-            generationConfig: {
-              responseModalities: ['IMAGE', 'TEXT'],
-              imageConfig:
-                officialModelId === 'gemini-3.1-flash-image-preview' && params.resolution === '2K'
-                  ? { aspectRatio: params.aspectRatio, imageSize: '2K' }
-                  : { aspectRatio: params.aspectRatio },
-            },
-          }),
-        }
-      );
-
-      if (!resp.ok) {
-        const errBody = await resp.text();
-        const errLower = errBody.toLowerCase();
-        const isQuota429 =
-          resp.status === 429 ||
-          errLower.includes('resource_exhausted') ||
-          errLower.includes('limit: 0') ||
-          errLower.includes('free_tier') ||
-          errLower.includes('exceeded your current quota');
-
-        if (isQuota429) {
-          const cleanShortPrompt = sanitizeShortSafePrompt(promptToSend, 24);
-          const w = params.aspectRatio === '16:9' ? 1280 : params.aspectRatio === '4:3' ? 1024 : 1024;
-          const h = params.aspectRatio === '16:9' ? 720 : params.aspectRatio === '4:3' ? 768 : 1024;
-          const randomSeed = Math.floor(Math.random() * 1000000);
-          const fluxUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(
-            cleanShortPrompt
-          )}?width=${w}&height=${h}&model=flux&nologo=true&safe=true&seed=${randomSeed}`;
-          return {
-            ok: true,
-            imageUrl: fluxUrl,
-            provider: 'pollinations',
-            modelUsed: 'flux',
-            title: shortTitle,
-            detailedPrompt: cleanShortPrompt,
-            width: w,
-            height: h,
-          };
-        }
-
+    // 2. Direct browser-IP Pollinations multi-model failover (flux -> turbo -> dreamshaper)
+    // Bypassing shared server IP limits cleanly using valid 32-bit seeds
+    params.onStatus?.(
+      `Switching to direct HD image server (Attempt ${attempt}/${MAX_CLIENT_ATTEMPTS})...`
+    );
+    for (const modelName of pollinationsModels) {
+      const polyUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${w}&height=${h}&seed=${randomClientImageSeed()}&model=${modelName}&nologo=true`;
+      const polyRes = await fetchDirectImageAsDataUrl(polyUrl, 14000);
+      if (polyRes.ok) {
         return {
-          ok: false,
-          reason: `Gemini API (${officialModelId}, HTTP ${resp.status}): ${extractReadableApiError(errBody, resp.status)}`,
+          ok: true,
+          imageUrl: polyRes.dataUrl,
+          provider: 'pollinations',
+          modelUsed: modelName,
+          title: cleanShortPrompt.slice(0, 52),
+          detailedPrompt: cleanShortPrompt,
+          width: w,
+          height: h,
         };
       }
-
-      const json = (await resp.json()) as {
-        promptFeedback?: { blockReason?: string };
-        candidates?: Array<{
-          finishReason?: string;
-          content?: {
-            parts?: Array<{
-              text?: string;
-              inlineData?: { data?: string; mimeType?: string };
-            }>;
-          };
-        }>;
-      };
-
-      if (json.promptFeedback?.blockReason) {
-        return {
-          ok: false,
-          reason: `Gemini API (${officialModelId}) blocked prompt: ${json.promptFeedback.blockReason}`,
-        };
+      if (polyRes.status === 402 || polyRes.status === 429) {
+        break;
       }
+    }
 
-      let imgData = '';
-      let imgMime = 'image/png';
-      let assistantText = '';
-      for (const part of json.candidates?.[0]?.content?.parts ?? []) {
-        if (part.inlineData?.data && !imgData) {
-          imgData = part.inlineData.data;
-          imgMime = part.inlineData.mimeType || 'image/png';
-        } else if (part.text) {
-          assistantText += `${part.text}\n`;
-        }
-      }
-
-      if (!imgData) {
-        const finishReason = json.candidates?.[0]?.finishReason;
-        return {
-          ok: false,
-          reason:
-            assistantText.trim() ||
-            `Gemini API (${officialModelId}) returned no image data${finishReason ? ` (finishReason: ${finishReason})` : ''}.`,
-        };
-      }
-
-      const w = params.aspectRatio === '16:9' ? 1376 : params.aspectRatio === '4:3' ? 1200 : 1024;
-      const h = params.aspectRatio === '16:9' ? 768 : params.aspectRatio === '4:3' ? 896 : 1024;
+    // 3. Direct browser-IP AI Horde keyless fallback
+    const hordeRes = await tryClientAiHordeFallback(cleanShortPrompt, params.aspectRatio, 20000);
+    if (hordeRes.ok) {
       return {
         ok: true,
-        imageUrl: `data:${imgMime};base64,${imgData}`,
-        provider: 'nano-banana',
-        modelUsed: officialModelId,
-        title: shortTitle,
-        detailedPrompt: finalText,
-        assistantText: assistantText.trim(),
-        width: w,
-        height: h,
+        imageUrl: hordeRes.dataUrl,
+        provider: 'ai-horde',
+        modelUsed: 'stable-horde-xl',
+        title: cleanShortPrompt.slice(0, 52),
+        detailedPrompt: cleanShortPrompt,
+        width: hordeRes.w,
+        height: hordeRes.h,
       };
-    } catch (err) {
-      return {
-        ok: false,
-        reason: err instanceof Error ? err.message : `Gemini API (${officialModelId}) request failed.`,
-      };
+    }
+
+    if (attempt < MAX_CLIENT_ATTEMPTS) {
+      await waitMs(attempt === 1 ? 900 : 1800);
     }
   }
 
   return {
     ok: false,
-    reason: `Nano Banana (${officialModelId}) requires a configured Gemini API key.`,
+    reason:
+      lastBackendError ||
+      'Image generation servers are momentarily busy after multiple automatic retries. Please try again.',
   };
 }
 
@@ -2146,7 +2213,7 @@ export async function generateArtworkUnified(params: {
   detailedPrompt: string;
   svgCode?: string;
   imageUrl: string;
-  provider: 'nano-banana' | 'pollinations';
+  provider: 'pollinations' | 'airforce' | 'flux-hd' | 'ai-horde' | 'imagen' | 'nano-banana';
   modelUsed: string;
   aspectRatio: '1:1' | '16:9' | '4:3';
   width: number;
@@ -2154,7 +2221,7 @@ export async function generateArtworkUnified(params: {
 }> {
   const configuredModel = resolveOfficialNanoModelId(loadOwnerConfig().imageModel);
 
-  params.onStatus?.('Translating & enhancing prompt with Gemini 2.5 Flash...');
+  params.onStatus?.('Preparing crisp HD visual prompt...');
   const { detailedPrompt, shortTitle } =
     params.preEnhanced?.detailedPrompt
       ? params.preEnhanced
@@ -2210,7 +2277,7 @@ export async function editArtworkUnified(params: {
   detailedPrompt: string;
   assistantText?: string;
   imageUrl: string;
-  provider: 'nano-banana' | 'pollinations';
+  provider: 'pollinations' | 'airforce' | 'flux-hd' | 'ai-horde' | 'imagen' | 'nano-banana';
   modelUsed: string;
   isEdited: true;
   aspectRatio: '1:1' | '16:9' | '4:3';
@@ -2220,7 +2287,7 @@ export async function editArtworkUnified(params: {
   const aspectRatio = params.aspectRatio || '1:1';
   const configuredModel = resolveOfficialNanoModelId(loadOwnerConfig().imageModel);
 
-  params.onStatus?.('Preparing source image for Nano Banana editing...');
+  params.onStatus?.('Preparing source image for HD photo editing...');
   const extracted = await extractBase64AndMimeFromUrl(
     params.sourceImageDataUrl,
     params.sourceMimeType || 'image/png'

@@ -28,13 +28,18 @@ export interface MessageAttachment {
   source: 'upload' | 'screen' | 'camera';
 }
 
+export interface GroundingSource {
+  title: string;
+  uri: string;
+}
+
 export interface GeneratedArtwork {
   title: string;
   description: string;
   detailedPrompt?: string;
   svgCode?: string;
   imageUrl?: string;
-  provider?: 'nano-banana' | 'pollinations' | 'horde' | 'svg';
+  provider?: 'pollinations' | 'airforce' | 'flux-hd' | 'ai-horde' | 'imagen' | 'nano-banana' | 'svg';
   modelUsed?: string;
   isEdited?: boolean;
   aspectRatio: '1:1' | '16:9' | '4:3';
@@ -55,7 +60,7 @@ export interface GeneratedVideo {
   mood: 'cinematic' | 'calm' | 'epic' | 'study';
   style: string;
   heroImageUrl?: string;
-  provider?: 'nano-banana' | 'pollinations' | 'horde' | 'svg';
+  provider?: 'pollinations' | 'airforce' | 'flux-hd' | 'ai-horde' | 'imagen' | 'nano-banana' | 'svg';
   scenes: VideoScene[];
   aspectRatio: '16:9';
   createdAt: number;
@@ -154,6 +159,8 @@ export interface ChatMessage {
   generatedImage?: GeneratedArtwork;
   generatedVideo?: GeneratedVideo;
   voiceNote?: MessageVoiceNote;
+  sources?: GroundingSource[];
+  isDeepResearch?: boolean;
   isError?: boolean;
   isPending?: boolean;
   isMissingKeyPrompt?: boolean;

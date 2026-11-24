@@ -118,10 +118,10 @@ export function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
       >
         {/* Card Header */}
         <div className="flex flex-col items-center text-center">
-          <div className="w-[65px] h-[65px] rounded-[12px] overflow-hidden bg-[#111622] border border-[#1f293d] flex items-center justify-center shadow-md">
+          <div className="w-[68px] h-[68px] rounded-[14px] overflow-hidden bg-[#07090e] border border-[#1f293d] flex items-center justify-center shadow-md">
             <img
               src={ROOSTERS_LOGO_SRC}
-              alt="Roosters AI Logo"
+              alt="Roosters AI"
               referrerPolicy="no-referrer"
               className="w-full h-full object-cover"
             />

@@ -8,6 +8,7 @@ import {
   Copy,
   Dna,
   Download,
+  ExternalLink,
   FileCode,
   FileText,
   Film,
@@ -24,6 +25,7 @@ import {
   Palette,
   PanelLeft,
   Plus,
+  Search,
   Send,
   Settings,
   ShieldCheck,
@@ -44,6 +46,7 @@ import {
   ChatMessage,
   ChatSession,
   ClonedVoiceProfile,
+  GroundingSource,
   MessageAttachment,
   MessageVoiceNote,
   OwnerConfig,
@@ -256,6 +259,8 @@ function getWallpaperStyle(settings: ThemeSettings, theme: AppTheme): CSSPropert
 function cleanTextForSpeech(raw: string): string {
   return raw
     .replace(/```[\s\S]*?```/g, ' Code block omitted. ')
+    .replace(/\[([^\]]+)\]\(https?:\/\/[^\s)]+\)/gi, '$1')
+    .replace(/https?:\/\/\S+/gi, ' ')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/[#*_~>\[\]]/g, ' ')
     .replace(/\s+/g, ' ')
@@ -358,7 +363,7 @@ const ChatMessageRow = memo(function ChatMessageRow({
             src={ROOSTERS_LOGO_SRC}
             alt="Roosters AI"
             referrerPolicy="no-referrer"
-            className="w-5 h-5 rounded object-cover object-center"
+            className="w-5 h-5 rounded-md object-cover shrink-0"
           />
           <span
             className="font-display text-[12.5px] font-bold"
@@ -366,6 +371,19 @@ const ChatMessageRow = memo(function ChatMessageRow({
           >
             Roosters AI
           </span>
+          {msg.isDeepResearch && (
+            <span
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border"
+              style={{
+                backgroundColor: `${theme.accentSecondary}16`,
+                borderColor: `${theme.accentSecondary}55`,
+                color: theme.accentSecondary,
+              }}
+            >
+              <Search className="w-2.5 h-2.5" />
+              <span>Deep Research</span>
+            </span>
+          )}
           <span className="text-[11px] tabular-nums" style={{ color: theme.textMuted }}>
             {new Date(msg.createdAt).toLocaleTimeString([], {
               hour: '2-digit',
@@ -398,7 +416,11 @@ const ChatMessageRow = memo(function ChatMessageRow({
               className="w-4 h-4 animate-spin"
               style={{ color: theme.accentSecondary }}
             />
-            <span>Preparing a thoughtful answer...</span>
+            <span>
+              {msg.isDeepResearch
+                ? 'Deep Researching with Google Search...'
+                : 'Preparing a thoughtful answer...'}
+            </span>
           </div>
         )}
 
@@ -417,6 +439,65 @@ const ChatMessageRow = memo(function ChatMessageRow({
             language={selectedLanguage}
             voiceSettings={voiceSettings}
           />
+        )}
+
+        {!msg.isError && msg.sources && msg.sources.length > 0 && (
+          <div
+            className="mt-3.5 pt-3 border-t"
+            style={{ borderColor: theme.borderColor }}
+          >
+            <div className="flex items-center gap-1.5 mb-2">
+              <Globe className="w-3.5 h-3.5 shrink-0" style={{ color: theme.accentSecondary }} />
+              <span
+                className="text-[11.5px] font-bold uppercase tracking-wider"
+                style={{ color: theme.textSecondary }}
+              >
+                Verified Sources ({msg.sources.length})
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+              {msg.sources
+                .filter((src) => /^https?:\/\//i.test(src.uri))
+                .map((src, idx) => {
+                  let domainLabel = src.uri;
+                  try {
+                    domainLabel = new URL(src.uri).hostname.replace(/^www\./i, '');
+                  } catch {
+                    // Keep uri string cleanly
+                  }
+                  return (
+                    <a
+                      key={`${src.uri}_${idx}`}
+                      href={src.uri}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="group flex items-center justify-between gap-2 px-3 py-2 rounded-xl border text-left transition-colors hover:brightness-110"
+                      style={{
+                        backgroundColor: theme.subSurfaceBg,
+                        borderColor: theme.borderColor,
+                        color: theme.textPrimary,
+                      }}
+                    >
+                      <div className="min-w-0">
+                        <div className="text-[12px] font-semibold truncate group-hover:underline">
+                          {src.title || domainLabel}
+                        </div>
+                        <div
+                          className="text-[10.5px] truncate"
+                          style={{ color: theme.accentSecondary }}
+                        >
+                          {domainLabel}
+                        </div>
+                      </div>
+                      <ExternalLink
+                        className="w-3.5 h-3.5 shrink-0 opacity-75 group-hover:opacity-100"
+                        style={{ color: theme.accentSecondary }}
+                      />
+                    </a>
+                  );
+                })}
+            </div>
+          </div>
         )}
 
         {msg.voiceNote && !msg.isPending && !msg.isError && (
@@ -508,6 +589,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
   const [inputValue, setInputValue] = useState('');
   const [pendingAttachment, setPendingAttachment] = useState<MessageAttachment | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isDeepResearch, setIsDeepResearch] = useState(false);
   const [notice, setNotice] = useState<string>('');
   const [showHistory, setShowHistory] = useState<boolean>(() =>
     typeof window !== 'undefined' ? window.innerWidth >= 1024 : true
@@ -550,6 +632,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
 
   // Screen Share states
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const cameraFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -581,6 +664,10 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     [themeSettings.themeId, themeSettings.liteMode]
   );
   const hasEnvKey = Boolean(getEnvGeminiKey() || getEnvGroqKey());
+
+  useEffect(() => {
+    screenStreamRef.current = screenStream;
+  }, [screenStream]);
 
   useEffect(() => {
     if (typeof document !== 'undefined') {
@@ -786,7 +873,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     };
   }, [isOnline]);
 
-  // Cleanup on unmount
+  // Cleanup on unmount only (use screenStreamRef so screen-share toggles never abort active streams/TTS)
   useEffect(() => {
     return () => {
       abortControllerRef.current?.abort();
@@ -798,9 +885,9 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
         mediaRecorderRef.current.stop();
       }
-      screenStream?.getTracks().forEach((track) => track.stop());
+      screenStreamRef.current?.getTracks().forEach((track) => track.stop());
     };
-  }, [screenStream]);
+  }, []);
 
   const stopAudioPlayback = () => {
     pendingReplySpeechRef.current = null;
@@ -1061,12 +1148,14 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       voiceNote: userVoiceNote,
     };
 
+    const deepResearchUsed = isDeepResearch;
     const assistantId = createId('msg');
     const placeholderAssistant: ChatMessage = {
       id: assistantId,
       role: 'assistant',
       content: '',
       createdAt: Date.now(),
+      isDeepResearch: deepResearchUsed,
     };
 
     const nextMessages = [...messages, userMessage];
@@ -1150,6 +1239,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
     abortControllerRef.current = controller;
 
     let accumulated = '';
+    let collectedSources: GroundingSource[] = [];
     let rafPending = false;
 
     const flushToState = () => {
@@ -1202,6 +1292,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         language: selectedLanguage,
         userName: user.fullName,
         isLiveVoice: false,
+        deepResearch: deepResearchUsed,
         responseStyle: userSettings.responseStyle,
         customInstructions: userSettings.customInstructions,
         globalSystemPrompt: ownerConfig.globalSystemPrompt,
@@ -1217,6 +1308,12 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
             rafPending = true;
             requestAnimationFrame(flushToState);
           }
+        },
+        onSources: (sources) => {
+          collectedSources = sources;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === assistantId ? { ...m, sources } : m))
+          );
         },
       });
 
@@ -1256,6 +1353,8 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
           content: finalAssistantText,
           createdAt: Date.now(),
           voiceNote: assistantVoiceNote,
+          sources: collectedSources.length > 0 ? collectedSources : undefined,
+          isDeepResearch: deepResearchUsed,
         },
       ];
       setMessages(finalMessages);
@@ -1691,7 +1790,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       const errMsg: ChatMessage = {
         id: assistantPlaceholderId,
         role: 'assistant',
-        content: err instanceof Error ? err.message : 'Unable to edit photo with Nano Banana.',
+        content: err instanceof Error ? err.message : 'Unable to edit photo.',
         createdAt: Date.now(),
         isError: true,
       };
@@ -1788,11 +1887,19 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
       });
 
       const providerBadge =
-        data.provider === 'pollinations'
-          ? ' (Generated by Roosters AI HD)'
-          : data.modelUsed?.includes('3.1')
-            ? ' (Nano Banana 3.1 Preview)'
-            : ' (Nano Banana · gemini-2.5-flash-image)';
+        data.provider === 'flux-hd'
+          ? ' (FLUX.1 HD Zero-Setup)'
+          : data.provider === 'ai-horde'
+            ? ' (Horde HD Zero-Setup)'
+            : data.provider === 'pollinations'
+              ? ` (${(data.modelUsed || 'turbo').toUpperCase()} HD Zero-Setup)`
+              : data.provider === 'airforce'
+                ? ' (Flux HD Engine)'
+                : data.provider === 'imagen'
+                  ? ' (Google Gemini Imagen 3)'
+                  : data.modelUsed?.includes('3.1')
+                    ? ' (Nano Banana 3.1 Preview)'
+                    : ` (Gemini · ${data.modelUsed || 'gemini-2.5-flash-image'})`;
 
       const aiMsg: ChatMessage = {
         id: assistantPlaceholderId,
@@ -2130,29 +2237,6 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
         return;
       }
 
-      const freshSeed = Math.floor(Math.random() * 1000000);
-      if (art.imageUrl && art.imageUrl.includes('image.pollinations.ai/')) {
-        let nextUrl = art.imageUrl;
-        try {
-          const parsed = new URL(art.imageUrl);
-          parsed.searchParams.set('seed', String(freshSeed));
-          parsed.searchParams.set('safe', 'true');
-          nextUrl = parsed.toString();
-        } catch {
-          nextUrl = art.imageUrl.includes('seed=')
-            ? art.imageUrl.replace(/seed=\d+/, `seed=${freshSeed}`)
-            : `${art.imageUrl}${art.imageUrl.includes('?') ? '&' : '?'}seed=${freshSeed}`;
-        }
-        const updatedMessages = messages.map((m) =>
-          m.id === targetMsg.id && m.generatedImage
-            ? { ...m, generatedImage: { ...m.generatedImage, imageUrl: nextUrl } }
-            : m
-        );
-        setMessages(updatedMessages);
-        syncMessagesToSession(updatedMessages);
-        return;
-      }
-
       setRegeneratingMsgId(targetMsg.id);
       try {
         const data = await generateArtworkUnified({
@@ -2250,14 +2334,14 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
             </button>
 
             <div
-              className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg overflow-hidden border bg-[#111622] shrink-0"
+              className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg overflow-hidden border bg-[#07090e] shrink-0 flex items-center justify-center"
               style={{ borderColor: theme.borderColor }}
             >
               <img
                 src={ROOSTERS_LOGO_SRC}
                 alt="Roosters AI"
                 referrerPolicy="no-referrer"
-                className="w-full h-full object-cover object-center"
+                className="w-full h-full object-cover"
               />
             </div>
 
@@ -2341,6 +2425,13 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
               disabled={!isOnline}
               onClick={() => {
                 if (!isOnline) return;
+                unlockSpeechSynthesis();
+                if (navigator.mediaDevices?.getUserMedia) {
+                  void navigator.mediaDevices
+                    .getUserMedia({ audio: true })
+                    .then((stream) => stream.getTracks().forEach((t) => t.stop()))
+                    .catch(() => {});
+                }
                 stopAudioPlayback();
                 setIsToolsMenuOpen(false);
                 setIsLiveTalkOpen(true);
@@ -3167,7 +3258,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
               {messages.length === 0 ? (
                 <div className="py-10 sm:py-14 flex flex-col items-center text-center">
                   <div
-                    className="w-20 h-20 rounded-2xl bg-[#121622] border overflow-hidden p-1 flex items-center justify-center"
+                    className="w-20 h-20 rounded-2xl bg-[#07090e] border overflow-hidden flex items-center justify-center"
                     style={{
                       borderColor: theme.accentSecondary,
                       boxShadow: `0 0 28px ${theme.accentSecondary}2b`,
@@ -3177,7 +3268,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                       src={ROOSTERS_LOGO_SRC}
                       alt="Roosters AI"
                       referrerPolicy="no-referrer"
-                      className="w-full h-full object-cover object-center rounded-xl"
+                      className="w-full h-full object-cover"
                     />
                   </div>
 
@@ -3315,6 +3406,7 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                 </div>
               ) : (
                 <>
+
                   {/* Attachment Preview */}
                   {pendingAttachment && (
                     <div
@@ -3367,13 +3459,56 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                     </div>
                   )}
 
+                  {/* Composer Mode Strip: Deep Research Toggle + Search Grounding Indicator */}
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={isDeepResearch}
+                        aria-pressed={isDeepResearch}
+                        onClick={() => setIsDeepResearch((prev) => !prev)}
+                        title="Toggle Deep Research Mode for structured multi-step reports with verified web links"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-[12px] font-bold transition-all cursor-pointer"
+                        style={{
+                          backgroundColor: isDeepResearch
+                            ? `${theme.accentSecondary}20`
+                            : theme.cardBg,
+                          borderColor: isDeepResearch
+                            ? theme.accentSecondary
+                            : theme.borderColor,
+                          color: isDeepResearch ? theme.accentSecondary : theme.textSecondary,
+                          boxShadow:
+                            isDeepResearch && !theme.liteMode
+                              ? `0 0 14px ${theme.accentSecondary}2b`
+                              : 'none',
+                        }}
+                      >
+                        <Search className="w-3.5 h-3.5 shrink-0" />
+                        <span>Deep Research: {isDeepResearch ? 'ON' : 'OFF'}</span>
+                      </button>
+
+                      <span
+                        className="inline-flex items-center gap-1 text-[11px]"
+                        style={{ color: theme.textMuted }}
+                      >
+                        <Globe className="w-3 h-3 shrink-0" style={{ color: theme.accentSecondary }} />
+                        <span>
+                          {isDeepResearch
+                            ? 'Multi-step Analysis + Verified Web Links'
+                            : 'Live Google Search Grounding Active'}
+                        </span>
+                      </span>
+                    </div>
+                  </div>
+
                   {/* Input Row */}
                   <div className="flex items-end gap-1.5 sm:gap-2.5">
                     <div
                       className="flex-1 min-w-0 min-h-[48px] flex items-end gap-1 sm:gap-2 rounded-2xl border p-1.5 sm:p-2 transition-colors"
                       style={{
                         backgroundColor: theme.inputBg,
-                        borderColor: theme.borderColor,
+                        borderColor: isDeepResearch ? theme.accentSecondary : theme.borderColor,
                       }}
                     >
                       {/* Hidden File Inputs: Gallery Image, Mobile Camera Capture & Study/Code File */}
@@ -3525,9 +3660,11 @@ export function MainSuperApp({ user, onLogout }: MainSuperAppProps) {
                             ? 'Listening... Click mic to stop'
                             : isTranscribing
                               ? 'Transcribing voice...'
-                              : voiceSettings.voiceMessageMode
-                                ? `Voice Note (${getResolvedVoiceParameters(voiceSettings).voiceName}) — Type to speak...`
-                                : 'Ask Roosters AI anything...'
+                              : isDeepResearch
+                                ? 'Enter a topic for Deep Research with verified sources...'
+                                : voiceSettings.voiceMessageMode
+                                  ? `Voice Note (${getResolvedVoiceParameters(voiceSettings).voiceName}) — Type to speak...`
+                                  : 'Ask Roosters AI anything...'
                         }
                         className="flex-1 min-w-0 bg-transparent px-1.5 sm:px-2 py-2.5 text-[14px] sm:text-[14.5px] focus:outline-none resize-none max-h-40 leading-normal"
                         style={{ color: theme.textPrimary }}

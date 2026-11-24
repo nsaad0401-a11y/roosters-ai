@@ -34,7 +34,13 @@ export default function App() {
       setScreen('app');
       return;
     }
-    setScreen('auth');
+    setActiveUser({
+      id: 'guest_user',
+      fullName: 'Guest User',
+      email: 'guest@sandsoft.local',
+      isGuest: true,
+    });
+    setScreen('app');
   }, []);
 
   const handleLoginSuccess = useCallback((user: ActiveUser) => {
@@ -63,7 +69,7 @@ export default function App() {
       ) : (
         <AuthScreen onLoginSuccess={handleLoginSuccess} />
       )}
-      {screen !== 'app' && <OfflineIndicator />}
+      {screen === 'auth' && <OfflineIndicator />}
     </>
   );
 }

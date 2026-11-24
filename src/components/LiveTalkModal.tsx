@@ -13,7 +13,7 @@ import {
   Volume2,
 } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
-import { ROOSTERS_LOGO_SRC, detectTextLanguageCode } from '../constants';
+import { detectTextLanguageCode, ROOSTERS_LOGO_SRC } from '../constants';
 import { MissingApiKeyError, OutgoingMessage, streamChatCompletion } from '../utils/aiClient';
 import { loadCustomApiKey } from '../utils/storage';
 import { OwnerConfig, UserAppSettings, VoiceStudioSettings } from '../types';
@@ -78,8 +78,10 @@ function getSpeechRecognitionConstructor(): (new () => BrowserSpeechRecognition)
 function cleanTextForSpeech(raw: string): string {
   return raw
     .replace(/```[\s\S]*?```/g, ' Code snippet provided. ')
+    .replace(/\[([^\]]+)\]\(https?:\/\/[^\s)]+\)/gi, '$1')
+    .replace(/https?:\/\/\S+/gi, ' ')
     .replace(/`([^`]+)`/g, '$1')
-    .replace(/[*_#>~]+/g, ' ')
+    .replace(/[*_#>~[\]]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -216,6 +218,7 @@ export function LiveTalkModal({
 
   // Fallback Recognition + SSE Refs
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
+  const recognitionRestartTimerRef = useRef<number | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const activeUtterancesRef = useRef(0);
   const streamFinishedRef = useRef(true);
@@ -390,6 +393,34 @@ export function LiveTalkModal({
     return null;
   }, [captureCurrentVideoFrame]);
 
+  const releaseRawMicAudioCapture = useCallback(() => {
+    try {
+      if (micProcessorRef.current) {
+        micProcessorRef.current.onaudioprocess = null;
+        micProcessorRef.current.disconnect();
+      }
+      micSourceNodeRef.current?.disconnect();
+    } catch {
+      // Ignore disconnect errors
+    }
+    micProcessorRef.current = null;
+    micSourceNodeRef.current = null;
+    audioStreamRef.current?.getTracks().forEach((t) => {
+      try {
+        t.enabled = false;
+        t.stop();
+      } catch {
+        // Ignore stop errors
+      }
+    });
+    audioStreamRef.current = null;
+    if (liveAudioCtxInRef.current) {
+      liveAudioCtxInRef.current.close().catch(() => {});
+      liveAudioCtxInRef.current = null;
+    }
+    micLevelRef.current = 0;
+  }, []);
+
   // Clear scheduled 24kHz PCM playback queue immediately (for Barge-In / interruption)
   const clearDuplexAudioQueue = useCallback(() => {
     for (const src of activeSourcesRef.current) {
@@ -462,6 +493,10 @@ export function LiveTalkModal({
 
   // --- Turn-by-Turn Fallback Recognition & SSE Speech (for static deploys without WS backend) ---
   const stopFallbackRecognition = useCallback(() => {
+    if (recognitionRestartTimerRef.current !== null) {
+      window.clearTimeout(recognitionRestartTimerRef.current);
+      recognitionRestartTimerRef.current = null;
+    }
     if (recognitionRef.current) {
       try {
         recognitionRef.current.onresult = null;
@@ -483,8 +518,14 @@ export function LiveTalkModal({
 
   const startFallbackRecognitionLoop = useCallback(() => {
     if (!isMountedRef.current || isMutedRef.current || transportModeRef.current !== 'fallback') return;
+    if (typeof window !== 'undefined' && !window.isSecureContext) {
+      setMicHint('Microphone access requires HTTPS or localhost. Use a secure HTTPS URL or type below.');
+      setStatus('unsupported');
+      return;
+    }
     const RecognitionCtor = getSpeechRecognitionConstructor();
     if (!RecognitionCtor) {
+      setMicHint('Hands-free speech recognition is not available in this browser. You can still type below!');
       setStatus('unsupported');
       return;
     }
@@ -524,12 +565,47 @@ export function LiveTalkModal({
     recognition.onerror = (ev) => {
       if (!isMountedRef.current || isMutedRef.current || transportModeRef.current !== 'fallback') return;
       if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
-        setMicHint('Microphone permission blocked. Allow mic access or type below.');
+        setMicHint('Microphone permission blocked. Allow mic access or tap "Tap to Speak" / type below.');
         setStatus('unsupported');
         return;
       }
+      if (ev.error === 'audio-capture') {
+        setMicHint('Microphone is busy or unavailable on this device. Close other mic apps or tap "Tap to Speak".');
+        return;
+      }
+      if (ev.error === 'network') {
+        setMicHint('Speech recognition network hiccup. Tap "Tap to Speak" or type below.');
+        return;
+      }
       if (statusRef.current === 'listening') {
-        window.setTimeout(() => {
+        if (recognitionRestartTimerRef.current !== null) {
+          window.clearTimeout(recognitionRestartTimerRef.current);
+        }
+        recognitionRestartTimerRef.current = window.setTimeout(() => {
+          recognitionRestartTimerRef.current = null;
+          if (
+            isMountedRef.current &&
+            !isMutedRef.current &&
+            statusRef.current === 'listening' &&
+            transportModeRef.current === 'fallback'
+          ) {
+            startFallbackRecognitionLoop();
+          }
+        }, 260);
+      }
+    };
+
+    recognition.onend = () => {
+      if (!isMountedRef.current || isMutedRef.current || transportModeRef.current !== 'fallback') return;
+      const cleaned = (finalTranscript || latestTranscript).trim();
+      if (cleaned) {
+        void handleFallbackUserQuery(cleaned);
+      } else if (statusRef.current === 'listening') {
+        if (recognitionRestartTimerRef.current !== null) {
+          window.clearTimeout(recognitionRestartTimerRef.current);
+        }
+        recognitionRestartTimerRef.current = window.setTimeout(() => {
+          recognitionRestartTimerRef.current = null;
           if (
             isMountedRef.current &&
             !isMutedRef.current &&
@@ -542,31 +618,12 @@ export function LiveTalkModal({
       }
     };
 
-    recognition.onend = () => {
-      if (!isMountedRef.current || isMutedRef.current || transportModeRef.current !== 'fallback') return;
-      const cleaned = (finalTranscript || latestTranscript).trim();
-      if (cleaned) {
-        void handleFallbackUserQuery(cleaned);
-      } else if (statusRef.current === 'listening') {
-        window.setTimeout(() => {
-          if (
-            isMountedRef.current &&
-            !isMutedRef.current &&
-            statusRef.current === 'listening' &&
-            transportModeRef.current === 'fallback'
-          ) {
-            startFallbackRecognitionLoop();
-          }
-        }, 120);
-      }
-    };
-
     recognitionRef.current = recognition;
     setStatus('listening');
     try {
       recognition.start();
     } catch {
-      // Ignore already-started error
+      setMicHint('Tap "Tap to Speak" below to start voice capture on mobile.');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeClonedProfile?.accentTone, activeClonedProfile?.language, stopFallbackRecognition]);
@@ -726,7 +783,6 @@ export function LiveTalkModal({
     [
       activeClonedProfile,
       captureHybridVisualFrame,
-      effectiveLiveLanguage,
       enqueueFallbackSentenceSpeech,
       hasBackendApi,
       hasServerGeminiKey,
@@ -746,6 +802,8 @@ export function LiveTalkModal({
       if (!isMountedRef.current || explicitEndRef.current || transportModeRef.current === 'fallback') return;
       wsReadyRef.current = false;
       clearDuplexAudioQueue();
+      // Release WebAudio mic capture before starting browser SpeechRecognition so Android/iOS doesn't fail on dual mic lock
+      releaseRawMicAudioCapture();
       if (wsRef.current) {
         try {
           wsRef.current.close();
@@ -771,11 +829,11 @@ export function LiveTalkModal({
         setMicHint('');
       }
       setAiCaption(
-        `Hi ${userName}! I'm listening live — speak freely or show your camera or screen!`
+        `Hi ${userName}! I'm listening live — speak freely or tap "Tap to Speak" anytime!`
       );
       startFallbackRecognitionLoop();
     },
-    [clearDuplexAudioQueue, startFallbackRecognitionLoop, userName]
+    [clearDuplexAudioQueue, releaseRawMicAudioCapture, startFallbackRecognitionLoop, userName]
   );
 
   // Camera helper (starts or flips Front/Back camera cleanly without restarting mic or Live WS)
@@ -871,7 +929,11 @@ export function LiveTalkModal({
     isScreenSharingRef.current = false;
     setScreenError('');
     setUserCaption('');
-    setMicHint('');
+    setMicHint(
+      typeof window !== 'undefined' && !window.isSecureContext
+        ? 'Microphone access requires HTTPS or localhost. Use a secure HTTPS URL or type below.'
+        : ''
+    );
     setTurns([]);
     turnsRef.current = [];
     currentUserTurnRef.current = '';
@@ -1214,20 +1276,9 @@ export function LiveTalkModal({
       stopAllFallbackSpeech();
       clearDuplexAudioQueue();
       stopScreenShare();
-      try {
-        micProcessorRef.current?.disconnect();
-        micSourceNodeRef.current?.disconnect();
-      } catch {
-        // Ignore disconnect errors
-      }
-      micProcessorRef.current = null;
-      micSourceNodeRef.current = null;
-      audioStreamRef.current?.getTracks().forEach((t) => t.stop());
-      audioStreamRef.current = null;
+      releaseRawMicAudioCapture();
       cameraStreamRef.current?.getTracks().forEach((t) => t.stop());
       cameraStreamRef.current = null;
-      liveAudioCtxInRef.current?.close().catch(() => {});
-      liveAudioCtxInRef.current = null;
       liveAudioCtxOutRef.current?.close().catch(() => {});
       liveAudioCtxOutRef.current = null;
     };
@@ -1241,6 +1292,7 @@ export function LiveTalkModal({
     hasServerGeminiKey,
     isOpen,
     ownerConfig?.globalSystemPrompt,
+    releaseRawMicAudioCapture,
     scheduleDuplexAudioChunk,
     startFallbackRecognitionLoop,
     startOrFlipCameraStream,
@@ -1495,12 +1547,14 @@ export function LiveTalkModal({
       {/* Top Header */}
       <div className="relative z-10 w-full max-w-4xl flex flex-wrap items-center justify-between gap-2.5">
         <div className="flex items-center gap-2.5 min-w-0">
-          <img
-            src={ROOSTERS_LOGO_SRC}
-            alt="Roosters AI"
-            referrerPolicy="no-referrer"
-            className="w-9 h-9 rounded-xl object-cover border border-[#1f293d] shrink-0"
-          />
+          <div className="w-9 h-9 rounded-lg overflow-hidden border border-[#1f293d] bg-[#07090e] shrink-0">
+            <img
+              src={ROOSTERS_LOGO_SRC}
+              alt="Roosters AI"
+              referrerPolicy="no-referrer"
+              className="w-full h-full object-cover"
+            />
+          </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <span className="font-display font-bold text-[15px] sm:text-[17px] bg-gradient-to-r from-[#ffd700] to-[#00d4ff] bg-clip-text text-transparent truncate">
@@ -1688,8 +1742,46 @@ export function LiveTalkModal({
           </p>
         )}
 
+        {/* Explicit Tap-to-Speak Control (reliable across mobile Android/iOS & desktop) */}
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+          <button
+            type="button"
+            onClick={handleInterruptAndListen}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-full border text-[12.5px] font-bold transition-all cursor-pointer active:scale-[0.98]"
+            style={{
+              backgroundColor:
+                status === 'listening'
+                  ? 'rgba(0, 212, 255, 0.16)'
+                  : status === 'speaking' || status === 'thinking'
+                    ? 'rgba(255, 215, 0, 0.14)'
+                    : 'rgba(15, 23, 42, 0.9)',
+              borderColor:
+                status === 'listening'
+                  ? '#00d4ff'
+                  : status === 'speaking' || status === 'thinking'
+                    ? '#ffd700'
+                    : '#334155',
+              color:
+                status === 'listening'
+                  ? '#00d4ff'
+                  : status === 'speaking' || status === 'thinking'
+                    ? '#ffd700'
+                    : '#e2e8f0',
+            }}
+          >
+            <Mic className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              {status === 'speaking' || status === 'thinking'
+                ? 'Tap to Interrupt & Speak'
+                : status === 'listening'
+                  ? 'Listening — Tap to Restart Mic'
+                  : 'Tap to Speak'}
+            </span>
+          </button>
+        </div>
+
         {/* Quick Text Box (also streams directly into active Live session) */}
-        <form onSubmit={handleManualSubmit} className="mt-3.5 w-full max-w-md flex gap-2">
+        <form onSubmit={handleManualSubmit} className="mt-3 w-full max-w-md flex gap-2">
           <input
             type="text"
             value={manualInput}

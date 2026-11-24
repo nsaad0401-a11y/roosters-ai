@@ -1,4 +1,4 @@
-export const ROOSTERS_LOGO_SRC = '/assets/aistudio/image_786e4f86_9bf3030e.jpg';
+export const ROOSTERS_LOGO_SRC = '/pwa-512x512.png';
 
 export interface WorldLanguageOption {
   code: string;
