@@ -1,13 +1,19 @@
 import { Film, Loader2, ShieldCheck, X } from 'lucide-react';
 import { FormEvent, useState } from 'react';
 import { APP_THEMES, AppTheme } from '../themes';
+import { VideoAspectRatio } from '../types';
 
 interface VideoCreateModalProps {
   isOpen: boolean;
   isGenerating: boolean;
   theme?: AppTheme;
   onClose: () => void;
-  onGenerate: (prompt: string, style: string) => void;
+  onGenerate: (
+    prompt: string,
+    style: string,
+    displayUserText?: string,
+    aspectRatio?: VideoAspectRatio
+  ) => void;
 }
 
 const VIDEO_STYLES = [
@@ -15,6 +21,12 @@ const VIDEO_STYLES = [
   'Anime & Stylized',
   'Educational Documentary',
   'Sci-Fi Futuristic',
+];
+
+const VIDEO_ASPECT_RATIOS: Array<{ value: VideoAspectRatio; label: string; sub: string }> = [
+  { value: '16:9', label: '16:9 YouTube', sub: 'Landscape' },
+  { value: '9:16', label: '9:16 Reels/Shorts', sub: 'Portrait' },
+  { value: '1:1', label: '1:1 Square', sub: 'Feed Post' },
 ];
 
 const QUICK_VIDEO_IDEAS = [
@@ -32,13 +44,14 @@ export function VideoCreateModal({
 }: VideoCreateModalProps) {
   const [prompt, setPrompt] = useState('');
   const [style, setStyle] = useState(VIDEO_STYLES[0]);
+  const [aspectRatio, setAspectRatio] = useState<VideoAspectRatio>('16:9');
 
   if (!isOpen) return null;
 
   const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!prompt.trim() || isGenerating) return;
-    onGenerate(prompt.trim(), style);
+    onGenerate(prompt.trim(), style, undefined, aspectRatio);
     setPrompt('');
   };
 
@@ -50,7 +63,7 @@ export function VideoCreateModal({
       aria-labelledby="create-video-title"
     >
       <div
-        className="w-full max-w-lg rounded-2xl border p-6 shadow-2xl"
+        className="w-full max-w-lg rounded-2xl border p-6 shadow-2xl max-h-[92dvh] overflow-y-auto"
         style={{
           backgroundColor: theme.cardBg,
           borderColor: theme.borderColor,
@@ -73,7 +86,7 @@ export function VideoCreateModal({
                 Create AI Video Studio
               </h2>
               <p className="text-[12px]" style={{ color: theme.textMuted }}>
-                Synthesize a playable 4-scene cinematic video with audio &amp; .webm download
+                Synthesize a playable 100% free &amp; unlimited AI video with download
               </p>
             </div>
           </div>
@@ -144,6 +157,36 @@ export function VideoCreateModal({
               className="block text-[12.5px] font-medium mb-1.5"
               style={{ color: theme.textSecondary }}
             >
+              Video Aspect Ratio
+            </span>
+            <div className="grid grid-cols-3 gap-2">
+              {VIDEO_ASPECT_RATIOS.map((ratio) => {
+                const active = aspectRatio === ratio.value;
+                return (
+                  <button
+                    key={ratio.value}
+                    type="button"
+                    onClick={() => setAspectRatio(ratio.value)}
+                    className="py-2 px-2.5 rounded-lg border transition-colors cursor-pointer text-left"
+                    style={{
+                      backgroundColor: active ? `${theme.accentSecondary}1a` : theme.subSurfaceBg,
+                      borderColor: active ? theme.accentSecondary : theme.borderColor,
+                      color: active ? theme.accentSecondary : theme.textMuted,
+                    }}
+                  >
+                    <div className="text-[12px] font-bold leading-tight">{ratio.label}</div>
+                    <div className="text-[10.5px] opacity-80">{ratio.sub}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <span
+              className="block text-[12.5px] font-medium mb-1.5"
+              style={{ color: theme.textSecondary }}
+            >
               Visual Style
             </span>
             <div className="grid grid-cols-2 gap-2">
@@ -165,7 +208,7 @@ export function VideoCreateModal({
             </div>
           </div>
 
-          {/* Single-Fetch Cinematic Engine Notice */}
+          {/* Veo 2 + AI Motion Engine Notice */}
           <div
             className="rounded-xl border px-3 py-2 text-[11.5px] flex items-center gap-2"
             style={{
@@ -176,7 +219,7 @@ export function VideoCreateModal({
           >
             <ShieldCheck className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
             <span>
-              Single-Fetch Cinematic Engine: 1 HD scene animated across 4 camera acts + .webm export.
+              Veo 2 + Unlimited AI Motion Engine: Seamless multi-scene rendering &amp; instant video download with zero paywalls.
             </span>
           </div>
 

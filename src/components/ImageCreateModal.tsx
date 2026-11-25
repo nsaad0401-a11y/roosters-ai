@@ -1,6 +1,7 @@
 import { ChangeEvent, FormEvent, useRef, useState } from 'react';
 import { ImagePlus, Loader2, Palette, ShieldCheck, X } from 'lucide-react';
 import { APP_THEMES, AppTheme } from '../themes';
+import { ImageAspectRatio } from '../types';
 
 interface ImageCreateModalProps {
   isOpen: boolean;
@@ -9,7 +10,7 @@ interface ImageCreateModalProps {
   onClose: () => void;
   onGenerate: (
     prompt: string,
-    aspectRatio: '1:1' | '16:9' | '4:3',
+    aspectRatio: ImageAspectRatio,
     displayUserText?: string,
     options?: {
       resolution?: '1K' | '2K';
@@ -18,10 +19,11 @@ interface ImageCreateModalProps {
   ) => void;
 }
 
-const ASPECT_RATIOS: Array<{ value: '1:1' | '16:9' | '4:3'; label: string }> = [
-  { value: '1:1', label: 'Square (1:1)' },
-  { value: '16:9', label: 'Widescreen (16:9)' },
-  { value: '4:3', label: 'Classic (4:3)' },
+const ASPECT_RATIOS: Array<{ value: ImageAspectRatio; label: string; sub: string }> = [
+  { value: '1:1', label: '1:1 Square', sub: '1024×1024' },
+  { value: '16:9', label: '16:9 Landscape', sub: '1280×720' },
+  { value: '9:16', label: '9:16 Portrait', sub: '720×1280' },
+  { value: '4:3', label: '4:3 Standard', sub: '1024×768' },
 ];
 
 export function ImageCreateModal({
@@ -32,7 +34,7 @@ export function ImageCreateModal({
   onGenerate,
 }: ImageCreateModalProps) {
   const [prompt, setPrompt] = useState('');
-  const [aspectRatio, setAspectRatio] = useState<'1:1' | '16:9' | '4:3'>('1:1');
+  const [aspectRatio, setAspectRatio] = useState<ImageAspectRatio>('1:1');
   const [resolution, setResolution] = useState<'1K' | '2K'>('1K');
   const [referenceImage, setReferenceImage] = useState<{
     dataUrl: string;
@@ -206,27 +208,31 @@ export function ImageCreateModal({
             />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3">
             <div>
               <span className="block text-[12.5px] font-medium mb-1.5" style={{ color: theme.textSecondary }}>
                 Aspect Ratio
               </span>
-              <div className="grid grid-cols-3 gap-1.5">
-                {ASPECT_RATIOS.map((ratio) => (
-                  <button
-                    key={ratio.value}
-                    type="button"
-                    onClick={() => setAspectRatio(ratio.value)}
-                    className="py-2 px-1.5 rounded-lg text-[11.5px] font-medium border transition-colors cursor-pointer"
-                    style={{
-                      backgroundColor: theme.subSurfaceBg,
-                      borderColor: aspectRatio === ratio.value ? theme.accentSecondary : theme.borderColor,
-                      color: aspectRatio === ratio.value ? theme.accentSecondary : theme.textMuted,
-                    }}
-                  >
-                    {ratio.value}
-                  </button>
-                ))}
+              <div className="grid grid-cols-2 gap-1.5">
+                {ASPECT_RATIOS.map((ratio) => {
+                  const active = aspectRatio === ratio.value;
+                  return (
+                    <button
+                      key={ratio.value}
+                      type="button"
+                      onClick={() => setAspectRatio(ratio.value)}
+                      className="py-2 px-2.5 rounded-lg border transition-colors cursor-pointer text-left"
+                      style={{
+                        backgroundColor: active ? `${theme.accentSecondary}1a` : theme.subSurfaceBg,
+                        borderColor: active ? theme.accentSecondary : theme.borderColor,
+                        color: active ? theme.accentSecondary : theme.textMuted,
+                      }}
+                    >
+                      <div className="text-[12px] font-bold leading-tight">{ratio.label}</div>
+                      <div className="text-[10.5px] opacity-80">{ratio.sub}</div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 

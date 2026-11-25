@@ -14,8 +14,7 @@ import {
 } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { detectTextLanguageCode, ROOSTERS_LOGO_SRC } from '../constants';
-import { MissingApiKeyError, OutgoingMessage, streamChatCompletion } from '../utils/aiClient';
-import { loadCustomApiKey } from '../utils/storage';
+import { getAllGeminiKeys, MissingApiKeyError, OutgoingMessage, streamChatCompletion } from '../utils/aiClient';
 import { OwnerConfig, UserAppSettings, VoiceStudioSettings } from '../types';
 import {
   cancelVoicePlayback,
@@ -770,12 +769,13 @@ export function LiveTalkModal({
       } catch (err) {
         if ((err as Error).name === 'AbortError' || !isMountedRef.current) return;
         streamFinishedRef.current = true;
+        const rawErr = err instanceof Error ? err.message : '';
+        const isQuotaMsg =
+          /429|quota|resource_exhausted|rate[\s-]*limit|too many requests/i.test(rawErr);
         const fallbackMsg =
-          err instanceof MissingApiKeyError
-            ? 'Voice service is momentarily unavailable.'
-            : err instanceof Error
-              ? err.message
-              : 'Brief connection hiccup. Please ask again.';
+          err instanceof MissingApiKeyError || isQuotaMsg || !rawErr
+            ? 'Brief connection hiccup. Please ask again — Roosters AI is ready!'
+            : rawErr;
         setAiCaption(fallbackMsg);
         enqueueFallbackSentenceSpeech(fallbackMsg);
       }
@@ -1148,8 +1148,7 @@ export function LiveTalkModal({
             ws.close();
             return;
           }
-          const customKey = loadCustomApiKey().trim();
-          const clientGeminiKey = customKey.startsWith('AIza') ? customKey : '';
+          const geminiKeys = getAllGeminiKeys();
           const personaNote = activeClonedProfile
             ? getClonedVoiceLiveTalkInstruction(activeClonedProfile)
             : '';
@@ -1166,7 +1165,8 @@ export function LiveTalkModal({
               responseStyle: userSettings?.responseStyle || 'simple',
               customInstructions: combinedLiveInstructions || undefined,
               globalSystemPrompt: ownerConfig?.globalSystemPrompt,
-              apiKey: clientGeminiKey || undefined,
+              apiKey: geminiKeys[0] || undefined,
+              apiKeys: geminiKeys.length > 0 ? geminiKeys : undefined,
             })
           );
         };

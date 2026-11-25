@@ -22,6 +22,7 @@ import {
   detectApiKeyProvider,
   loadCustomApiKey,
   loadOwnerConfig,
+  parseApiKeysList,
   saveCustomApiKey,
   saveOwnerConfig,
 } from '../utils/storage';
@@ -300,10 +301,10 @@ export function ApiKeyModal({
                   borderColor: theme.borderColor,
                 }}
               >
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-1.5 text-[12.5px] font-semibold">
                     <KeyRound className="w-3.5 h-3.5" style={{ color: theme.accentSecondary }} />
-                    <span>Gemini / Groq AI API Key</span>
+                    <span>Gemini / Groq API Keys (Comma-Separated Rotation)</span>
                   </div>
                   <span
                     className="text-[11px] font-medium"
@@ -316,13 +317,20 @@ export function ApiKeyModal({
                             : theme.textMuted,
                     }}
                   >
-                    {detectedProvider === 'gemini'
-                      ? 'Gemini Key Active'
-                      : detectedProvider === 'groq'
-                        ? 'Groq Key Active'
-                        : hasBuiltInKey
-                          ? 'Built-In Engine Active'
-                          : 'Optional Override'}
+                    {(() => {
+                      const count = parseApiKeysList(apiKeyInput).length;
+                      if (detectedProvider === 'gemini') {
+                        return count > 1
+                          ? `${count} Gemini Keys Active (Auto-Rotating)`
+                          : 'Gemini Key Active';
+                      }
+                      if (detectedProvider === 'groq') {
+                        return count > 1
+                          ? `${count} Groq Keys Active (Auto-Rotating)`
+                          : 'Groq Key Active';
+                      }
+                      return hasBuiltInKey ? 'Built-In Engine Active' : 'Optional Override';
+                    })()}
                   </span>
                 </div>
 
@@ -332,7 +340,7 @@ export function ApiKeyModal({
                     type={showKey ? 'text' : 'password'}
                     value={apiKeyInput}
                     onChange={(e) => setApiKeyInput(e.target.value)}
-                    placeholder="AIza... (Gemini) or gsk_... (Groq)"
+                    placeholder="e.g. AIzaKey1, AIzaKey2 (comma-separated for auto-rotation)"
                     autoComplete="off"
                     spellCheck={false}
                     className="w-full pl-3.5 pr-10 py-2 rounded-xl border text-[13px] font-mono focus:outline-none"
@@ -353,6 +361,10 @@ export function ApiKeyModal({
                   </button>
                 </div>
 
+                <p className="text-[11px]" style={{ color: theme.textMuted }}>
+                  Paste multiple Gemini keys separated by commas to rotate automatically if any key hits its limit, with free unlimited fallback always active.
+                </p>
+
                 {apiKeyInput.trim() && (
                   <button
                     type="button"
@@ -360,7 +372,7 @@ export function ApiKeyModal({
                     className="inline-flex items-center gap-1 text-[11.5px] font-medium text-[#ff6b6b] hover:underline cursor-pointer"
                   >
                     <Trash2 className="w-3 h-3" />
-                    <span>Remove Custom Key (Use Built-In)</span>
+                    <span>Remove Custom Keys (Use Built-In)</span>
                   </button>
                 )}
               </div>

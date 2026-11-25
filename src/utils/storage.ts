@@ -375,15 +375,31 @@ export function saveThemeSettings(settings: ThemeSettings): void {
 }
 
 const CUSTOM_API_KEY_STORAGE = 'roosters_ai_custom_api_key_v1';
+const USER_GEMINI_KEYS_STORAGE = 'roosters_ai_user_gemini_keys_v1';
 let memoryApiKey = '';
+let memoryUserGeminiKeys = '';
 
 export type ApiKeyProvider = 'gemini' | 'groq' | 'unknown' | 'none';
 
+export function parseApiKeysList(rawInput: string | undefined | null): string[] {
+  if (!rawInput || typeof rawInput !== 'string') return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of rawInput.split(/[,\n;]+/)) {
+    const k = part.trim();
+    if (k && !seen.has(k)) {
+      seen.add(k);
+      out.push(k);
+    }
+  }
+  return out;
+}
+
 export function detectApiKeyProvider(rawKey: string): ApiKeyProvider {
-  const key = rawKey.trim();
-  if (!key) return 'none';
-  if (key.startsWith('gsk_')) return 'groq';
-  if (key.startsWith('AIza')) return 'gemini';
+  const keys = parseApiKeysList(rawKey);
+  if (keys.length === 0) return 'none';
+  if (keys.some((k) => k.startsWith('AIza'))) return 'gemini';
+  if (keys.some((k) => k.startsWith('gsk_'))) return 'groq';
   return 'unknown';
 }
 
@@ -408,6 +424,34 @@ export function saveCustomApiKey(rawKey: string): void {
     return;
   }
   safeSetItem(CUSTOM_API_KEY_STORAGE, trimmed);
+}
+
+export function loadUserCustomApiKeys(): string {
+  const raw = safeGetItem(USER_GEMINI_KEYS_STORAGE);
+  if (raw !== null) {
+    memoryUserGeminiKeys = raw.trim();
+    return memoryUserGeminiKeys;
+  }
+  return memoryUserGeminiKeys;
+}
+
+export function saveUserCustomApiKeys(rawKeys: string): void {
+  const trimmed = rawKeys.trim();
+  memoryUserGeminiKeys = trimmed;
+  if (!trimmed) {
+    safeRemoveItem(USER_GEMINI_KEYS_STORAGE);
+    return;
+  }
+  safeSetItem(USER_GEMINI_KEYS_STORAGE, trimmed);
+}
+
+export function loadAllConfiguredApiKeys(): string[] {
+  return Array.from(
+    new Set([
+      ...parseApiKeysList(loadCustomApiKey()),
+      ...parseApiKeysList(loadUserCustomApiKeys()),
+    ])
+  );
 }
 
 const VOICE_SETTINGS_KEY = 'roosters_ai_voice_v1';

@@ -191,7 +191,8 @@ const CodeBlock = memo(function CodeBlock({ language, code }: { language: string
 });
 
 function renderInlineFormatting(text: string, isLight: boolean): Array<string | React.JSX.Element> {
-  const inlineRegex = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\)|https?:\/\/[^\s<>()]+(?:\([^\s<>()]*\)[^\s<>()]*)*)/gi;
+  const inlineRegex =
+    /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\((?:[^()\s]+|\([^()\s]*\))+\)|https?:\/\/[^\s<>()]+(?:\([^\s<>()]*\)[^\s<>()]*)*)/gi;
   const result: Array<string | React.JSX.Element> = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -220,17 +221,17 @@ function renderInlineFormatting(text: string, isLight: boolean): Array<string | 
     } else if (token.startsWith('**') && token.endsWith('**')) {
       result.push(
         <strong key={key} className={`font-semibold ${isLight ? 'text-slate-900' : 'text-white'}`}>
-          {token.slice(2, -2)}
+          {renderInlineFormatting(token.slice(2, -2), isLight)}
         </strong>
       );
     } else if (token.startsWith('*') && token.endsWith('*')) {
       result.push(
         <em key={key} className={`italic ${isLight ? 'text-slate-700' : 'text-slate-200'}`}>
-          {token.slice(1, -1)}
+          {renderInlineFormatting(token.slice(1, -1), isLight)}
         </em>
       );
     } else if (token.startsWith('[')) {
-      const linkMatch = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
+      const linkMatch = /^\[([^\]]+)\]\((.+)\)$/.exec(token);
       if (linkMatch) {
         const [, label, rawHref] = linkMatch;
         const href = rawHref.trim();

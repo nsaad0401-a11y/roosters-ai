@@ -1,5 +1,18 @@
-import { loadCustomApiKey, loadOwnerConfig, loadUserSettings } from './storage';
-import { GeneratedVideo, GroundingSource, ResponseStyleMode, VideoScene } from '../types';
+import {
+  loadAllConfiguredApiKeys,
+  loadCustomApiKey,
+  loadOwnerConfig,
+  loadUserSettings,
+  parseApiKeysList,
+} from './storage';
+import {
+  GeneratedVideo,
+  GroundingSource,
+  ImageAspectRatio,
+  ResponseStyleMode,
+  VideoAspectRatio,
+  VideoScene,
+} from '../types';
 
 export interface OutgoingAttachment {
   kind?: 'image' | 'file';
@@ -47,42 +60,56 @@ export function getEnvGeminiKey(): string {
   }
 }
 
+export function getAllGeminiKeys(): string[] {
+  const combined = [...loadAllConfiguredApiKeys(), ...parseApiKeysList(getEnvGeminiKey())];
+  return Array.from(new Set(combined.filter((k) => k.startsWith('AIza'))));
+}
+
+export function getAllGroqKeys(): string[] {
+  const combined = [...loadAllConfiguredApiKeys(), ...parseApiKeysList(getEnvGroqKey())];
+  return Array.from(new Set(combined.filter((k) => k.startsWith('gsk_'))));
+}
+
 export function resolveActiveProvider(hasServerGeminiKey: boolean): ResolvedProvider {
-  const localKey = loadCustomApiKey().trim();
-  if (localKey) {
-    if (localKey.startsWith('gsk_')) {
+  const configuredKeys = loadAllConfiguredApiKeys();
+  const firstLocal = configuredKeys[0] || '';
+  if (firstLocal) {
+    if (firstLocal.startsWith('gsk_')) {
       return {
         provider: 'groq',
-        apiKey: localKey,
+        apiKey: firstLocal,
         source: 'local',
         label: 'Groq (Auto Active Model)',
       };
     }
-    if (localKey.startsWith('AIza')) {
+    if (firstLocal.startsWith('AIza')) {
       return {
         provider: 'gemini',
-        apiKey: localKey,
+        apiKey: firstLocal,
         source: 'local',
-        label: 'Gemini (Owner Override)',
+        label:
+          configuredKeys.filter((k) => k.startsWith('AIza')).length > 1
+            ? `Gemini (${configuredKeys.filter((k) => k.startsWith('AIza')).length} Keys Rotating)`
+            : 'Gemini (Active Key)',
       };
     }
   }
 
-  const envGroqKey = getEnvGroqKey();
-  if (envGroqKey && envGroqKey.startsWith('gsk_')) {
+  const envGroqKeys = parseApiKeysList(getEnvGroqKey()).filter((k) => k.startsWith('gsk_'));
+  if (envGroqKeys.length > 0) {
     return {
       provider: 'groq',
-      apiKey: envGroqKey,
+      apiKey: envGroqKeys[0],
       source: 'env',
       label: 'Groq (Built-In)',
     };
   }
 
-  const envGeminiKey = getEnvGeminiKey();
-  if (envGeminiKey) {
+  const envGeminiKeys = parseApiKeysList(getEnvGeminiKey()).filter((k) => k.startsWith('AIza'));
+  if (envGeminiKeys.length > 0) {
     return {
       provider: 'gemini',
-      apiKey: envGeminiKey,
+      apiKey: envGeminiKeys[0],
       source: 'env',
       label: 'Gemini (Built-In)',
     };
@@ -101,7 +128,7 @@ export function resolveActiveProvider(hasServerGeminiKey: boolean): ResolvedProv
     provider: 'none',
     apiKey: '',
     source: 'none',
-    label: 'Unavailable',
+    label: 'Free Cloud Engine',
   };
 }
 
@@ -172,12 +199,19 @@ export function buildClientStudyTutorInstruction(options: {
     ? `User Custom Preferences: ${customInstructions.trim()}`
     : '';
 
+  const googleSearchRule = [
+    'LIVE GOOGLE SEARCH & REAL-TIME LINKS RULE: You have LIVE Google Search Grounding (googleSearch) enabled on EVERY chat message (both normal chat and Deep Research).',
+    'NEVER say "I cannot fetch real-time internet links", "I cannot access real-time web links", "I cannot browse the internet", "I do not have live web access", or "I cannot provide direct links".',
+    'Whenever a user asks for YouTube videos, recent news, tutorials, official websites, live updates, or internet links, ALWAYS actively search Google via your search tool, inspect the grounding search results, and display the real clickable https:// URLs clearly in your reply using Markdown links formatted as [Clear Title](https://full-url).',
+    'Only include real https:// URLs grounded by search results; never fabricate or guess broken URLs.',
+  ].join(' ');
+
   if (isLiveVoice) {
     return [
       baseInstruction,
       userName ? `You are warmly assisting ${userName}.` : '',
       multimodalCore,
-      'Speak naturally in 2–4 concise, clear sentences without markdown symbols, URLs, or code fences unless asked.',
+      'Live Google Search is enabled for current facts and news. NEVER claim you lack real-time information. Speak naturally in 2–4 concise, clear sentences without markdown symbols, URLs, or code fences unless specifically asked for links.',
       langRule,
       globalExtra,
       userExtra,
@@ -190,6 +224,7 @@ export function buildClientStudyTutorInstruction(options: {
     baseInstruction,
     userName ? `You are assisting ${userName}.` : '',
     multimodalCore,
+    googleSearchRule,
     'Roosters AI has full built-in HD image and video creation capabilities. NEVER say "I cannot create images", "I cannot generate pictures", or refuse to create images in English, Urdu, or Roman Urdu. If the user asks for an image, picture, photo, portrait, logo, or floor plan/design (e.g., "pic bna do", "tasveer banao", "naksha banao"), reply ONLY with [CREATE_IMAGE: <detailed, photorealistic English prompt>].',
     'Format code in fenced markdown blocks with language tags only when code is requested or relevant.',
     'NEVER output ASCII art, text-character drawings, or box-art diagrams when asked for a picture, image, photo, or video.',
@@ -387,9 +422,8 @@ export async function detectAndEnhanceChatMediaIntent(params: {
     return { intent: fastIntent };
   }
 
-  const localKey = loadCustomApiKey().trim();
-  const envGeminiKey = getEnvGeminiKey();
-  const clientGeminiKey = localKey.startsWith('AIza') ? localKey : envGeminiKey;
+  const geminiKeys = getAllGeminiKeys();
+  const clientGeminiKey = geminiKeys[0] || '';
 
   // Step 1A: Server-side Gemini intent & prompt enhancer (preferred)
   if (params.hasBackendApi || params.hasServerGeminiKey) {
@@ -404,6 +438,7 @@ export async function detectAndEnhanceChatMediaIntent(params: {
           hasAttachment: params.hasAttachment,
           hasPreviousGeneratedImage: hasPrevImg,
           apiKey: clientGeminiKey || undefined,
+          apiKeys: geminiKeys.length > 0 ? geminiKeys : undefined,
         }),
       });
       if (resp.ok) {
@@ -426,7 +461,7 @@ export async function detectAndEnhanceChatMediaIntent(params: {
             intent: resolvedIntent,
             preEnhanced: {
               shortTitle: (data.shortTitle || cleaned).slice(0, 56),
-              detailedPrompt: sanitizeShortSafePrompt(data.enhancedPrompt.trim(), 24),
+              detailedPrompt: sanitizeShortSafePrompt(data.enhancedPrompt.trim(), 48),
             },
           };
         }
@@ -449,15 +484,15 @@ export async function detectAndEnhanceChatMediaIntent(params: {
     .filter(Boolean)
     .join('\n\n');
 
-  // Step 1B: Direct Gemini REST fallback (for static deployments with client Gemini key)
-  if (clientGeminiKey) {
+  // Step 1B: Direct Gemini REST fallback with key rotation
+  for (const keyCandidate of geminiKeys) {
     try {
       const sysText = [
         'Classify the Latest User Message with Session State and Recent Conversation Context in ANY world language (100+ languages) as intent "image_edit", "image", "video", or "chat".',
         '- Choose "image_edit" when USER_ATTACHED_PHOTO=true and user wants to edit/transform/restore/make 3D figurine/change background/outfit, OR when PREVIOUS_GENERATED_IMAGE_EXISTS_IN_CHAT=true and user asks a follow-up visual refinement ("now make it night time").',
         '- Choose "image" when user asks to create a new picture/photo/naksha (including follow-ups after "Mujhe aik pic bna k do").',
         '- Choose "chat" for questions, vision Q&A on an attached photo, or coding help.',
-        'If "image" or "image_edit", return a clean, safe, family-friendly English enhancedPrompt STRICTLY under 25 words including sharp photography descriptors ("ultra-sharp focus, crisp details, 8k resolution, DSLR 85mm lens, natural lighting") + 3-6 word shortTitle.',
+        'If "image" or "image_edit", return a clean, safe, family-friendly English enhancedPrompt under 42 words preserving any exact quoted text/brand names in "..." verbatim, plus photography descriptors ("cinematic lighting, 8k resolution, sharp details, rich colors, professional composition") and a 3-6 word shortTitle.',
         'Return ONLY JSON: {"intent":"image_edit|image|video|chat","shortTitle":"...","enhancedPrompt":"..."}',
       ].join(' ');
       const resp = await fetch(
@@ -466,7 +501,7 @@ export async function detectAndEnhanceChatMediaIntent(params: {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-goog-api-key': clientGeminiKey,
+            'x-goog-api-key': keyCandidate,
           },
           body: JSON.stringify({
             system_instruction: { parts: [{ text: sysText }] },
@@ -507,7 +542,7 @@ export async function detectAndEnhanceChatMediaIntent(params: {
                 shortTitle: (parsed.shortTitle || cleaned).slice(0, 56),
                 detailedPrompt:
                   resolvedIntent === 'image_edit'
-                    ? parsed.enhancedPrompt.trim()
+                    ? sanitizeShortSafePrompt(parsed.enhancedPrompt.trim(), 48)
                     : buildSafeArtisticPrompt(parsed.enhancedPrompt.trim()),
               },
             };
@@ -516,7 +551,7 @@ export async function detectAndEnhanceChatMediaIntent(params: {
         }
       }
     } catch {
-      // Fall back cleanly
+      // Try next key
     }
   }
 
@@ -825,8 +860,87 @@ const GEMINI_SAFETY_SETTINGS = [
   { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
 ];
 
+async function streamFromPollinationsText(params: {
+  messages: OutgoingMessage[];
+  language?: string;
+  userName?: string;
+  isLiveVoice?: boolean;
+  deepResearch?: boolean;
+  responseStyle?: ResponseStyleMode;
+  customInstructions?: string;
+  globalSystemPrompt?: string;
+  signal?: AbortSignal;
+  onChunk: (text: string) => void;
+}): Promise<string> {
+  const systemText = buildClientStudyTutorInstruction({
+    language: params.language,
+    userName: params.userName,
+    isLiveVoice: params.isLiveVoice,
+    deepResearch: params.deepResearch,
+    responseStyle: params.responseStyle,
+    customInstructions: params.customInstructions,
+    globalSystemPrompt: params.globalSystemPrompt,
+  });
+
+  const openaiMessages = [
+    { role: 'system' as const, content: systemText },
+    ...params.messages.slice(-10).map((m) => ({
+      role: m.role,
+      content: formatMessageTextWithFile(m),
+    })),
+  ];
+
+  const endpoints = [
+    'https://text.pollinations.ai/openai',
+    'https://gen.pollinations.ai/v1/chat/completions',
+  ];
+
+  for (const endpoint of endpoints) {
+    try {
+      const ctrl = new AbortController();
+      const timer = window.setTimeout(() => ctrl.abort(), 32000);
+      const onParentAbort = () => ctrl.abort();
+      params.signal?.addEventListener('abort', onParentAbort, { once: true });
+      try {
+        const resp = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'openai',
+            messages: openaiMessages,
+            seed: Math.floor(Math.random() * 100000),
+          }),
+          signal: ctrl.signal,
+        });
+        if (!resp.ok) continue;
+        const json = (await resp.json()) as {
+          choices?: Array<{ message?: { content?: string } }>;
+        };
+        const content = (json.choices?.[0]?.message?.content || '').trim();
+        if (content) {
+          params.onChunk(content);
+          return content;
+        }
+      } finally {
+        window.clearTimeout(timer);
+        params.signal?.removeEventListener('abort', onParentAbort);
+      }
+    } catch (err) {
+      if ((err as Error).name === 'AbortError' && params.signal?.aborted) {
+        throw err;
+      }
+    }
+  }
+
+  const graceful =
+    'I am online and ready! Please send your question again so I can respond right away.';
+  params.onChunk(graceful);
+  return graceful;
+}
+
 async function streamFromGeminiDirect(params: {
-  apiKey: string;
+  apiKey?: string;
+  apiKeys?: string[];
   messages: OutgoingMessage[];
   language?: string;
   userName?: string;
@@ -840,6 +954,13 @@ async function streamFromGeminiDirect(params: {
   onChunk: (text: string) => void;
   onSources?: (sources: GroundingSource[]) => void;
 }): Promise<string> {
+  const keyPool = Array.from(
+    new Set([...(params.apiKeys || []), ...(params.apiKey ? [params.apiKey] : [])].filter(Boolean))
+  );
+  if (keyPool.length === 0) {
+    throw new Error('No Gemini keys available for direct request.');
+  }
+
   const systemText = buildClientStudyTutorInstruction({
     language: params.language,
     userName: params.userName,
@@ -881,8 +1002,9 @@ async function streamFromGeminiDirect(params: {
     };
   });
 
-  const baseCandidates = [
+  const baseCandidates: Array<{ model: string; thinkingConfig?: Record<string, unknown> }> = [
     { model: 'gemini-2.5-flash', thinkingConfig: { thinkingBudget: 0 } },
+    { model: 'gemini-2.0-flash-lite' },
     { model: 'gemini-3.1-flash-lite', thinkingConfig: { thinkingLevel: 'MINIMAL' } },
     { model: 'gemini-4-hydrogen', thinkingConfig: { thinkingLevel: 'LOW' } },
   ];
@@ -898,125 +1020,152 @@ async function streamFromGeminiDirect(params: {
   let lastErrorMsg = 'Unable to connect to Gemini right now.';
   const collectedSources = new Map<string, string>();
 
-  for (let i = 0; i < candidates.length; i++) {
-    const candidate = candidates[i];
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${candidate.model}:streamGenerateContent?alt=sse`;
-    const makeRequest = (includeSearch: boolean) =>
-      fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': params.apiKey,
-        },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: systemText }] },
-          contents,
-          ...(includeSearch ? { tools: [{ google_search: {} }] } : {}),
-          safetySettings: GEMINI_SAFETY_SETTINGS,
-          generationConfig: {
-            thinkingConfig: candidate.thinkingConfig,
+  for (const activeKey of keyPool) {
+    for (let i = 0; i < candidates.length; i++) {
+      const candidate = candidates[i];
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${candidate.model}:streamGenerateContent?alt=sse`;
+      const makeRequest = (includeSearch: boolean) =>
+        fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': activeKey,
           },
-        }),
-        signal: params.signal,
-      });
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: systemText }] },
+            contents,
+            ...(includeSearch ? { tools: [{ google_search: {} }] } : {}),
+            safetySettings: GEMINI_SAFETY_SETTINGS,
+            ...(candidate.thinkingConfig
+              ? { generationConfig: { thinkingConfig: candidate.thinkingConfig } }
+              : {}),
+          }),
+          signal: params.signal,
+        });
 
-    let resp = await makeRequest(!params.isLiveVoice);
-    if (!resp.ok && !params.isLiveVoice && resp.status === 400) {
-      resp = await makeRequest(false);
-    }
-
-    if (!resp.ok || !resp.body) {
-      const rawErr = await resp.text().catch(() => '');
-      lastErrorMsg = extractReadableApiError(rawErr, resp.status);
-      if ((resp.status === 503 || resp.status === 429 || resp.status === 404) && i < candidates.length - 1) {
+      let resp: Response;
+      try {
+        resp = await makeRequest(true);
+        if (!resp.ok && (resp.status === 400 || resp.status === 429)) {
+          resp = await makeRequest(false);
+        }
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') throw err;
         continue;
       }
-      throw new Error(lastErrorMsg);
-    }
 
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let accumulated = '';
+      if (!resp.ok || !resp.body) {
+        const rawErr = await resp.text().catch(() => '');
+        lastErrorMsg = extractReadableApiError(rawErr, resp.status);
+        continue;
+      }
 
-    const processEvents = (events: string[]) => {
-      for (const rawEvent of events) {
-        const lines = rawEvent.split(/\r?\n/);
-        for (const rawLine of lines) {
-          const line = rawLine.trim();
-          if (!line.startsWith('data:')) continue;
-          const payload = line.slice(5).trim();
-          if (!payload || payload === '[DONE]') continue;
-          try {
-            const parsed = JSON.parse(payload) as {
-              candidates?: Array<{
-                finishReason?: string;
-                content?: { parts?: Array<{ text?: string }> };
-                groundingMetadata?: {
-                  groundingChunks?: Array<{ web?: { uri?: string; title?: string } }>;
-                };
-              }>;
-              promptFeedback?: { blockReason?: string };
-              error?: { message?: string };
-            };
-            if (parsed.error?.message) {
-              throw new Error(parsed.error.message);
-            }
-            if (parsed.promptFeedback?.blockReason) {
-              throw new Error(`Gemini blocked the request (${parsed.promptFeedback.blockReason}).`);
-            }
-            const gChunks = parsed.candidates?.[0]?.groundingMetadata?.groundingChunks;
-            if (Array.isArray(gChunks)) {
-              for (const gc of gChunks) {
-                const uri = gc?.web?.uri?.trim();
-                if (uri && /^https?:\/\//i.test(uri) && !collectedSources.has(uri)) {
-                  collectedSources.set(uri, (gc.web?.title || uri).trim());
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let accumulated = '';
+
+      const processEvents = (events: string[]) => {
+        for (const rawEvent of events) {
+          const lines = rawEvent.split(/\r?\n/);
+          for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line.startsWith('data:')) continue;
+            const payload = line.slice(5).trim();
+            if (!payload || payload === '[DONE]') continue;
+            try {
+              const parsed = JSON.parse(payload) as {
+                candidates?: Array<{
+                  finishReason?: string;
+                  content?: { parts?: Array<{ text?: string }> };
+                  groundingMetadata?: {
+                    groundingChunks?: Array<{
+                      web?: { uri?: string; title?: string };
+                      retrievedContext?: { uri?: string; title?: string };
+                    }>;
+                  };
+                }>;
+                promptFeedback?: { blockReason?: string };
+                error?: { message?: string };
+              };
+              if (parsed.error?.message) {
+                throw new Error(parsed.error.message);
+              }
+              if (parsed.promptFeedback?.blockReason) {
+                throw new Error(`Gemini blocked the request (${parsed.promptFeedback.blockReason}).`);
+              }
+              const gChunks = parsed.candidates?.[0]?.groundingMetadata?.groundingChunks;
+              if (Array.isArray(gChunks)) {
+                for (const gc of gChunks) {
+                  const uri = (gc?.web?.uri || gc?.retrievedContext?.uri || '').trim();
+                  if (uri && /^https?:\/\//i.test(uri) && !collectedSources.has(uri)) {
+                    const title = (gc?.web?.title || gc?.retrievedContext?.title || uri).trim();
+                    collectedSources.set(uri, title);
+                  }
                 }
               }
-            }
-            const chunkText = parsed.candidates?.[0]?.content?.parts
-              ?.map((p) => p.text ?? '')
-              .join('');
-            if (chunkText) {
-              accumulated += chunkText;
-              params.onChunk(chunkText);
-            }
-          } catch (e) {
-            if (e instanceof Error && e.message && !e.message.includes('JSON')) {
-              throw e;
+              const chunkText = parsed.candidates?.[0]?.content?.parts
+                ?.map((p) => p.text ?? '')
+                .join('');
+              if (chunkText) {
+                accumulated += chunkText;
+                params.onChunk(chunkText);
+              }
+            } catch (e) {
+              if (e instanceof Error && e.message && !e.message.includes('JSON')) {
+                throw e;
+              }
             }
           }
         }
+      };
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const events = buffer.split(/\r?\n\r?\n/);
+          buffer = events.pop() ?? '';
+          processEvents(events);
+        }
+
+        buffer += decoder.decode();
+        if (buffer.trim()) {
+          processEvents(buffer.split(/\r?\n\r?\n/));
+        }
+
+        if (!accumulated.trim()) {
+          continue;
+        }
+
+        if (collectedSources.size > 0) {
+          const sources = Array.from(collectedSources.entries())
+            .slice(0, 12)
+            .map(([uri, title]) => ({ uri, title }));
+
+          if (!/https?:\/\//i.test(accumulated) && !params.isLiveVoice) {
+            const markdownLinks = sources
+              .slice(0, 6)
+              .map((s) => {
+                const safeTitle = s.title.replace(/[\[\]]/g, '').trim() || s.uri;
+                return `- [${safeTitle}](${s.uri})`;
+              })
+              .join('\n');
+            const appendText = `\n\n**Verified Live Links:**\n${markdownLinks}`;
+            accumulated += appendText;
+            params.onChunk(appendText);
+          }
+
+          params.onSources?.(sources);
+        }
+
+        return accumulated;
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') throw err;
+        if (accumulated.trim()) return accumulated;
       }
-    };
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const events = buffer.split(/\r?\n\r?\n/);
-      buffer = events.pop() ?? '';
-      processEvents(events);
     }
-
-    buffer += decoder.decode();
-    if (buffer.trim()) {
-      processEvents(buffer.split(/\r?\n\r?\n/));
-    }
-
-    if (!accumulated.trim()) {
-      throw new Error('Gemini stream completed without returning any text.');
-    }
-
-    if (collectedSources.size > 0) {
-      params.onSources?.(
-        Array.from(collectedSources.entries())
-          .slice(0, 12)
-          .map(([uri, title]) => ({ uri, title }))
-      );
-    }
-
-    return accumulated;
   }
 
   throw new Error(lastErrorMsg);
@@ -1025,6 +1174,7 @@ async function streamFromGeminiDirect(params: {
 async function streamFromBackendEndpoint(params: {
   endpoint: '/api/chat' | '/api/chat-live-stream';
   apiKey?: string;
+  apiKeys?: string[];
   messages: OutgoingMessage[];
   language?: string;
   userName?: string;
@@ -1045,7 +1195,8 @@ async function streamFromBackendEndpoint(params: {
         messages: params.messages,
         language: params.language,
         userName: params.userName,
-        apiKey: params.apiKey || undefined,
+        apiKey: params.apiKey || params.apiKeys?.[0] || undefined,
+        apiKeys: params.apiKeys && params.apiKeys.length > 0 ? params.apiKeys : undefined,
         deepResearch: Boolean(params.deepResearch),
         responseStyle: params.responseStyle,
         customInstructions: params.customInstructions,
@@ -1058,7 +1209,6 @@ async function streamFromBackendEndpoint(params: {
     const contentType = resp.headers.get('content-type') || '';
 
     if (!resp.ok) {
-      // If deployed statically (Vercel / Netlify), /api/* often returns 404/405 HTML
       if (resp.status === 404 || resp.status === 405 || !contentType.includes('application/json')) {
         return {
           ok: false,
@@ -1067,12 +1217,9 @@ async function streamFromBackendEndpoint(params: {
         };
       }
       const errData = (await resp.json().catch(() => ({}))) as { error?: string; code?: string };
-      if (errData.code === 'MISSING_API_KEY') {
-        return { ok: false, shouldFallbackDirect: false, error: new MissingApiKeyError() };
-      }
       return {
         ok: false,
-        shouldFallbackDirect: Boolean(params.apiKey),
+        shouldFallbackDirect: true,
         error: new Error(errData.error || extractReadableApiError('', resp.status)),
       };
     }
@@ -1120,10 +1267,6 @@ async function streamFromBackendEndpoint(params: {
               params.onSources?.(validSources);
             }
           } else if (parsed.type === 'error') {
-            if (parsed.code === 'MISSING_API_KEY') {
-              streamError = new MissingApiKeyError();
-              return;
-            }
             streamError = new Error(parsed.error || 'AI streaming failed without details.');
             return;
           }
@@ -1139,7 +1282,7 @@ async function streamFromBackendEndpoint(params: {
       buffer = events.pop() ?? '';
       processBackendEvents(events);
       if (streamError) {
-        return { ok: false, shouldFallbackDirect: false, error: streamError };
+        return { ok: false, shouldFallbackDirect: !accumulated, error: streamError };
       }
     }
 
@@ -1147,14 +1290,14 @@ async function streamFromBackendEndpoint(params: {
     if (buffer.trim()) {
       processBackendEvents(buffer.split(/\r?\n\r?\n/));
       if (streamError) {
-        return { ok: false, shouldFallbackDirect: false, error: streamError };
+        return { ok: false, shouldFallbackDirect: !accumulated, error: streamError };
       }
     }
 
     if (!accumulated.trim()) {
       return {
         ok: false,
-        shouldFallbackDirect: Boolean(params.apiKey),
+        shouldFallbackDirect: true,
         error: new Error('Server stream finished without returning any content.'),
       };
     }
@@ -1173,7 +1316,8 @@ async function streamFromBackendEndpoint(params: {
 }
 
 async function analyzeImageViaGeminiRest(params: {
-  apiKey: string;
+  apiKey?: string;
+  apiKeys?: string[];
   prompt: string;
   base64Data: string;
   mimeType: string;
@@ -1193,6 +1337,13 @@ async function analyzeImageViaGeminiRest(params: {
     throw new Error('Image attachment has empty Base64 data.');
   }
 
+  const keyPool = Array.from(
+    new Set([...(params.apiKeys || []), ...(params.apiKey ? [params.apiKey] : [])].filter(Boolean))
+  );
+  if (keyPool.length === 0) {
+    throw new Error('No Gemini keys available for Vision.');
+  }
+
   const systemText = buildClientStudyTutorInstruction({
     language: params.language,
     userName: params.userName,
@@ -1207,95 +1358,94 @@ async function analyzeImageViaGeminiRest(params: {
     thinkingConfig?: Record<string, unknown>;
   }> = [
     { model: 'gemini-2.5-flash', thinkingConfig: { thinkingBudget: 0 } },
+    { model: 'gemini-2.0-flash-lite' },
     { model: 'gemini-3.1-flash-lite', thinkingConfig: { thinkingLevel: 'MINIMAL' } },
     { model: 'gemini-4-hydrogen', thinkingConfig: { thinkingLevel: 'LOW' } },
   ];
 
-  let lastError = 'Gemini Vision API request failed.';
+  let lastError = 'Photo analysis service is momentarily busy. Please try again.';
 
-  for (let i = 0; i < visionCandidates.length; i++) {
-    const candidate = visionCandidates[i];
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${candidate.model}:generateContent?key=${encodeURIComponent(
-      params.apiKey
-    )}`;
+  for (const activeKey of keyPool) {
+    for (let i = 0; i < visionCandidates.length; i++) {
+      const candidate = visionCandidates[i];
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${candidate.model}:generateContent?key=${encodeURIComponent(
+        activeKey
+      )}`;
 
-    const requestBody: Record<string, unknown> = {
-      system_instruction: { parts: [{ text: systemText }] },
-      contents: [
-        {
-          parts: [
-            { text: params.prompt || 'Describe and analyze this image in detail.' },
-            {
-              inline_data: {
-                mime_type: params.mimeType || 'image/jpeg',
-                data: cleanBase64,
+      const requestBody: Record<string, unknown> = {
+        system_instruction: { parts: [{ text: systemText }] },
+        contents: [
+          {
+            parts: [
+              { text: params.prompt || 'Describe and analyze this image in detail.' },
+              {
+                inline_data: {
+                  mime_type: params.mimeType || 'image/jpeg',
+                  data: cleanBase64,
+                },
               },
-            },
-          ],
-        },
-      ],
-      safetySettings: GEMINI_SAFETY_SETTINGS,
-    };
+            ],
+          },
+        ],
+        safetySettings: GEMINI_SAFETY_SETTINGS,
+      };
 
-    if (candidate.thinkingConfig) {
-      requestBody.generationConfig = { thinkingConfig: candidate.thinkingConfig };
-    }
+      if (candidate.thinkingConfig) {
+        requestBody.generationConfig = { thinkingConfig: candidate.thinkingConfig };
+      }
 
-    const reqCtrl = new AbortController();
-    const timeoutId = window.setTimeout(() => reqCtrl.abort(), 12000);
-    const onAbort = () => reqCtrl.abort();
-    params.signal?.addEventListener('abort', onAbort, { once: true });
+      const reqCtrl = new AbortController();
+      const timeoutId = window.setTimeout(() => reqCtrl.abort(), 14000);
+      const onAbort = () => reqCtrl.abort();
+      params.signal?.addEventListener('abort', onAbort, { once: true });
 
-    let resp: Response;
-    try {
-      resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
-        signal: reqCtrl.signal,
-      });
-    } finally {
-      window.clearTimeout(timeoutId);
-      params.signal?.removeEventListener('abort', onAbort);
-    }
+      let resp: Response;
+      try {
+        resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
+          signal: reqCtrl.signal,
+        });
+      } catch (err) {
+        if (params.signal?.aborted) throw err;
+        continue;
+      } finally {
+        window.clearTimeout(timeoutId);
+        params.signal?.removeEventListener('abort', onAbort);
+      }
 
-    const rawText = await resp.text();
-    if (!resp.ok) {
-      lastError = `Gemini Vision API (${resp.status}): ${extractReadableApiError(rawText, resp.status)}`;
-      if ((resp.status === 404 || resp.status === 503 || resp.status === 429) && i < visionCandidates.length - 1) {
+      const rawText = await resp.text();
+      if (!resp.ok) {
+        lastError = extractReadableApiError(rawText, resp.status);
         continue;
       }
-      throw new Error(lastError);
+
+      try {
+        const data = JSON.parse(rawText) as {
+          candidates?: Array<{
+            finishReason?: string;
+            content?: { parts?: Array<{ text?: string }> };
+          }>;
+          promptFeedback?: { blockReason?: string };
+          error?: { message?: string };
+        };
+
+        if (data.error?.message || data.promptFeedback?.blockReason) {
+          continue;
+        }
+
+        const replyText = (
+          data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') || ''
+        ).trim();
+
+        if (replyText) {
+          return replyText;
+        }
+      } catch {
+        continue;
+      }
     }
-
-    const data = JSON.parse(rawText) as {
-      candidates?: Array<{
-        finishReason?: string;
-        content?: { parts?: Array<{ text?: string }> };
-      }>;
-      promptFeedback?: { blockReason?: string };
-      error?: { message?: string };
-    };
-
-    if (data.error?.message) {
-      lastError = `Gemini Vision API error: ${data.error.message}`;
-      if (i < visionCandidates.length - 1) continue;
-      throw new Error(lastError);
-    }
-    if (data.promptFeedback?.blockReason) {
-      throw new Error(`Gemini blocked this image request (${data.promptFeedback.blockReason}).`);
-    }
-
-    const replyText = (
-      data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? '').join('') || ''
-    ).trim();
-
-    if (!replyText) {
-      const finishReason = data.candidates?.[0]?.finishReason || 'UNKNOWN';
-      throw new Error(`Gemini Vision returned empty text (finishReason: ${finishReason}).`);
-    }
-
-    return replyText;
   }
 
   throw new Error(lastError);
@@ -1326,90 +1476,103 @@ export async function streamChatCompletion(params: {
 
   const recentMessages = params.messages.slice(-10);
   const resolved = resolveActiveProvider(params.hasServerGeminiKey);
+  const geminiKeys = getAllGeminiKeys();
+  const groqKeys = getAllGroqKeys();
   const lastMsg = recentMessages[recentMessages.length - 1];
   const currentHasImage = Boolean(lastMsg?.attachment?.base64) && lastMsg?.attachment?.kind !== 'file';
   const hasAnyImageInHistory = recentMessages.some(
     (m) => Boolean(m.attachment?.base64) && m.attachment?.kind !== 'file'
   );
 
-  // When the current message has an uploaded photo/screenshot or live camera frame, bypass Groq completely
-  // and call Gemini Vision REST directly with clean inline_data JSON
+  // Vision attachment flow (rotates all Gemini keys, then tries /api/vision)
   if (currentHasImage && lastMsg?.attachment?.base64) {
-    const localKey = loadCustomApiKey().trim();
-    const geminiDirectKey = localKey.startsWith('AIza') ? localKey : getEnvGeminiKey();
     const promptText =
       lastMsg.content?.trim() || 'Describe and analyze this image in detail.';
     const rawB64 = lastMsg.attachment.base64;
     const base64Data = (rawB64.includes(',') ? rawB64.split(',')[1] : rawB64).trim();
     const mimeType = lastMsg.attachment.mimeType || 'image/jpeg';
 
-    if (geminiDirectKey) {
-      const visionText = await analyzeImageViaGeminiRest({
-        apiKey: geminiDirectKey,
-        prompt: promptText,
-        base64Data,
-        mimeType,
-        language: params.language,
-        userName: params.userName,
-        isLiveVoice: params.isLiveVoice,
-        responseStyle,
-        customInstructions,
-        globalSystemPrompt,
+    if (geminiKeys.length > 0) {
+      try {
+        const visionText = await analyzeImageViaGeminiRest({
+          apiKeys: geminiKeys,
+          prompt: promptText,
+          base64Data,
+          mimeType,
+          language: params.language,
+          userName: params.userName,
+          isLiveVoice: params.isLiveVoice,
+          responseStyle,
+          customInstructions,
+          globalSystemPrompt,
+          signal: params.signal,
+        });
+        params.onChunk(visionText);
+        return visionText;
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') throw err;
+        // Fall through to /api/vision server backup
+      }
+    }
+
+    if (params.hasBackendApi || params.hasServerGeminiKey) {
+      const visionResp = await fetch('/api/vision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: promptText,
+          base64Data,
+          mimeType,
+          language: params.language,
+          userName: params.userName,
+          isLiveVoice: params.isLiveVoice,
+          responseStyle,
+          customInstructions,
+          globalSystemPrompt,
+          apiKeys: geminiKeys.length > 0 ? geminiKeys : undefined,
+        }),
         signal: params.signal,
       });
-      params.onChunk(visionText);
-      return visionText;
+
+      const contentType = visionResp.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const visionJson = (await visionResp.json()) as { text?: string; error?: string };
+        const resultText = (visionJson.text || '').trim();
+        if (visionResp.ok && resultText) {
+          params.onChunk(resultText);
+          return resultText;
+        }
+      }
     }
 
-    // Server-side Gemini key path: call /api/vision (clean direct Gemini Vision REST call)
-    const visionResp = await fetch('/api/vision', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        prompt: promptText,
-        base64Data,
-        mimeType,
-        language: params.language,
-        userName: params.userName,
-        isLiveVoice: params.isLiveVoice,
-        responseStyle,
-        customInstructions,
-        globalSystemPrompt,
-      }),
+    // Graceful fallback rather than crashing with quota error
+    return streamFromPollinationsText({
+      messages: [
+        ...recentMessages.slice(0, -1),
+        {
+          role: 'user',
+          content: `The user shared an image named "${lastMsg.attachment.name || 'photo'}" with message: ${promptText}. Please respond helpfully.`,
+        },
+      ],
+      language: params.language,
+      userName: params.userName,
+      isLiveVoice: params.isLiveVoice,
+      deepResearch: params.deepResearch,
+      responseStyle,
+      customInstructions,
+      globalSystemPrompt,
       signal: params.signal,
+      onChunk: params.onChunk,
     });
-
-    const contentType = visionResp.headers.get('content-type') || '';
-    if (!contentType.includes('application/json')) {
-      throw new Error(
-        `Photo analysis endpoint unavailable (HTTP ${visionResp.status}). Ensure a Gemini API key is configured.`
-      );
-    }
-
-    const visionJson = (await visionResp.json()) as { text?: string; error?: string };
-    if (!visionResp.ok) {
-      throw new Error(
-        visionJson.error || `Photo analysis failed with HTTP ${visionResp.status}.`
-      );
-    }
-
-    const resultText = (visionJson.text || '').trim();
-    if (!resultText) {
-      throw new Error('Gemini Vision returned an empty response.');
-    }
-
-    params.onChunk(resultText);
-    return resultText;
   }
 
-  // Follow-up question in a conversation that contains an earlier image: route to multimodal Gemini
+  // Follow-up question in a conversation with earlier image
   if (hasAnyImageInHistory) {
-    const localKey = loadCustomApiKey().trim();
-    const geminiDirectKey = localKey.startsWith('AIza') ? localKey : getEnvGeminiKey();
-    if (params.hasBackendApi || params.hasServerGeminiKey || !geminiDirectKey) {
+    if (params.hasBackendApi || params.hasServerGeminiKey) {
       const backendRes = await streamFromBackendEndpoint({
         endpoint: params.isLiveVoice ? '/api/chat-live-stream' : '/api/chat',
-        apiKey: geminiDirectKey || undefined,
+        apiKey: geminiKeys[0] || undefined,
+        apiKeys: geminiKeys,
         messages: recentMessages,
         language: params.language,
         userName: params.userName,
@@ -1423,9 +1586,12 @@ export async function streamChatCompletion(params: {
         onSources: params.onSources,
       });
       if (backendRes.ok) return backendRes.text;
-      if (backendRes.shouldFallbackDirect && geminiDirectKey) {
-        return streamFromGeminiDirect({
-          apiKey: geminiDirectKey,
+    }
+
+    if (geminiKeys.length > 0) {
+      try {
+        return await streamFromGeminiDirect({
+          apiKeys: geminiKeys,
           messages: recentMessages,
           language: params.language,
           userName: params.userName,
@@ -1439,11 +1605,12 @@ export async function streamChatCompletion(params: {
           onChunk: params.onChunk,
           onSources: params.onSources,
         });
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') throw err;
       }
-      throw backendRes.error;
     }
-    return streamFromGeminiDirect({
-      apiKey: geminiDirectKey,
+
+    return streamFromPollinationsText({
       messages: recentMessages,
       language: params.language,
       userName: params.userName,
@@ -1452,40 +1619,42 @@ export async function streamChatCompletion(params: {
       responseStyle,
       customInstructions,
       globalSystemPrompt,
-      chatModel,
-      signal: params.signal,
-      onChunk: params.onChunk,
-      onSources: params.onSources,
-    });
-  }
-
-  if (resolved.provider === 'none') {
-    throw new MissingApiKeyError();
-  }
-
-  // Text-only chat: Route Groq (gsk_...) directly to Groq's fast streaming API
-  if (resolved.provider === 'groq') {
-    return streamFromGroq({
-      apiKey: resolved.apiKey,
-      messages: params.messages,
-      language: params.language,
-      userName: params.userName,
-      isLiveVoice: params.isLiveVoice,
-      deepResearch: params.deepResearch,
-      responseStyle,
-      customInstructions,
-      globalSystemPrompt,
-      chatModel,
       signal: params.signal,
       onChunk: params.onChunk,
     });
   }
 
-  // Gemini: Try backend /api/* if Express server is active, otherwise call Gemini REST directly (Vercel/static friendly)
-  if (params.hasBackendApi || resolved.source === 'server') {
+  // Try configured Groq keys first if Groq is primary
+  if (resolved.provider === 'groq' && groqKeys.length > 0) {
+    for (const gKey of groqKeys) {
+      try {
+        return await streamFromGroq({
+          apiKey: gKey,
+          messages: params.messages,
+          language: params.language,
+          userName: params.userName,
+          isLiveVoice: params.isLiveVoice,
+          deepResearch: params.deepResearch,
+          responseStyle,
+          customInstructions,
+          globalSystemPrompt,
+          chatModel,
+          signal: params.signal,
+          onChunk: params.onChunk,
+        });
+      } catch (err) {
+        if ((err as Error).name === 'AbortError') throw err;
+        // Rotate to next Groq key or Gemini / Pollinations fallback
+      }
+    }
+  }
+
+  // Try Express backend (handles multi-key rotation, Gemini 2.5 Flash -> 2.0 Flash-Lite -> Google Search + Pollinations server fallback)
+  if (params.hasBackendApi || params.hasServerGeminiKey || resolved.source === 'server') {
     const backendRes = await streamFromBackendEndpoint({
       endpoint: params.isLiveVoice ? '/api/chat-live-stream' : '/api/chat',
-      apiKey: resolved.apiKey || undefined,
+      apiKey: geminiKeys[0] || undefined,
+      apiKeys: geminiKeys,
       messages: params.messages,
       language: params.language,
       userName: params.userName,
@@ -1502,10 +1671,13 @@ export async function streamChatCompletion(params: {
     if (backendRes.ok) {
       return backendRes.text;
     }
+  }
 
-    if (backendRes.shouldFallbackDirect && resolved.apiKey) {
-      return streamFromGeminiDirect({
-        apiKey: resolved.apiKey,
+  // Try direct Gemini REST across ALL configured keys & models (static deploys or backend unavailable)
+  if (geminiKeys.length > 0) {
+    try {
+      return await streamFromGeminiDirect({
+        apiKeys: geminiKeys,
         messages: params.messages,
         language: params.language,
         userName: params.userName,
@@ -1519,31 +1691,24 @@ export async function streamChatCompletion(params: {
         onChunk: params.onChunk,
         onSources: params.onSources,
       });
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') throw err;
     }
-
-    throw backendRes.error;
   }
 
-  // Static deployment (e.g. Vercel) with Gemini AIza... key
-  if (resolved.apiKey) {
-    return streamFromGeminiDirect({
-      apiKey: resolved.apiKey,
-      messages: params.messages,
-      language: params.language,
-      userName: params.userName,
-      isLiveVoice: params.isLiveVoice,
-      deepResearch: params.deepResearch,
-      responseStyle,
-      customInstructions,
-      globalSystemPrompt,
-      chatModel,
-      signal: params.signal,
-      onChunk: params.onChunk,
-      onSources: params.onSources,
-    });
-  }
-
-  throw new MissingApiKeyError();
+  // Final Free Unlimited Text Fallback: Pollinations AI (100% keyless, never fails with 429)
+  return streamFromPollinationsText({
+    messages: params.messages,
+    language: params.language,
+    userName: params.userName,
+    isLiveVoice: params.isLiveVoice,
+    deepResearch: params.deepResearch,
+    responseStyle,
+    customInstructions,
+    globalSystemPrompt,
+    signal: params.signal,
+    onChunk: params.onChunk,
+  });
 }
 
 async function runQuickTextCompletion(params: {
@@ -1553,81 +1718,117 @@ async function runQuickTextCompletion(params: {
   hasServerGeminiKey: boolean;
   maxTokens?: number;
 }): Promise<string | null> {
-  const resolved = resolveActiveProvider(params.hasServerGeminiKey);
-  if (resolved.provider === 'none') return null;
+  const groqKeys = getAllGroqKeys();
+  const geminiKeys = getAllGeminiKeys();
 
   try {
-    if (resolved.provider === 'groq') {
-      const { models } = await getActiveGroqChatModels(resolved.apiKey);
-      for (let i = 0; i < Math.min(2, models.length); i++) {
-        const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${resolved.apiKey}`,
-          },
-          body: JSON.stringify({
-            model: models[i],
-            messages: [
-              { role: 'system', content: params.systemPrompt },
-              { role: 'user', content: params.userPrompt },
-            ],
-            temperature: 0.5,
-            max_tokens: params.maxTokens ?? 400,
-          }),
-        });
-        if (resp.ok) {
-          const json = (await resp.json()) as {
-            choices?: Array<{ message?: { content?: string } }>;
-          };
-          const out = json.choices?.[0]?.message?.content?.trim();
-          if (out) return out;
+    // 1. Try Groq keys if present
+    for (const gKey of groqKeys) {
+      try {
+        const { models } = await getActiveGroqChatModels(gKey);
+        for (let i = 0; i < Math.min(2, models.length); i++) {
+          const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${gKey}`,
+            },
+            body: JSON.stringify({
+              model: models[i],
+              messages: [
+                { role: 'system', content: params.systemPrompt },
+                { role: 'user', content: params.userPrompt },
+              ],
+              temperature: 0.5,
+              max_tokens: params.maxTokens ?? 400,
+            }),
+          });
+          if (resp.ok) {
+            const json = (await resp.json()) as {
+              choices?: Array<{ message?: { content?: string } }>;
+            };
+            const out = json.choices?.[0]?.message?.content?.trim();
+            if (out) return out;
+          }
         }
-      }
-      return null;
-    }
-
-    if (resolved.apiKey) {
-      const resp = await fetch(
-        'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': resolved.apiKey,
-          },
-          body: JSON.stringify({
-            system_instruction: { parts: [{ text: params.systemPrompt }] },
-            contents: [{ role: 'user', parts: [{ text: params.userPrompt }] }],
-            safetySettings: GEMINI_SAFETY_SETTINGS,
-            generationConfig: { thinkingConfig: { thinkingBudget: 0 } },
-          }),
-        }
-      );
-      if (resp.ok) {
-        const data = (await resp.json()) as {
-          candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-        };
-        return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
+      } catch {
+        // Rotate next key
       }
     }
 
-    if (params.hasBackendApi || resolved.source === 'server') {
+    // 2. Try direct Gemini keys (gemini-2.5-flash -> gemini-2.0-flash-lite)
+    for (const gKey of geminiKeys) {
+      for (const mName of ['gemini-2.5-flash', 'gemini-2.0-flash-lite'] as const) {
+        try {
+          const resp = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${mName}:generateContent`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': gKey,
+              },
+              body: JSON.stringify({
+                system_instruction: { parts: [{ text: params.systemPrompt }] },
+                contents: [{ role: 'user', parts: [{ text: params.userPrompt }] }],
+                safetySettings: GEMINI_SAFETY_SETTINGS,
+                ...(mName === 'gemini-2.5-flash'
+                  ? { generationConfig: { thinkingConfig: { thinkingBudget: 0 } } }
+                  : {}),
+              }),
+            }
+          );
+          if (resp.ok) {
+            const data = (await resp.json()) as {
+              candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+            };
+            const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+            if (text) return text;
+          }
+        } catch {
+          // Next model/key
+        }
+      }
+    }
+
+    // 3. Try backend SSE (which also handles server Gemini keys + Pollinations fallback)
+    if (params.hasBackendApi || params.hasServerGeminiKey) {
       let collected = '';
-      await streamChatCompletion({
+      const backendRes = await streamFromBackendEndpoint({
+        endpoint: '/api/chat',
+        apiKeys: geminiKeys,
         messages: [
           {
             role: 'user',
             content: `${params.systemPrompt}\n\nRequest: ${params.userPrompt}`,
           },
         ],
-        hasBackendApi: params.hasBackendApi,
-        hasServerGeminiKey: params.hasServerGeminiKey,
         onChunk: (c) => {
           collected += c;
         },
       });
-      return collected.trim() || null;
+      if (backendRes.ok && collected.trim()) return collected.trim();
+    }
+
+    // 4. Direct Free Pollinations Text fallback
+    let polyCollected = '';
+    const polyResp = await fetch('https://text.pollinations.ai/openai', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'openai',
+        messages: [
+          { role: 'system', content: params.systemPrompt },
+          { role: 'user', content: params.userPrompt },
+        ],
+      }),
+    });
+    if (polyResp.ok) {
+      const json = (await polyResp.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      polyCollected = (json.choices?.[0]?.message?.content || '').trim();
+      if (polyCollected) return polyCollected;
     }
   } catch {
     // Graceful fallback if quick helper fails
@@ -1644,9 +1845,39 @@ const RISKY_WORD_REPLACEMENTS: Array<[RegExp, string]> = [
 const BARE_HUMAN_SUBJECT_RX =
   /^(a\s+|an\s+|the\s+)?(human|person|people|man|men|woman|women|boy|girl|kid|child|portrait|face|human being|insaan|aadmi|larka|larki)$/i;
 
-export function sanitizeShortSafePrompt(rawInput: string, maxWords = 24): string {
+export function getImageDimensionsForAspectRatio(aspectRatio: ImageAspectRatio): {
+  width: number;
+  height: number;
+} {
+  switch (aspectRatio) {
+    case '16:9':
+      return { width: 1280, height: 720 };
+    case '9:16':
+      return { width: 720, height: 1280 };
+    case '4:3':
+      return { width: 1024, height: 768 };
+    case '1:1':
+    default:
+      return { width: 1024, height: 1024 };
+  }
+}
+
+function isSimpleStylePrompt(rawInput: string): boolean {
+  return /\b(simple|minimal|minimalist|flat\s*design|flat\s*style|plain|basic|clean\s*icon|line\s*art|uncluttered|sada|simple\s*style|no\s*extra\s*details)\b/i.test(
+    rawInput || ''
+  );
+}
+
+function extractQuotedTextSegments(input: string): string[] {
+  const matches = input.match(/"([^"]{1,64})"/g);
+  if (!matches) return [];
+  return Array.from(new Set(matches.map((m) => m.trim())));
+}
+
+export function sanitizeShortSafePrompt(rawInput: string, maxWords = 56): string {
+  const quotedSegments = extractQuotedTextSegments(rawInput || '');
   let text = (rawInput || '')
-    .replace(/["'`\n\r]+/g, ' ')
+    .replace(/[`'\n\r]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
@@ -1657,21 +1888,42 @@ export function sanitizeShortSafePrompt(rawInput: string, maxWords = 24): string
   const words = text.split(/\s+/).filter(Boolean);
   if (words.length > maxWords) {
     text = words.slice(0, maxWords).join(' ').replace(/[,.;:-]+$/, '').trim();
+    for (const q of quotedSegments) {
+      if (!text.includes(q)) {
+        text = `${text}, exact typography text ${q}`;
+      }
+    }
   }
-  return text || 'photorealistic serene scenery, golden hour lighting, sharp HD detail';
+  return (
+    text ||
+    'photorealistic serene scenery, cinematic lighting, 8k resolution, sharp details, rich colors, professional composition'
+  );
 }
 
 export function buildSafeArtisticPrompt(rawInput: string): string {
-  let text = rawInput
+  const wantsSimpleStyle = isSimpleStylePrompt(rawInput);
+  const quotedSegments = extractQuotedTextSegments(rawInput || '');
+
+  // Protect quoted text/brand names verbatim before command-word stripping
+  let working = rawInput || '';
+  quotedSegments.forEach((seg, idx) => {
+    working = working.split(seg).join(` __QUOTE_${idx}__ `);
+  });
+
+  let text = working
     .replace(
       /\b(create|generate|make|draw|paint|sketch|render|show|please|kindly|me|mujy|mujhe|a|an|ek|aik|pic|pics|picture|tasveer|tasweer|tasvir|taswir|photo|foto|image|img|banao|bnao|bna\s*do|bna\s*dy|bna\s*de|bana\s*do|bana\s*dy|bana\s*de|banado|bnado|dikhao|chahiye|khincho|kar\s*do|kr\s*do)\b/gi,
       ' '
     )
     .replace(/\b(naksha|naqsha)\b/gi, 'modern architectural floor plan design')
     .replace(/\bof\b/gi, ' ')
-    .replace(/[^\p{L}\p{N}\s,.-]/gu, ' ')
+    .replace(/[^\p{L}\p{N}\s,._-]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+
+  quotedSegments.forEach((seg, idx) => {
+    text = text.replace(new RegExp(`__QUOTE_${idx}__`, 'g'), seg);
+  });
 
   for (const [rx, safeReplacement] of RISKY_WORD_REPLACEMENTS) {
     text = text.replace(rx, safeReplacement);
@@ -1680,17 +1932,24 @@ export function buildSafeArtisticPrompt(rawInput: string): string {
   if (!text || BARE_HUMAN_SUBJECT_RX.test(text)) {
     const noun = text.toLowerCase();
     if (noun.includes('woman') || noun.includes('girl') || noun.includes('larki')) {
-      return 'Photorealistic portrait of a friendly smiling woman in modern studio, warm natural lighting, sharp HD focus';
+      return 'Photorealistic studio portrait of a friendly smiling woman, cinematic lighting, 8k resolution, sharp details, rich colors, professional composition';
     }
     if (noun.includes('man') || noun.includes('boy') || noun.includes('larka')) {
-      return 'Photorealistic portrait of a friendly smiling young man in modern studio, warm natural lighting, sharp HD focus';
+      return 'Photorealistic studio portrait of a friendly smiling young man, cinematic lighting, 8k resolution, sharp details, rich colors, professional composition';
     }
-    return 'Photorealistic portrait of a friendly smiling person in sunlit contemporary studio, warm golden hour lighting, sharp HD';
+    return 'Photorealistic studio portrait of a friendly smiling person, cinematic lighting, 8k resolution, sharp details, rich colors, professional composition';
   }
 
   const wordCount = text.split(/\s+/).length;
-  if (wordCount >= 12) {
-    return sanitizeShortSafePrompt(text, 24);
+  if (wantsSimpleStyle) {
+    return sanitizeShortSafePrompt(
+      wordCount >= 10 ? text : `${text}, clean minimalist composition, crisp sharp edges`,
+      56
+    );
+  }
+
+  if (wordCount >= 18) {
+    return sanitizeShortSafePrompt(text, 56);
   }
 
   const hasHumanNoun = /\b(human|person|people|man|woman|boy|girl|child|student|teacher|doctor|astronaut|face|portrait)\b/i.test(
@@ -1698,17 +1957,16 @@ export function buildSafeArtisticPrompt(rawInput: string): string {
   );
   if (hasHumanNoun && wordCount <= 6) {
     return sanitizeShortSafePrompt(
-      `Photorealistic studio portrait of a friendly ${text}, warm natural sunlight, sharp HD focus`,
-      24
+      `Photorealistic studio portrait of a friendly ${text}, cinematic lighting, 8k resolution, sharp details, rich colors, professional composition`,
+      56
     );
   }
 
   return sanitizeShortSafePrompt(
-    `${text}, photorealistic natural lighting, crisp HD focus`,
-    24
+    `${text}, cinematic lighting, 8k resolution, sharp textures, depth, rich colors, professional composition`,
+    56
   );
 }
-
 
 // Preserve 100% original crisp HD image resolution without blurry lossy recompression
 async function blobToSharpDataUrl(blob: Blob): Promise<string | null> {
@@ -1756,49 +2014,71 @@ export async function translatePromptToDetailedEnglish(params: {
   hasServerGeminiKey: boolean;
 }): Promise<{ detailedPrompt: string; shortTitle: string }> {
   const cleaned = params.rawPrompt.trim();
+  const quotedSegments = extractQuotedTextSegments(cleaned);
+
+  const ensureQuotedPreserved = (candidatePrompt: string): string => {
+    let out = candidatePrompt;
+    for (const q of quotedSegments) {
+      if (!out.includes(q)) {
+        out = `${out}, crisp typography text ${q}`;
+      }
+    }
+    return sanitizeShortSafePrompt(out, 56);
+  };
 
   // 1. Prefer Gemini API Step-1 Prompt Enhancer via backend endpoint
   if (params.hasBackendApi || params.hasServerGeminiKey) {
     try {
-      const localKey = loadCustomApiKey().trim();
-      const clientGeminiKey = localKey.startsWith('AIza') ? localKey : getEnvGeminiKey();
-      const resp = await fetch('/api/detect-image-intent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: cleaned,
-          forceImage: true,
-          apiKey: clientGeminiKey || undefined,
-        }),
-      });
-      if (resp.ok) {
-        const data = (await resp.json()) as {
-          shortTitle?: string;
-          enhancedPrompt?: string;
-        };
-        if (data.enhancedPrompt && data.enhancedPrompt.trim().length > 4) {
-          return {
-            shortTitle: (data.shortTitle || cleaned).slice(0, 56),
-            detailedPrompt: sanitizeShortSafePrompt(data.enhancedPrompt.trim(), 24),
+      const geminiKeys = getAllGeminiKeys();
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 7500);
+      try {
+        const resp = await fetch('/api/detect-image-intent', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: ctrl.signal,
+          body: JSON.stringify({
+            text: cleaned,
+            forceImage: true,
+            apiKey: geminiKeys[0] || undefined,
+            apiKeys: geminiKeys.length > 0 ? geminiKeys : undefined,
+          }),
+        });
+        if (resp.ok) {
+          const data = (await resp.json()) as {
+            shortTitle?: string;
+            enhancedPrompt?: string;
           };
+          if (data.enhancedPrompt && data.enhancedPrompt.trim().length > 4) {
+            return {
+              shortTitle: (data.shortTitle || cleaned).slice(0, 56),
+              detailedPrompt: ensureQuotedPreserved(data.enhancedPrompt.trim()),
+            };
+          }
         }
+      } finally {
+        clearTimeout(timer);
       }
     } catch {
       // Fall through to generic text enhancer below
     }
   }
 
+  const wantsSimpleStyle = isSimpleStylePrompt(cleaned);
   const translated = await runQuickTextCompletion({
     systemPrompt: [
       'You are an expert, family-friendly AI visual prompt engineer.',
-      'Convert ANY user request from ANY world language (100+ languages including English, Urdu, Roman Urdu, Hindi, Arabic, Punjabi, Pashto, Sindhi, Spanish, French, German, Turkish, Chinese, Japanese, Korean, Russian, etc.) into a clean, safe, family-friendly English prompt STRICTLY under 25 words including sharp photography descriptors such as "ultra-sharp focus, crisp details, 8k resolution, DSLR 85mm lens, natural lighting".',
+      wantsSimpleStyle
+        ? 'The user asked for a simple/minimalist style. Translate from ANY world language into a clean, minimal, uncluttered English prompt (10-22 words) with crisp clean edges without noisy cinematic clutter.'
+        : 'Automatically expand and enhance ANY user request from ANY world language into a rich, detailed, family-friendly English prompt (24-44 words) adding cinematic lighting, 8k resolution, sharp textures, depth, rich colors, and professional composition.',
+      'CRITICAL: If the user included quoted text or a brand name in double quotes (e.g. "Roosters Studio"), preserve the exact quoted text verbatim in detailedPrompt for crisp logo/poster rendering.',
       'Strip command words like "pic bna do", "tasveer banao", "naksha banao", "generate image", "draw me". Never include unsafe, explicit, or violent terms.',
-      'Return ONLY JSON: {"title":"short 3-6 word title","detailedPrompt":"clean English prompt under 25 words"}',
+      'Return ONLY JSON: {"title":"short 3-6 word title","detailedPrompt":"clean English prompt"}',
     ].join(' '),
     userPrompt: cleaned,
     hasBackendApi: params.hasBackendApi,
     hasServerGeminiKey: params.hasServerGeminiKey,
-    maxTokens: 200,
+    maxTokens: 240,
   });
 
   if (translated) {
@@ -1813,7 +2093,7 @@ export async function translatePromptToDetailedEnglish(params: {
         if (parsed.detailedPrompt && parsed.detailedPrompt.trim().length > 4) {
           return {
             shortTitle: (parsed.title || cleaned).slice(0, 56),
-            detailedPrompt: sanitizeShortSafePrompt(parsed.detailedPrompt.trim(), 24),
+            detailedPrompt: ensureQuotedPreserved(parsed.detailedPrompt.trim()),
           };
         }
       }
@@ -1822,7 +2102,7 @@ export async function translatePromptToDetailedEnglish(params: {
     }
   }
 
-  const safePrompt = buildSafeArtisticPrompt(cleaned);
+  const safePrompt = ensureQuotedPreserved(buildSafeArtisticPrompt(cleaned));
   const titleCandidate = cleaned
     .replace(
       /\b(create|generate|make|draw|paint|sketch|render|show|please|kindly|me|mujy|mujhe|a|an|ek|aik|pic|picture|tasveer|tasweer|photo|image|banao|bnao|bna\s*do|bana\s*do|banado|dikhao|chahiye)\b/gi,
@@ -1837,7 +2117,9 @@ export async function translatePromptToDetailedEnglish(params: {
   };
 }
 
-function resolveOfficialNanoModelId(preferred?: string): 'gemini-2.5-flash-image' | 'gemini-3.1-flash-image-preview' {
+function resolveOfficialNanoModelId(
+  preferred?: string
+): 'gemini-2.5-flash-image' | 'gemini-3.1-flash-image-preview' {
   if (preferred === 'gemini-3.1-flash-image-preview') {
     return 'gemini-3.1-flash-image-preview';
   }
@@ -1855,7 +2137,6 @@ async function extractBase64AndMimeFromUrl(
     const mimeType = meta.split(';')[0] || fallbackMime;
     const rawPayload = commaIdx >= 0 ? trimmed.slice(commaIdx + 1) : '';
     if (mimeType.includes('svg')) {
-      // Convert SVG data URL to lossless PNG data URL via canvas for Gemini Vision/Editing
       const img = await new Promise<HTMLImageElement | null>((resolve) => {
         const el = new Image();
         el.onload = () => resolve(el);
@@ -1907,8 +2188,8 @@ function waitMs(ms: number): Promise<void> {
 
 async function fetchDirectImageAsDataUrl(
   targetUrl: string,
-  timeoutMs = 14000
-): Promise<{ ok: true; dataUrl: string } | { ok: false; status?: number }> {
+  timeoutMs = 12000
+): Promise<{ ok: true; dataUrl: string } | { ok: false; status?: number; networkError?: boolean }> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -1929,24 +2210,196 @@ async function fetchDirectImageAsDataUrl(
       return { ok: false };
     }
     return { ok: true, dataUrl };
-  } catch {
-    return { ok: false };
+  } catch (err) {
+    const isAbort = err instanceof Error && err.name === 'AbortError';
+    return { ok: false, networkError: !isAbort };
   } finally {
     clearTimeout(timer);
   }
 }
 
+async function preloadImageViaTag(
+  targetUrl: string,
+  timeoutMs = 12000
+): Promise<{ ok: true; imageUrl: string } | { ok: false }> {
+  if (typeof Image === 'undefined') return { ok: false };
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.referrerPolicy = 'no-referrer';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        img.src = '';
+        resolve({ ok: false });
+      }
+    }, timeoutMs);
+
+    img.onload = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (img.naturalWidth >= 64 && img.naturalHeight >= 64) {
+        resolve({ ok: true, imageUrl: targetUrl });
+      } else {
+        resolve({ ok: false });
+      }
+    };
+
+    img.onerror = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ ok: false });
+    };
+
+    img.src = targetUrl;
+  });
+}
+
+async function tryClientGeminiImageDirect(params: {
+  geminiKeys: string[];
+  prompt: string;
+  aspectRatio: ImageAspectRatio;
+  mode: 'generate' | 'edit';
+  sourceImageBase64?: string;
+  sourceMimeType?: string;
+  preferredModel?: string;
+  dims: { width: number; height: number };
+}): Promise<{
+  ok: true;
+  imageUrl: string;
+  provider: 'nano-banana' | 'imagen';
+  modelUsed: string;
+  assistantText?: string;
+} | null> {
+  if (params.geminiKeys.length === 0) return null;
+  const officialModelId = resolveOfficialNanoModelId(params.preferredModel);
+  const ratioPrompt =
+    params.mode === 'edit'
+      ? params.prompt
+      : `${params.prompt} (${params.aspectRatio} aspect ratio composition)`;
+
+  for (const activeKey of params.geminiKeys) {
+    // 1. Gemini Native Image (supports text rendering & Image-to-Image editing)
+    for (const modelName of [officialModelId, 'gemini-2.5-flash-image']) {
+      try {
+        const parts: Array<Record<string, unknown>> = [];
+        if (params.mode === 'edit' && params.sourceImageBase64) {
+          parts.push({
+            inline_data: {
+              mime_type: params.sourceMimeType || 'image/png',
+              data: params.sourceImageBase64,
+            },
+          });
+        }
+        parts.push({ text: ratioPrompt });
+
+        const resp = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': activeKey,
+            },
+            body: JSON.stringify({
+              contents: [{ role: 'user', parts }],
+              safetySettings: GEMINI_SAFETY_SETTINGS,
+              generationConfig: {
+                responseModalities: ['TEXT', 'IMAGE'],
+              },
+            }),
+          }
+        );
+        if (resp.ok) {
+          const json = (await resp.json()) as {
+            candidates?: Array<{
+              content?: {
+                parts?: Array<{
+                  text?: string;
+                  inlineData?: { mimeType?: string; data?: string };
+                  inline_data?: { mime_type?: string; data?: string };
+                }>;
+              };
+            }>;
+          };
+          const outParts = json.candidates?.[0]?.content?.parts || [];
+          const assistantText = outParts
+            .map((p) => p.text || '')
+            .join('\n')
+            .trim();
+          const imgPart = outParts.find((p) => p.inlineData?.data || p.inline_data?.data);
+          const b64 = imgPart?.inlineData?.data || imgPart?.inline_data?.data;
+          const mime = imgPart?.inlineData?.mimeType || imgPart?.inline_data?.mime_type || 'image/png';
+          if (b64) {
+            return {
+              ok: true,
+              imageUrl: `data:${mime};base64,${b64}`,
+              provider: 'nano-banana',
+              modelUsed: modelName,
+              assistantText: assistantText || undefined,
+            };
+          }
+        }
+      } catch {
+        // Silently continue to next model/key
+      }
+    }
+
+    // 2. Imagen 3 Direct (new image generation)
+    if (params.mode !== 'edit') {
+      try {
+        const resp = await fetch(
+          'https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': activeKey,
+            },
+            body: JSON.stringify({
+              instances: [{ prompt: params.prompt }],
+              parameters: { sampleCount: 1, aspectRatio: params.aspectRatio },
+            }),
+          }
+        );
+        if (resp.ok) {
+          const json = (await resp.json()) as {
+            predictions?: Array<{ bytesBase64Encoded?: string; mimeType?: string }>;
+          };
+          const b64 = json.predictions?.[0]?.bytesBase64Encoded;
+          if (b64) {
+            return {
+              ok: true,
+              imageUrl: `data:${json.predictions?.[0]?.mimeType || 'image/png'};base64,${b64}`,
+              provider: 'imagen',
+              modelUsed: 'imagen-3.0-generate-002',
+            };
+          }
+        }
+      } catch {
+        // Silently continue
+      }
+    }
+  }
+
+  return null;
+}
+
 async function tryClientAiHordeFallback(
   prompt: string,
-  aspectRatio: '1:1' | '16:9' | '4:3',
+  aspectRatio: ImageAspectRatio,
   timeoutMs = 20000
 ): Promise<{ ok: true; dataUrl: string; w: number; h: number } | { ok: false }> {
   const dims =
     aspectRatio === '16:9'
       ? { w: 768, h: 448 }
-      : aspectRatio === '4:3'
-        ? { w: 640, h: 512 }
-        : { w: 512, h: 512 };
+      : aspectRatio === '9:16'
+        ? { w: 448, h: 768 }
+        : aspectRatio === '4:3'
+          ? { w: 640, h: 512 }
+          : { w: 512, h: 512 };
   const deadline = Date.now() + timeoutMs;
   try {
     const submitCtrl = new AbortController();
@@ -2019,7 +2472,7 @@ async function tryNanoBananaApi(params: {
   prompt: string;
   sourceImageBase64?: string;
   sourceMimeType?: string;
-  aspectRatio: '1:1' | '16:9' | '4:3';
+  aspectRatio: ImageAspectRatio;
   resolution?: '1K' | '2K';
   mode: 'generate' | 'edit';
   preferredModel?: string;
@@ -2042,122 +2495,120 @@ async function tryNanoBananaApi(params: {
     }
   | { ok: false; reason: string }
 > {
-  const localKey = loadCustomApiKey().trim();
-  const envGeminiKey = getEnvGeminiKey();
-  const clientGeminiKey = localKey.startsWith('AIza') ? localKey : envGeminiKey;
+  const geminiKeys = getAllGeminiKeys();
   const officialModelId = resolveOfficialNanoModelId(
     params.preferredModel || loadOwnerConfig().imageModel
   );
 
-  const cleanShortPrompt = sanitizeShortSafePrompt(params.prompt, 24);
-  const w = params.aspectRatio === '16:9' ? 1024 : params.aspectRatio === '4:3' ? 1024 : 1024;
-  const h = params.aspectRatio === '16:9' ? 576 : params.aspectRatio === '4:3' ? 768 : 1024;
+  const cleanShortPrompt = sanitizeShortSafePrompt(params.prompt, 56);
+  const dims = getImageDimensionsForAspectRatio(params.aspectRatio);
+  const w = dims.width;
+  const h = dims.height;
   const encodedPrompt = encodeURIComponent(cleanShortPrompt);
-  const pollinationsModels: Array<'flux' | 'turbo' | 'dreamshaper'> = ['flux', 'turbo', 'dreamshaper'];
+  const pollinationsModels: Array<'flux' | 'flux-realism' | 'flux-3d' | 'turbo'> = [
+    'flux',
+    'flux-realism',
+    'flux-3d',
+    'turbo',
+  ];
 
-  const MAX_CLIENT_ATTEMPTS = 3;
+  const MODEL_PRELOAD_TIMEOUT_MS = 12000;
   let backendEndpointMissing = false;
-  let lastBackendError = '';
 
-  for (let attempt = 1; attempt <= MAX_CLIENT_ATTEMPTS; attempt++) {
-    params.onStatus?.(
-      attempt === 1
-        ? params.mode === 'edit'
-          ? 'Editing your photo in HD...'
-          : `Generating ${params.resolution || '1K'} HD image...`
-        : `Server busy — retrying backup HD engine (Attempt ${attempt}/${MAX_CLIENT_ATTEMPTS})...`
-    );
-
-    // 1. Try Express backend /api/nano-banana (skipped only if host returned 404/405 static-only)
-    if (!backendEndpointMissing) {
-      const apiCtrl = new AbortController();
-      const apiTimer = setTimeout(() => apiCtrl.abort(), attempt === 1 ? 60000 : 45000);
-      try {
-        const resp = await fetch('/api/nano-banana', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: apiCtrl.signal,
-          body: JSON.stringify({
-            prompt: params.prompt,
-            sourceImageBase64: params.sourceImageBase64,
-            sourceMimeType: params.sourceMimeType,
-            aspectRatio: params.aspectRatio,
-            resolution: params.resolution || '1K',
-            mode: params.mode,
-            preferredModel: officialModelId,
-            previousEditContext: params.previousEditContext,
-            skipEnhance: params.skipEnhance,
-            apiKey: clientGeminiKey || undefined,
-          }),
-        });
-        if (resp.status === 404 || resp.status === 405) {
-          backendEndpointMissing = true;
-        } else {
-          const contentType = resp.headers.get('content-type') || '';
-          if (contentType.includes('application/json')) {
-            const data = (await resp.json()) as {
-              imageUrl?: string;
-              provider?: 'pollinations' | 'airforce' | 'flux-hd' | 'ai-horde' | 'imagen' | 'nano-banana';
-              modelUsed?: string;
-              title?: string;
-              detailedPrompt?: string;
-              assistantText?: string;
-              width?: number;
-              height?: number;
-              error?: string;
-            };
-            if (resp.ok && data.imageUrl) {
-              return {
-                ok: true,
-                imageUrl: data.imageUrl,
-                provider:
-                  data.provider === 'imagen' ||
-                  data.provider === 'nano-banana' ||
-                  data.provider === 'flux-hd' ||
-                  data.provider === 'ai-horde' ||
-                  data.provider === 'airforce' ||
-                  data.provider === 'pollinations'
-                    ? data.provider
-                    : 'flux-hd',
-                modelUsed: data.modelUsed || 'FLUX.1-schnell',
-                title: data.title || params.prompt.slice(0, 52),
-                detailedPrompt: data.detailedPrompt || params.prompt,
-                assistantText: data.assistantText,
-                width: data.width || w,
-                height: data.height || h,
-              };
-            }
-            if (resp.status === 400) {
-              return {
-                ok: false,
-                reason: data.error || 'Please provide a clear image prompt.',
-              };
-            }
-            if (data.error) {
-              lastBackendError = data.error;
-            }
-          }
-        }
-      } catch {
-        // Proceed smoothly to direct browser-IP multi-provider fallback on this attempt
-      } finally {
-        clearTimeout(apiTimer);
+  const callBackendNanoBanana = async (geminiPrimaryOnly: boolean) => {
+    if (backendEndpointMissing) return null;
+    const apiCtrl = new AbortController();
+    const apiTimer = setTimeout(() => apiCtrl.abort(), geminiPrimaryOnly ? 22000 : 55000);
+    try {
+      const resp = await fetch('/api/nano-banana', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: apiCtrl.signal,
+        body: JSON.stringify({
+          prompt: params.prompt,
+          sourceImageBase64: params.sourceImageBase64,
+          sourceMimeType: params.sourceMimeType,
+          aspectRatio: params.aspectRatio,
+          resolution: params.resolution || '1K',
+          mode: params.mode,
+          preferredModel: officialModelId,
+          previousEditContext: params.previousEditContext,
+          skipEnhance: params.skipEnhance,
+          geminiPrimaryOnly,
+          apiKey: geminiKeys[0] || undefined,
+          apiKeys: geminiKeys.length > 0 ? geminiKeys : undefined,
+        }),
+      });
+      if (resp.status === 404 || resp.status === 405) {
+        backendEndpointMissing = true;
+        return null;
       }
+      const contentType = resp.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) return null;
+      const data = (await resp.json()) as {
+        imageUrl?: string;
+        fallbackToClient?: boolean;
+        provider?: 'pollinations' | 'airforce' | 'flux-hd' | 'ai-horde' | 'imagen' | 'nano-banana';
+        modelUsed?: string;
+        title?: string;
+        detailedPrompt?: string;
+        assistantText?: string;
+        width?: number;
+        height?: number;
+      };
+      if (resp.ok && data.imageUrl) {
+        return {
+          ok: true as const,
+          imageUrl: data.imageUrl,
+          provider:
+            data.provider === 'imagen' ||
+            data.provider === 'nano-banana' ||
+            data.provider === 'flux-hd' ||
+            data.provider === 'ai-horde' ||
+            data.provider === 'airforce' ||
+            data.provider === 'pollinations'
+              ? data.provider
+              : ('nano-banana' as const),
+          modelUsed: data.modelUsed || officialModelId,
+          title: data.title || params.prompt.slice(0, 52),
+          detailedPrompt: data.detailedPrompt || params.prompt,
+          assistantText: data.assistantText,
+          width: data.width || w,
+          height: data.height || h,
+        };
+      }
+      return null;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(apiTimer);
     }
+  };
 
-    // 2. Direct browser-IP Pollinations multi-model failover (flux -> turbo -> dreamshaper)
-    // Bypassing shared server IP limits cleanly using valid 32-bit seeds
-    params.onStatus?.(
-      `Switching to direct HD image server (Attempt ${attempt}/${MAX_CLIENT_ATTEMPTS})...`
-    );
-    for (const modelName of pollinationsModels) {
-      const polyUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${w}&height=${h}&seed=${randomClientImageSeed()}&model=${modelName}&nologo=true`;
-      const polyRes = await fetchDirectImageAsDataUrl(polyUrl, 14000);
+  const runBrowserPollinationsFailover = async (roundLabel = '') => {
+    for (let idx = 0; idx < pollinationsModels.length; idx++) {
+      const modelName = pollinationsModels[idx];
+      const prettyModel =
+        modelName === 'flux'
+          ? 'FLUX'
+          : modelName === 'flux-realism'
+            ? 'FLUX-Realism'
+            : modelName === 'flux-3d'
+              ? 'FLUX-3D'
+              : 'Turbo';
+      params.onStatus?.(
+        idx === 0
+          ? `Generating ${w}×${h} HD image (${prettyModel})${roundLabel}...`
+          : `Trying next free HD model (${prettyModel})...`
+      );
+
+      const polyUrl = `https://pollinations.ai/p/${encodedPrompt}?width=${w}&height=${h}&model=${modelName}&nologo=true&enhance=true&seed=${randomClientImageSeed()}`;
+      const polyRes = await fetchDirectImageAsDataUrl(polyUrl, MODEL_PRELOAD_TIMEOUT_MS);
       if (polyRes.ok) {
         return {
-          ok: true,
+          ok: true as const,
           imageUrl: polyRes.dataUrl,
-          provider: 'pollinations',
+          provider: 'pollinations' as const,
           modelUsed: modelName,
           title: cleanShortPrompt.slice(0, 52),
           detailedPrompt: cleanShortPrompt,
@@ -2165,12 +2616,89 @@ async function tryNanoBananaApi(params: {
           height: h,
         };
       }
-      if (polyRes.status === 402 || polyRes.status === 429) {
-        break;
+
+      if (polyRes.networkError) {
+        const tagPreload = await preloadImageViaTag(polyUrl, MODEL_PRELOAD_TIMEOUT_MS);
+        if (tagPreload.ok) {
+          return {
+            ok: true as const,
+            imageUrl: tagPreload.imageUrl,
+            provider: 'pollinations' as const,
+            modelUsed: modelName,
+            title: cleanShortPrompt.slice(0, 52),
+            detailedPrompt: cleanShortPrompt,
+            width: w,
+            height: h,
+          };
+        }
+      }
+    }
+    return null;
+  };
+
+  // STEP 1 (Primary): Google Gemini Native Image Engine (creation + text rendering + Image-to-Image editing)
+  if (params.hasServerGeminiKey || geminiKeys.length > 0 || params.mode === 'edit') {
+    params.onStatus?.(
+      params.mode === 'edit'
+        ? 'Editing your photo with Gemini Native HD...'
+        : 'Generating HD image with Gemini Native Studio...'
+    );
+
+    if (params.hasBackendApi || params.hasServerGeminiKey) {
+      const geminiBackendResult = await callBackendNanoBanana(params.mode !== 'edit');
+      if (geminiBackendResult) {
+        return geminiBackendResult;
       }
     }
 
-    // 3. Direct browser-IP AI Horde keyless fallback
+    if (geminiKeys.length > 0) {
+      const directGeminiResult = await tryClientGeminiImageDirect({
+        geminiKeys,
+        prompt: params.prompt,
+        aspectRatio: params.aspectRatio,
+        mode: params.mode,
+        sourceImageBase64: params.sourceImageBase64,
+        sourceMimeType: params.sourceMimeType,
+        preferredModel: officialModelId,
+        dims,
+      });
+      if (directGeminiResult) {
+        return {
+          ok: true,
+          imageUrl: directGeminiResult.imageUrl,
+          provider: directGeminiResult.provider,
+          modelUsed: directGeminiResult.modelUsed,
+          title: cleanShortPrompt.slice(0, 52),
+          detailedPrompt: cleanShortPrompt,
+          assistantText: directGeminiResult.assistantText,
+          width: w,
+          height: h,
+        };
+      }
+    }
+  }
+
+  // STEP 2 (Secondary - Free Unlimited Auto-Fallback): Silently cycle Pollinations flux -> flux-realism -> flux-3d -> turbo
+  if (params.mode !== 'edit') {
+    const directPolyResult = await runBrowserPollinationsFailover();
+    if (directPolyResult) {
+      return directPolyResult;
+    }
+  }
+
+  // STEP 3 (Backup Cluster): Full server fallback (FLUX.1-schnell Gradio Space + Server AI Horde) + Browser AI Horde
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    params.onStatus?.(
+      attempt === 1 ? 'Rendering via free HD backup engine...' : 'Retrying free HD backup engine...'
+    );
+
+    if (!backendEndpointMissing) {
+      const fullBackendResult = await callBackendNanoBanana(false);
+      if (fullBackendResult) {
+        return fullBackendResult;
+      }
+    }
+
     const hordeRes = await tryClientAiHordeFallback(cleanShortPrompt, params.aspectRatio, 20000);
     if (hordeRes.ok) {
       return {
@@ -2185,22 +2713,24 @@ async function tryNanoBananaApi(params: {
       };
     }
 
-    if (attempt < MAX_CLIENT_ATTEMPTS) {
-      await waitMs(attempt === 1 ? 900 : 1800);
+    if (attempt === 1) {
+      await waitMs(800);
+      const retryPolyResult = await runBrowserPollinationsFailover(' (Retry)');
+      if (retryPolyResult) {
+        return retryPolyResult;
+      }
     }
   }
 
   return {
     ok: false,
-    reason:
-      lastBackendError ||
-      'Image generation servers are momentarily busy after multiple automatic retries. Please try again.',
+    reason: 'Image studio is refreshing connections — please tap Generate again.',
   };
 }
 
 export async function generateArtworkUnified(params: {
   prompt: string;
-  aspectRatio: '1:1' | '16:9' | '4:3';
+  aspectRatio: ImageAspectRatio;
   resolution?: '1K' | '2K';
   language?: string;
   hasBackendApi: boolean;
@@ -2215,7 +2745,7 @@ export async function generateArtworkUnified(params: {
   imageUrl: string;
   provider: 'pollinations' | 'airforce' | 'flux-hd' | 'ai-horde' | 'imagen' | 'nano-banana';
   modelUsed: string;
-  aspectRatio: '1:1' | '16:9' | '4:3';
+  aspectRatio: ImageAspectRatio;
   width: number;
   height: number;
 }> {
@@ -2264,7 +2794,7 @@ export async function editArtworkUnified(params: {
   prompt: string;
   sourceImageDataUrl: string;
   sourceMimeType?: string;
-  aspectRatio?: '1:1' | '16:9' | '4:3';
+  aspectRatio?: ImageAspectRatio;
   resolution?: '1K' | '2K';
   previousEditContext?: string;
   preEnhanced?: { detailedPrompt: string; shortTitle: string };
@@ -2280,11 +2810,11 @@ export async function editArtworkUnified(params: {
   provider: 'pollinations' | 'airforce' | 'flux-hd' | 'ai-horde' | 'imagen' | 'nano-banana';
   modelUsed: string;
   isEdited: true;
-  aspectRatio: '1:1' | '16:9' | '4:3';
+  aspectRatio: ImageAspectRatio;
   width: number;
   height: number;
 }> {
-  const aspectRatio = params.aspectRatio || '1:1';
+  const aspectRatio: ImageAspectRatio = params.aspectRatio || '1:1';
   const configuredModel = resolveOfficialNanoModelId(loadOwnerConfig().imageModel);
 
   params.onStatus?.('Preparing source image for HD photo editing...');
@@ -2335,6 +2865,7 @@ export async function editArtworkUnified(params: {
 export async function generateVideoUnified(params: {
   prompt: string;
   style?: string;
+  aspectRatio?: VideoAspectRatio;
   language?: string;
   hasBackendApi: boolean;
   hasServerGeminiKey: boolean;
@@ -2342,8 +2873,66 @@ export async function generateVideoUnified(params: {
 }): Promise<GeneratedVideo> {
   const styleLabel = params.style?.trim() || 'Cinematic Realism';
   const cleanUserPrompt = params.prompt.trim();
+  const aspectRatio: VideoAspectRatio = params.aspectRatio || '16:9';
+  const geminiKeys = getAllGeminiKeys();
 
-  params.onStatus?.('Directing your cinematic story...');
+  // Step 1 (Primary): Google Veo (veo-2.0-generate-001) when supported by active API key
+  if (params.hasBackendApi || params.hasServerGeminiKey || geminiKeys.length > 0) {
+    params.onStatus?.('Connecting to Google Veo 2 video engine...');
+    try {
+      const veoCtrl = new AbortController();
+      const veoTimer = setTimeout(() => veoCtrl.abort(), 38000);
+      try {
+        const resp = await fetch('/api/veo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: veoCtrl.signal,
+          body: JSON.stringify({
+            prompt: cleanUserPrompt,
+            style: styleLabel,
+            aspectRatio,
+            apiKey: geminiKeys[0] || undefined,
+            apiKeys: geminiKeys.length > 0 ? geminiKeys : undefined,
+          }),
+        });
+        if (resp.ok && (resp.headers.get('content-type') || '').includes('application/json')) {
+          const data = (await resp.json()) as {
+            ok?: boolean;
+            videoUrl?: string;
+            modelUsed?: string;
+          };
+          if (data.ok && data.videoUrl) {
+            return {
+              title: cleanUserPrompt.slice(0, 56) || 'Veo AI Video',
+              prompt: cleanUserPrompt,
+              narration: '',
+              mood: 'cinematic',
+              style: styleLabel,
+              heroImageUrl: '',
+              veoVideoUrl: data.videoUrl,
+              provider: 'veo',
+              scenes: [
+                {
+                  caption: cleanUserPrompt.slice(0, 48),
+                  visualPrompt: cleanUserPrompt,
+                  imageUrl: '',
+                },
+              ],
+              aspectRatio,
+              createdAt: Date.now(),
+            };
+          }
+        }
+      } finally {
+        clearTimeout(veoTimer);
+      }
+    } catch {
+      // Silently switch to AI Motion Video Engine fallback
+    }
+  }
+
+  // Step 2 (Free Unlimited Auto-Fallback): AI Motion Video Engine (3-4 scene visual script + HD FLUX frames)
+  params.onStatus?.('Directing 4-scene AI motion script...');
 
   const langHint =
     params.language && params.language !== 'Auto-Detect'
@@ -2353,22 +2942,20 @@ export async function generateVideoUnified(params: {
   const storyboardRaw = await runQuickTextCompletion({
     systemPrompt: [
       'You are an AI Film Director.',
-      `Given any topic or video request, create a family-friendly 4-beat visual story in "${styleLabel}" style.`,
+      `Given any topic or video request, create a family-friendly 4-scene visual story in "${styleLabel}" style.`,
       langHint,
-      'Provide ONE single unified, safe, vivid English artistic prompt ("heroVisualPrompt", under 38 words) representing the core visual scene, plus 4 short sequential scene captions.',
-      'Return ONLY valid JSON: {"title":"...","mood":"cinematic|calm|epic|study","narration":"2-3 warm concise sentences","heroVisualPrompt":"safe vivid English artwork description","captions":["Scene 1 title","Scene 2 title","Scene 3 title","Scene 4 title"]}',
+      'Return ONLY valid JSON: {"title":"...","mood":"cinematic|calm|epic|study","narration":"2-3 warm concise sentences","scenes":[{"caption":"Scene 1 title","visualPrompt":"safe vivid English scene prompt under 28 words"},{"caption":"Scene 2 title","visualPrompt":"safe vivid English scene prompt under 28 words"},{"caption":"Scene 3 title","visualPrompt":"safe vivid English scene prompt under 28 words"},{"caption":"Scene 4 title","visualPrompt":"safe vivid English scene prompt under 28 words"}]}',
     ].join(' '),
     userPrompt: cleanUserPrompt,
     hasBackendApi: params.hasBackendApi,
     hasServerGeminiKey: params.hasServerGeminiKey,
-    maxTokens: 450,
+    maxTokens: 520,
   });
 
   let title = cleanUserPrompt.slice(0, 52) || 'AI Cinema Story';
   let mood: GeneratedVideo['mood'] = 'cinematic';
   let narration = `Here is a cinematic AI visual story crafted for ${cleanUserPrompt}.`;
-  let heroVisualPrompt = '';
-  let captions: string[] = [];
+  let parsedScenes: Array<{ caption: string; visualPrompt: string }> = [];
 
   if (storyboardRaw) {
     try {
@@ -2381,10 +2968,10 @@ export async function generateVideoUnified(params: {
           narration?: string;
           heroVisualPrompt?: string;
           captions?: string[];
+          scenes?: Array<{ caption?: string; visualPrompt?: string }>;
         };
         if (parsed.title) title = parsed.title.slice(0, 64);
         if (parsed.narration) narration = parsed.narration.trim();
-        if (parsed.heroVisualPrompt) heroVisualPrompt = parsed.heroVisualPrompt.trim();
         if (
           parsed.mood === 'calm' ||
           parsed.mood === 'epic' ||
@@ -2393,33 +2980,46 @@ export async function generateVideoUnified(params: {
         ) {
           mood = parsed.mood;
         }
-        if (Array.isArray(parsed.captions) && parsed.captions.length >= 2) {
-          captions = parsed.captions.slice(0, 4).map((c, idx) => (c || `Scene ${idx + 1}`).trim());
+        if (Array.isArray(parsed.scenes) && parsed.scenes.length >= 2) {
+          parsedScenes = parsed.scenes.slice(0, 4).map((sc, idx) => ({
+            caption: (sc?.caption || `Scene ${idx + 1}`).trim(),
+            visualPrompt: (sc?.visualPrompt || cleanUserPrompt).trim(),
+          }));
+        } else if (Array.isArray(parsed.captions) && parsed.captions.length >= 2) {
+          const baseVis = parsed.heroVisualPrompt || cleanUserPrompt;
+          parsedScenes = parsed.captions.slice(0, 4).map((c, idx) => ({
+            caption: (c || `Scene ${idx + 1}`).trim(),
+            visualPrompt: `${baseVis}, scene ${idx + 1}`,
+          }));
         }
       }
     } catch {
-      // Fallback below
+      // Deterministic fallback below
     }
   }
 
-  const defaultCaptions = [
-    'Opening Horizon',
-    'Closer Perspective',
-    'Cinematic Motion',
-    'Serene Finale',
+  const defaultBeats = [
+    { caption: 'Opening Horizon', cue: 'wide establishing atmospheric view' },
+    { caption: 'Closer Perspective', cue: 'dramatic medium angle with rich golden light' },
+    { caption: 'Cinematic Motion', cue: 'dynamic sweeping tracking shot' },
+    { caption: 'Serene Finale', cue: 'peaceful glowing sunset finale' },
   ];
-  while (captions.length < 4) {
-    captions.push(defaultCaptions[captions.length]);
+  while (parsedScenes.length < 4) {
+    const beat = defaultBeats[parsedScenes.length];
+    parsedScenes.push({
+      caption: beat.caption,
+      visualPrompt: `${cleanUserPrompt}, ${styleLabel}, ${beat.cue}`,
+    });
   }
 
-  const safeHeroPrompt = buildSafeArtisticPrompt(
-    heroVisualPrompt || `${cleanUserPrompt}, ${styleLabel} cinematic wide atmosphere`
-  );
-
+  const dims = getImageDimensionsForAspectRatio(aspectRatio);
   const configuredModel = resolveOfficialNanoModelId(loadOwnerConfig().imageModel);
-  const imageResult = await tryNanoBananaApi({
-    prompt: safeHeroPrompt,
-    aspectRatio: '16:9',
+  const scene1Prompt = buildSafeArtisticPrompt(parsedScenes[0].visualPrompt);
+
+  params.onStatus?.('Rendering Scene 1 HD visual frame...');
+  const heroResult = await tryNanoBananaApi({
+    prompt: scene1Prompt,
+    aspectRatio,
     resolution: '1K',
     mode: 'generate',
     preferredModel: configuredModel,
@@ -2429,17 +3029,34 @@ export async function generateVideoUnified(params: {
     onStatus: params.onStatus,
   });
 
-  if (!imageResult.ok) {
-    throw new Error(imageResult.reason);
+  if (!heroResult.ok) {
+    throw new Error(heroResult.reason);
   }
 
-  const singleHeroUrl = imageResult.imageUrl;
+  const heroUrl = heroResult.imageUrl;
 
-  const scenes: VideoScene[] = captions.slice(0, 4).map((caption) => ({
-    caption,
-    visualPrompt: safeHeroPrompt,
-    imageUrl: singleHeroUrl,
-  }));
+  // Fetch distinct HD frames for scenes 2–4 in parallel via Pollinations FLUX (fast 11s cap; reuses heroUrl seamlessly if any timeout)
+  params.onStatus?.('Generating smooth multi-scene transitions...');
+  const extraFramePromises = parsedScenes.slice(1).map(async (sc) => {
+    const safeScPrompt = buildSafeArtisticPrompt(sc.visualPrompt);
+    const polyUrl = `https://pollinations.ai/p/${encodeURIComponent(safeScPrompt)}?width=${dims.width}&height=${dims.height}&model=flux&nologo=true&enhance=true&seed=${randomClientImageSeed()}`;
+    const res = await fetchDirectImageAsDataUrl(polyUrl, 11000);
+    return {
+      caption: sc.caption,
+      visualPrompt: safeScPrompt,
+      imageUrl: res.ok ? res.dataUrl : heroUrl,
+    };
+  });
+
+  const extraScenes = await Promise.all(extraFramePromises);
+  const scenes: VideoScene[] = [
+    {
+      caption: parsedScenes[0].caption,
+      visualPrompt: scene1Prompt,
+      imageUrl: heroUrl,
+    },
+    ...extraScenes,
+  ];
 
   return {
     title,
@@ -2447,12 +3064,10 @@ export async function generateVideoUnified(params: {
     narration,
     mood,
     style: styleLabel,
-    heroImageUrl: singleHeroUrl,
-    provider: imageResult.provider,
+    heroImageUrl: heroUrl,
+    provider: heroResult.provider,
     scenes,
-    aspectRatio: '16:9',
+    aspectRatio,
     createdAt: Date.now(),
   };
 }
-
-

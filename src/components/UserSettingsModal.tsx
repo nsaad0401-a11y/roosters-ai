@@ -1,6 +1,9 @@
 import {
   Check,
+  Eye,
+  EyeOff,
   Globe,
+  KeyRound,
   MessageSquareText,
   Moon,
   Settings,
@@ -18,6 +21,11 @@ import {
   UserAppSettings,
   VoiceGenderChoice,
 } from '../types';
+import {
+  loadUserCustomApiKeys,
+  parseApiKeysList,
+  saveUserCustomApiKeys,
+} from '../utils/storage';
 import { SearchableLanguageSelect } from './SearchableLanguageSelect';
 
 interface UserSettingsModalProps {
@@ -48,6 +56,8 @@ export function UserSettingsModal({
   const [voiceGender, setVoiceGender] = useState<VoiceGenderChoice>(settings.voiceGender);
   const [speechSpeed, setSpeechSpeed] = useState<SpeechSpeedChoice>(settings.speechSpeed);
   const [customInstructions, setCustomInstructions] = useState<string>(settings.customInstructions);
+  const [customKeysInput, setCustomKeysInput] = useState<string>('');
+  const [showKeys, setShowKeys] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearedFeedback, setClearedFeedback] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
@@ -59,6 +69,8 @@ export function UserSettingsModal({
     setVoiceGender(settings.voiceGender);
     setSpeechSpeed(settings.speechSpeed);
     setCustomInstructions(settings.customInstructions);
+    setCustomKeysInput(loadUserCustomApiKeys());
+    setShowKeys(false);
     setConfirmClear(false);
     setClearedFeedback(false);
     setSavedNotice(false);
@@ -66,7 +78,10 @@ export function UserSettingsModal({
 
   if (!isOpen) return null;
 
+  const parsedUserKeyCount = parseApiKeysList(customKeysInput).length;
+
   const handleSave = () => {
+    saveUserCustomApiKeys(customKeysInput.trim());
     onSave({
       responseStyle,
       preferredLanguage,
@@ -353,7 +368,65 @@ export function UserSettingsModal({
             />
           </div>
 
-          {/* 5. Data Control */}
+          {/* 5. Optional Multi-Key Auto-Rotation */}
+          <div
+            className="rounded-xl border p-3.5 space-y-2"
+            style={{
+              backgroundColor: theme.subSurfaceBg,
+              borderColor: theme.borderColor,
+            }}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label
+                htmlFor="user-settings-api-keys"
+                className="flex items-center gap-1.5 text-[12.5px] font-semibold"
+                style={{ color: theme.textPrimary }}
+              >
+                <KeyRound className="w-3.5 h-3.5" style={{ color: theme.accentSecondary }} />
+                <span>Gemini API Keys (Optional · Auto-Rotation)</span>
+              </label>
+              <span
+                className="text-[11px] font-semibold"
+                style={{ color: parsedUserKeyCount > 0 ? '#34d399' : theme.textMuted }}
+              >
+                {parsedUserKeyCount > 0
+                  ? `${parsedUserKeyCount} ${parsedUserKeyCount === 1 ? 'key' : 'keys'} loaded — auto-rotates on limit`
+                  : 'Optional — built-in free AI always active'}
+              </span>
+            </div>
+
+            <div className="relative flex items-center">
+              <input
+                id="user-settings-api-keys"
+                type={showKeys ? 'text' : 'password'}
+                value={customKeysInput}
+                onChange={(e) => setCustomKeysInput(e.target.value)}
+                placeholder="AIzaKey1, AIzaKey2, AIzaKey3 (comma-separated)"
+                autoComplete="off"
+                spellCheck={false}
+                className="w-full pl-3.5 pr-10 py-2 rounded-xl border text-[12.5px] font-mono focus:outline-none"
+                style={{
+                  backgroundColor: theme.cardBg,
+                  borderColor: theme.borderColor,
+                  color: theme.textPrimary,
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowKeys((prev) => !prev)}
+                aria-label={showKeys ? 'Hide API Keys' : 'Show API Keys'}
+                className="absolute right-2.5 p-1 rounded cursor-pointer"
+                style={{ color: theme.textMuted }}
+              >
+                {showKeys ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <p className="text-[11px]" style={{ color: theme.textMuted }}>
+              Paste one or multiple Gemini keys separated by commas. Roosters AI rotates keys and uses unlimited fallback engines automatically.
+            </p>
+          </div>
+
+          {/* 6. Data Control */}
           <div
             className="rounded-xl border p-3.5 space-y-2.5"
             style={{

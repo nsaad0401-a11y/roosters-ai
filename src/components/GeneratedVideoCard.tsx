@@ -19,11 +19,38 @@ interface GeneratedVideoCardProps {
 
 const SCENE_DURATION_MS = 3200;
 const CROSSFADE_MS = 650;
-const CANVAS_W = 960;
-const CANVAS_H = 540;
+
+function getVideoDims(aspectRatio?: GeneratedVideo['aspectRatio']): { w: number; h: number } {
+  if (aspectRatio === '9:16') return { w: 540, h: 960 };
+  if (aspectRatio === '1:1') return { w: 720, h: 720 };
+  return { w: 960, h: 540 };
+}
+
+function wrapCanvasLines(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number
+): string[] {
+  const words = text.trim().split(/\s+/);
+  const lines: string[] = [];
+  let line = '';
+  for (const w of words) {
+    const test = line ? `${line} ${w}` : w;
+    if (ctx.measureText(test).width > maxWidth && line) {
+      lines.push(line);
+      line = w;
+    } else {
+      line = test;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.slice(0, 3);
+}
 
 function drawFallbackScene(
   ctx: CanvasRenderingContext2D,
+  canvasW: number,
+  canvasH: number,
   sceneIndex: number,
   caption: string,
   title: string,
@@ -37,33 +64,38 @@ function drawFallbackScene(
     study: ['#0b172a', '#16304f', '#38bdf8'],
   };
   const [c1, c2, accent] = palettes[mood] || palettes.cinematic;
-  const grad = ctx.createLinearGradient(0, 0, CANVAS_W, CANVAS_H);
+  const grad = ctx.createLinearGradient(0, 0, canvasW, canvasH);
   grad.addColorStop(0, c1);
   grad.addColorStop(1, c2);
   ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+  ctx.fillRect(0, 0, canvasW, canvasH);
 
   // Subtle animated light orb
-  const orbX = CANVAS_W * (0.25 + 0.5 * ((sceneIndex * 0.25 + progress * 0.4) % 1));
-  const orbY = CANVAS_H * (0.35 + 0.2 * Math.sin(progress * Math.PI + sceneIndex));
+  const orbX = canvasW * (0.25 + 0.5 * ((sceneIndex * 0.25 + progress * 0.4) % 1));
+  const orbY = canvasH * (0.35 + 0.2 * Math.sin(progress * Math.PI + sceneIndex));
   const radial = ctx.createRadialGradient(orbX, orbY, 10, orbX, orbY, 300);
   radial.addColorStop(0, `${accent}44`);
   radial.addColorStop(1, 'transparent');
   ctx.fillStyle = radial;
-  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+  ctx.fillRect(0, 0, canvasW, canvasH);
 
   ctx.fillStyle = 'rgba(255,255,255,0.88)';
-  ctx.font = 'bold 34px Plus Jakarta Sans, sans-serif';
+  ctx.font = `bold ${canvasW < 640 ? 24 : 34}px Plus Jakarta Sans, sans-serif`;
   ctx.textAlign = 'center';
-  ctx.fillText(caption, CANVAS_W / 2, CANVAS_H / 2 - 10);
+  const lines = wrapCanvasLines(ctx, caption, canvasW - 64);
+  lines.forEach((ln, idx) => {
+    ctx.fillText(ln, canvasW / 2, canvasH / 2 - 14 + idx * 32);
+  });
 
   ctx.fillStyle = 'rgba(255,255,255,0.6)';
-  ctx.font = '500 18px Plus Jakarta Sans, sans-serif';
-  ctx.fillText(title, CANVAS_W / 2, CANVAS_H / 2 + 28);
+  ctx.font = '500 17px Plus Jakarta Sans, sans-serif';
+  ctx.fillText(title, canvasW / 2, canvasH / 2 + 28 + lines.length * 18);
 }
 
 function drawCoverImage(
   ctx: CanvasRenderingContext2D,
+  canvasW: number,
+  canvasH: number,
   img: HTMLImageElement,
   sceneIndex: number,
   sceneProgress: number,
@@ -72,32 +104,28 @@ function drawCoverImage(
   ctx.save();
   ctx.globalAlpha = alpha;
 
-  const iw = img.naturalWidth || CANVAS_W;
-  const ih = img.naturalHeight || CANVAS_H;
-  const baseScale = Math.max(CANVAS_W / iw, CANVAS_H / ih);
+  const iw = img.naturalWidth || canvasW;
+  const ih = img.naturalHeight || canvasH;
+  const baseScale = Math.max(canvasW / iw, canvasH / ih);
 
-  // Distinct 4-act cinematic Ken Burns camera choreography from a single hero frame
+  // Distinct 4-act cinematic Ken Burns camera choreography
   let zoomFactor = 1.04;
   let panX = 0;
   let panY = 0;
 
   if (sceneIndex === 0) {
-    // Act 1: Smooth wide establishing zoom-in + left-to-right drift
     zoomFactor = 1.0 + 0.12 * sceneProgress;
     panX = (sceneProgress - 0.5) * 44;
     panY = -10 * sceneProgress;
   } else if (sceneIndex === 1) {
-    // Act 2: Intimate macro zoom + subtle upward diagonal sweep
     zoomFactor = 1.12 + 0.12 * sceneProgress;
     panX = -32 * (sceneProgress - 0.3);
     panY = 18 * (0.5 - sceneProgress);
   } else if (sceneIndex === 2) {
-    // Act 3: Sweeping lateral glide
     zoomFactor = 1.18 - 0.04 * sceneProgress;
     panX = (0.5 - sceneProgress) * 64;
     panY = Math.sin(sceneProgress * Math.PI) * 14;
   } else {
-    // Act 4: Graceful pull-back finale reveal
     zoomFactor = 1.22 - 0.18 * sceneProgress;
     panX = (sceneProgress - 0.5) * 26;
     panY = -14 * (1 - sceneProgress);
@@ -107,8 +135,8 @@ function drawCoverImage(
   const drawW = iw * scale;
   const drawH = ih * scale;
 
-  const x = (CANVAS_W - drawW) / 2 + panX;
-  const y = (CANVAS_H - drawH) / 2 + panY;
+  const x = (canvasW - drawW) / 2 + panX;
+  const y = (canvasH - drawH) / 2 + panY;
 
   ctx.drawImage(img, x, y, drawW, drawH);
   ctx.restore();
@@ -116,6 +144,8 @@ function drawCoverImage(
 
 function drawCinematicOverlays(
   ctx: CanvasRenderingContext2D,
+  canvasW: number,
+  canvasH: number,
   sceneIndex: number,
   sceneProgress: number,
   totalElapsedMs: number,
@@ -129,21 +159,19 @@ function drawCinematicOverlays(
   };
   const palette = accentMap[mood] || accentMap.cinematic;
 
-  // Sweeping radial atmospheric light flare
-  const sweepX = CANVAS_W * (0.18 + 0.64 * ((sceneProgress + sceneIndex * 0.25) % 1));
-  const sweepY = CANVAS_H * (0.28 + 0.14 * Math.sin(totalElapsedMs * 0.0012));
+  const sweepX = canvasW * (0.18 + 0.64 * ((sceneProgress + sceneIndex * 0.25) % 1));
+  const sweepY = canvasH * (0.28 + 0.14 * Math.sin(totalElapsedMs * 0.0012));
   const flare = ctx.createRadialGradient(sweepX, sweepY, 8, sweepX, sweepY, 340);
   flare.addColorStop(0, `${palette.primary}0.16)`);
   flare.addColorStop(0.55, `${palette.glow}0.06)`);
   flare.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = flare;
-  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+  ctx.fillRect(0, 0, canvasW, canvasH);
 
-  // Subtle drifting bokeh dust particles for living motion
   const t = totalElapsedMs * 0.0007;
   for (let i = 0; i < 14; i++) {
-    const px = ((Math.sin(t * 0.9 + i * 1.7) * 0.5 + 0.5) * CANVAS_W);
-    const py = ((Math.cos(t * 0.65 + i * 2.3) * 0.5 + 0.5) * (CANVAS_H - 90));
+    const px = (Math.sin(t * 0.9 + i * 1.7) * 0.5 + 0.5) * canvasW;
+    const py = (Math.cos(t * 0.65 + i * 2.3) * 0.5 + 0.5) * (canvasH - 90);
     const radius = 1.6 + (i % 3) * 1.1;
     const alpha = 0.14 + 0.14 * Math.sin(t * 2 + i);
     ctx.beginPath();
@@ -152,18 +180,16 @@ function drawCinematicOverlays(
     ctx.fill();
   }
 
-  // Subtle letterbox cinema vignette at top edge
   const topScrim = ctx.createLinearGradient(0, 0, 0, 72);
   topScrim.addColorStop(0, 'rgba(5, 6, 8, 0.45)');
   topScrim.addColorStop(1, 'rgba(5, 6, 8, 0)');
   ctx.fillStyle = topScrim;
-  ctx.fillRect(0, 0, CANVAS_W, 72);
+  ctx.fillRect(0, 0, canvasW, 72);
 }
 
 async function fetchImageSafe(url: string): Promise<{ img: HTMLImageElement | null; objectUrl?: string }> {
   if (!url) return { img: null };
 
-  // Directly load data URLs (already base64/SVG — zero extra network fetches & untainted)
   if (url.startsWith('data:')) {
     return new Promise((resolve) => {
       const im = new Image();
@@ -173,7 +199,6 @@ async function fetchImageSafe(url: string): Promise<{ img: HTMLImageElement | nu
     });
   }
 
-  // Fetch remote image once into local Blob URL so Canvas remains untainted for .webm export
   try {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), 14000);
@@ -269,7 +294,7 @@ export function GeneratedVideoCard({
   voiceSettings,
 }: GeneratedVideoCardProps) {
   const [loadedCount, setLoadedCount] = useState(0);
-  const [isReady, setIsReady] = useState(false);
+  const [isReady, setIsReady] = useState(Boolean(video.veoVideoUrl));
   const [isPlaying, setIsPlaying] = useState(true);
   const [isMuted, setIsMuted] = useState(true);
   const [activeSceneIdx, setActiveSceneIdx] = useState(0);
@@ -287,6 +312,11 @@ export function GeneratedVideoCard({
   const stopPadRef = useRef<(() => void) | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
 
+  const dims = getVideoDims(video.aspectRatio);
+  const canvasW = dims.w;
+  const canvasH = dims.h;
+
+  const hasVeoMp4 = Boolean(video.veoVideoUrl);
   const totalDurationMs = Math.max(1, video.scenes.length) * SCENE_DURATION_MS;
   const safeSlug =
     video.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 44) || 'roosters-ai-video';
@@ -298,8 +328,14 @@ export function GeneratedVideoCard({
     }
   }, [isPlaying]);
 
-  // Load unique scene image(s) only ONCE (single-fetch friendly!)
+  // Load unique scene image(s) for AI Motion fallback
   useEffect(() => {
+    if (hasVeoMp4) {
+      setIsReady(true);
+      setLoadedCount(video.scenes.length);
+      return;
+    }
+
     let cancelled = false;
     const objectUrls: string[] = [];
 
@@ -320,6 +356,7 @@ export function GeneratedVideoCard({
         const res = await fetchImageSafe(u);
         if (res.objectUrl) objectUrls.push(res.objectUrl);
         cache.set(u, res.img);
+        if (!cancelled) setLoadedCount((prev) => Math.min(video.scenes.length, prev + 1));
       }
 
       if (!cancelled) {
@@ -338,7 +375,7 @@ export function GeneratedVideoCard({
       cancelled = true;
       objectUrls.forEach((u) => URL.revokeObjectURL(u));
     };
-  }, [video]);
+  }, [hasVeoMp4, video]);
 
   const drawFrameAt = useCallback(
     (ctx: CanvasRenderingContext2D, elapsedMs: number) => {
@@ -349,64 +386,67 @@ export function GeneratedVideoCard({
       const sceneProgress = Math.min(1, sceneOffset / SCENE_DURATION_MS);
       const nextSceneIdx = (sceneIdx + 1) % sceneCount;
 
-      ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+      ctx.clearRect(0, 0, canvasW, canvasH);
 
       const curImg = loadedImagesRef.current[sceneIdx];
       const curScene = video.scenes[sceneIdx];
       if (curImg) {
-        drawCoverImage(ctx, curImg, sceneIdx, sceneProgress, 1);
+        drawCoverImage(ctx, canvasW, canvasH, curImg, sceneIdx, sceneProgress, 1);
       } else {
-        drawFallbackScene(ctx, sceneIdx, curScene.caption, video.title, video.mood, sceneProgress);
+        drawFallbackScene(ctx, canvasW, canvasH, sceneIdx, curScene.caption, video.title, video.mood, sceneProgress);
       }
 
-      // Smooth cross-fade into next scene near end of scene window
       const fadeStart = SCENE_DURATION_MS - CROSSFADE_MS;
       if (sceneOffset > fadeStart) {
         const fadeAlpha = Math.min(1, (sceneOffset - fadeStart) / CROSSFADE_MS);
         const nextImg = loadedImagesRef.current[nextSceneIdx];
         const nextScene = video.scenes[nextSceneIdx];
         if (nextImg) {
-          drawCoverImage(ctx, nextImg, nextSceneIdx, 0, fadeAlpha);
+          drawCoverImage(ctx, canvasW, canvasH, nextImg, nextSceneIdx, 0, fadeAlpha);
         } else {
           ctx.save();
           ctx.globalAlpha = fadeAlpha;
-          drawFallbackScene(ctx, nextSceneIdx, nextScene.caption, video.title, video.mood, 0);
+          drawFallbackScene(ctx, canvasW, canvasH, nextSceneIdx, nextScene.caption, video.title, video.mood, 0);
           ctx.restore();
         }
       }
 
-      // Dynamic animated light sweep, particles & cinematic atmosphere overlays
-      drawCinematicOverlays(ctx, sceneIdx, sceneProgress, elapsedMs, video.mood);
+      drawCinematicOverlays(ctx, canvasW, canvasH, sceneIdx, sceneProgress, elapsedMs, video.mood);
 
-      // Filmic gradient scrim & scene subtitle
-      const scrim = ctx.createLinearGradient(0, CANVAS_H - 150, 0, CANVAS_H);
+      const scrim = ctx.createLinearGradient(0, canvasH - 180, 0, canvasH);
       scrim.addColorStop(0, 'rgba(7, 9, 14, 0)');
-      scrim.addColorStop(1, 'rgba(7, 9, 14, 0.88)');
+      scrim.addColorStop(1, 'rgba(7, 9, 14, 0.9)');
       ctx.fillStyle = scrim;
-      ctx.fillRect(0, CANVAS_H - 150, CANVAS_W, 150);
+      ctx.fillRect(0, canvasH - 180, canvasW, 180);
 
-      // Caption text
+      // Wrapped caption text (works crisply in portrait 9:16 & landscape 16:9)
+      const isNarrow = canvasW < 640;
       ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 24px Plus Jakarta Sans, sans-serif';
+      ctx.font = `bold ${isNarrow ? 20 : 24}px Plus Jakarta Sans, sans-serif`;
       ctx.textAlign = 'left';
-      ctx.fillText(curScene.caption, 28, CANVAS_H - 42);
+      const maxCaptionW = isNarrow ? canvasW - 44 : canvasW - 280;
+      const capLines = wrapCanvasLines(ctx, curScene.caption, maxCaptionW);
+      const startY = canvasH - 44 - (capLines.length - 1) * (isNarrow ? 24 : 28);
+      capLines.forEach((line, i) => {
+        ctx.fillText(line, 24, startY + i * (isNarrow ? 24 : 28));
+      });
 
       // Subtle watermark & scene counter
       ctx.fillStyle = 'rgba(255, 215, 0, 0.92)';
       ctx.font = '600 13px Plus Jakarta Sans, sans-serif';
-      ctx.textAlign = 'right';
+      ctx.textAlign = isNarrow ? 'left' : 'right';
       ctx.fillText(
         `Roosters AI Cinema · Scene ${sceneIdx + 1}/${sceneCount}`,
-        CANVAS_W - 28,
-        CANVAS_H - 44
+        isNarrow ? 24 : canvasW - 24,
+        isNarrow ? canvasH - 18 : canvasH - 42
       );
     },
-    [totalDurationMs, video]
+    [canvasH, canvasW, totalDurationMs, video]
   );
 
-  // Animation loop
+  // Animation loop for canvas fallback
   useEffect(() => {
-    if (!isReady) return;
+    if (!isReady || hasVeoMp4) return;
     let mounted = true;
 
     const tick = (now: number) => {
@@ -440,9 +480,8 @@ export function GeneratedVideoCard({
       mounted = false;
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [drawFrameAt, isReady, totalDurationMs, video.scenes.length]);
+  }, [drawFrameAt, hasVeoMp4, isReady, totalDurationMs, video.scenes.length]);
 
-  // Stop ambient sound & narration on unmount
   useEffect(() => {
     return () => {
       stopPadRef.current?.();
@@ -500,7 +539,17 @@ export function GeneratedVideoCard({
     if (ctx) drawFrameAt(ctx, elapsedMsRef.current);
   };
 
-  const handleExportWebm = async () => {
+  const handleDownloadVideo = async () => {
+    if (video.veoVideoUrl) {
+      const link = document.createElement('a');
+      link.href = video.veoVideoUrl;
+      link.download = `${safeSlug}.mp4`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      return;
+    }
+
     if (isExporting || !isReady) return;
     setExportNotice('');
 
@@ -521,8 +570,8 @@ export function GeneratedVideoCard({
     const exportCanvas = document.createElement('canvas') as HTMLCanvasElement & {
       captureStream: (fps?: number) => MediaStream;
     };
-    exportCanvas.width = CANVAS_W;
-    exportCanvas.height = CANVAS_H;
+    exportCanvas.width = canvasW;
+    exportCanvas.height = canvasH;
     const exportCtx = exportCanvas.getContext('2d');
     if (!exportCtx) {
       setIsExporting(false);
@@ -610,6 +659,13 @@ export function GeneratedVideoCard({
     setIsExporting(false);
   };
 
+  const viewportClass =
+    video.aspectRatio === '9:16'
+      ? 'aspect-[9/16] max-h-[520px] max-w-[300px] mx-auto w-full'
+      : video.aspectRatio === '1:1'
+        ? 'aspect-square max-h-[480px] max-w-[480px] mx-auto w-full'
+        : 'aspect-video w-full';
+
   return (
     <div className="mt-3 rounded-xl border border-[#1f293d] bg-[#090b10] overflow-hidden">
       {/* Header Bar */}
@@ -618,125 +674,143 @@ export function GeneratedVideoCard({
           <Film className="w-4 h-4 text-[#00d4ff] shrink-0" />
           <span className="text-[13px] font-semibold text-white truncate">{video.title}</span>
           <span className="text-[11px] text-[#64748b] shrink-0">
-            {video.style} · 4 Scenes
+            {hasVeoMp4 ? 'Veo 2 HD' : `${video.style} · ${video.aspectRatio || '16:9'}`}
           </span>
         </div>
 
         <button
           type="button"
-          onClick={handleExportWebm}
+          onClick={() => void handleDownloadVideo()}
           disabled={!isReady || isExporting}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#182032] border border-[#334155] text-[11.5px] font-semibold text-slate-100 hover:border-[#ffd700] hover:text-[#ffd700] disabled:opacity-50 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-[#ffd700] to-[#f59e0b] text-[#050608] text-[11.5px] font-bold hover:brightness-110 disabled:opacity-50 transition-all cursor-pointer whitespace-nowrap shrink-0"
         >
           {isExporting ? (
             <>
-              <Loader2 className="w-3.5 h-3.5 animate-spin text-[#ffd700]" />
-              <span className="tabular-nums">Exporting .webm ({exportPct}%)</span>
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              <span className="tabular-nums">Rendering ({exportPct}%)</span>
             </>
           ) : (
             <>
               <Download className="w-3.5 h-3.5" />
-              <span>Download Video (.webm)</span>
+              <span>Download Video</span>
             </>
           )}
         </button>
       </div>
 
-      {/* Video Canvas Viewport */}
-      <div className="relative bg-[#050608] aspect-video w-full flex items-center justify-center">
-        <canvas
-          ref={canvasRef}
-          width={CANVAS_W}
-          height={CANVAS_H}
-          className="w-full h-full object-contain block"
-        />
+      {/* Video Player Viewport */}
+      <div className="bg-[#050608] p-2 flex items-center justify-center">
+        <div className={`relative bg-[#050608] overflow-hidden rounded-lg flex items-center justify-center ${viewportClass}`}>
+          {hasVeoMp4 ? (
+            <video
+              src={video.veoVideoUrl}
+              controls
+              playsInline
+              autoPlay
+              loop
+              className="w-full h-full object-contain bg-black"
+            />
+          ) : (
+            <>
+              <canvas
+                ref={canvasRef}
+                width={canvasW}
+                height={canvasH}
+                className="w-full h-full object-contain block"
+              />
 
-        {!isReady && (
-          <div className="absolute inset-0 bg-[#07090e]/95 flex flex-col items-center justify-center gap-3 px-4 text-center">
-            <div className="w-11 h-11 rounded-full border-2 border-[#ffd700]/30 border-t-[#00d4ff] animate-spin" />
-            <div>
-              <p className="text-[13.5px] font-semibold text-white">
-                Synthesizing Multi-Scene AI Video...
-              </p>
-              <p className="text-[12px] text-[#94a3b8] mt-1 tabular-nums">
-                Rendering HD frame {Math.min(video.scenes.length, loadedCount + 1)} of{' '}
-                {video.scenes.length}
-              </p>
-            </div>
-          </div>
-        )}
+              {!isReady && (
+                <div className="absolute inset-0 bg-[#07090e]/95 flex flex-col items-center justify-center gap-3 px-4 text-center">
+                  <div className="w-11 h-11 rounded-full border-2 border-[#ffd700]/30 border-t-[#00d4ff] animate-spin" />
+                  <div>
+                    <p className="text-[13.5px] font-semibold text-white">
+                      Synthesizing Multi-Scene AI Video...
+                    </p>
+                    <p className="text-[12px] text-[#94a3b8] mt-1 tabular-nums">
+                      Rendering HD frame {Math.min(video.scenes.length, loadedCount + 1)} of{' '}
+                      {video.scenes.length}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </div>
 
       {/* Player Controls + Scene Selector */}
       <div className="px-3.5 py-2.5 bg-[#0f1420] border-t border-[#1f293d] space-y-2.5">
-        {/* Progress Bar */}
-        <div className="w-full h-1.5 rounded-full bg-[#1e293b] overflow-hidden">
-          <div
-            className="h-full bg-gradient-to-r from-[#ffd700] to-[#00d4ff] transition-[width] duration-75"
-            style={{ width: `${timelinePct}%` }}
-          />
-        </div>
+        {!hasVeoMp4 && (
+          <>
+            <div className="w-full h-1.5 rounded-full bg-[#1e293b] overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-[#ffd700] to-[#00d4ff] transition-[width] duration-75"
+                style={{ width: `${timelinePct}%` }}
+              />
+            </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              disabled={!isReady}
-              onClick={() => setIsPlaying((p) => !p)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#182032] border border-[#334155] text-[12px] font-semibold text-white hover:border-[#00d4ff] disabled:opacity-45 cursor-pointer"
-            >
-              {isPlaying ? (
-                <>
-                  <Pause className="w-3.5 h-3.5 text-[#ffd700]" />
-                  <span>Pause</span>
-                </>
-              ) : (
-                <>
-                  <Play className="w-3.5 h-3.5 text-[#00d4ff] fill-current" />
-                  <span>Play</span>
-                </>
-              )}
-            </button>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={!isReady}
+                  onClick={() => setIsPlaying((p) => !p)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#182032] border border-[#334155] text-[12px] font-semibold text-white hover:border-[#00d4ff] disabled:opacity-45 cursor-pointer"
+                >
+                  {isPlaying ? (
+                    <>
+                      <Pause className="w-3.5 h-3.5 text-[#ffd700]" />
+                      <span>Pause</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-3.5 h-3.5 text-[#00d4ff] fill-current" />
+                      <span>Play</span>
+                    </>
+                  )}
+                </button>
 
-            <button
-              type="button"
-              disabled={!isReady}
-              onClick={handleToggleMuteAudio}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#182032] border border-[#334155] text-[12px] font-medium text-slate-200 hover:border-[#ffd700] disabled:opacity-45 cursor-pointer"
-            >
-              {isMuted ? (
-                <>
-                  <VolumeX className="w-3.5 h-3.5 text-[#94a3b8]" />
-                  <span>Play Narration &amp; Audio</span>
-                </>
-              ) : (
-                <>
-                  <Volume2 className="w-3.5 h-3.5 text-[#ffd700]" />
-                  <span>Mute Audio</span>
-                </>
-              )}
-            </button>
-          </div>
+                <button
+                  type="button"
+                  disabled={!isReady}
+                  onClick={handleToggleMuteAudio}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#182032] border border-[#334155] text-[12px] font-medium text-slate-200 hover:border-[#ffd700] disabled:opacity-45 cursor-pointer"
+                >
+                  {isMuted ? (
+                    <>
+                      <VolumeX className="w-3.5 h-3.5 text-[#94a3b8]" />
+                      <span>Play Narration &amp; Audio</span>
+                    </>
+                  ) : (
+                    <>
+                      <Volume2 className="w-3.5 h-3.5 text-[#ffd700]" />
+                      <span>Mute Audio</span>
+                    </>
+                  )}
+                </button>
+              </div>
 
-          <div className="flex items-center gap-1.5">
-            {video.scenes.map((scene, idx) => (
-              <button
-                key={scene.caption + idx}
-                type="button"
-                disabled={!isReady}
-                onClick={() => handleJumpScene(idx)}
-                title={scene.caption}
-                className={`px-2 py-1 rounded-md text-[11px] font-semibold border transition-colors cursor-pointer tabular-nums ${
-                  activeSceneIdx === idx
-                    ? 'bg-[#00d4ff]/15 border-[#00d4ff] text-[#00d4ff]'
-                    : 'bg-[#121622] border-[#1f293d] text-[#94a3b8] hover:text-white'
-                }`}
-              >
-                S{idx + 1}
-              </button>
-            ))}
-          </div>
-        </div>
+              <div className="flex items-center gap-1.5">
+                {video.scenes.map((scene, idx) => (
+                  <button
+                    key={scene.caption + idx}
+                    type="button"
+                    disabled={!isReady}
+                    onClick={() => handleJumpScene(idx)}
+                    title={scene.caption}
+                    className={`px-2 py-1 rounded-md text-[11px] font-semibold border transition-colors cursor-pointer tabular-nums ${
+                      activeSceneIdx === idx
+                        ? 'bg-[#00d4ff]/15 border-[#00d4ff] text-[#00d4ff]'
+                        : 'bg-[#121622] border-[#1f293d] text-[#94a3b8] hover:text-white'
+                    }`}
+                  >
+                    S{idx + 1}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
 
         {video.narration && (
           <p dir="auto" className="text-[12px] text-[#94a3b8] leading-relaxed">

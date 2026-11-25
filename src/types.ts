@@ -33,6 +33,9 @@ export interface GroundingSource {
   uri: string;
 }
 
+export type ImageAspectRatio = '1:1' | '16:9' | '9:16' | '4:3';
+export type VideoAspectRatio = '16:9' | '9:16' | '1:1';
+
 export interface GeneratedArtwork {
   title: string;
   description: string;
@@ -42,7 +45,7 @@ export interface GeneratedArtwork {
   provider?: 'pollinations' | 'airforce' | 'flux-hd' | 'ai-horde' | 'imagen' | 'nano-banana' | 'svg';
   modelUsed?: string;
   isEdited?: boolean;
-  aspectRatio: '1:1' | '16:9' | '4:3';
+  aspectRatio: ImageAspectRatio;
   width: number;
   height: number;
 }
@@ -60,9 +63,10 @@ export interface GeneratedVideo {
   mood: 'cinematic' | 'calm' | 'epic' | 'study';
   style: string;
   heroImageUrl?: string;
-  provider?: 'pollinations' | 'airforce' | 'flux-hd' | 'ai-horde' | 'imagen' | 'nano-banana' | 'svg';
+  veoVideoUrl?: string;
+  provider?: 'pollinations' | 'airforce' | 'flux-hd' | 'ai-horde' | 'imagen' | 'nano-banana' | 'veo' | 'svg';
   scenes: VideoScene[];
-  aspectRatio: '16:9';
+  aspectRatio: VideoAspectRatio;
   createdAt: number;
 }
 
@@ -163,6 +167,8 @@ export interface ChatMessage {
   isDeepResearch?: boolean;
   isError?: boolean;
   isPending?: boolean;
+  pendingMediaKind?: 'image' | 'video';
+  pendingAspectRatio?: ImageAspectRatio;
   isMissingKeyPrompt?: boolean;
 }
 
